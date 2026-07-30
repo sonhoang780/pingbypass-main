@@ -1,0 +1,396 @@
+package eu.client.utils.minecraft;
+
+import com.google.common.collect.Sets;
+import eu.client.EUClient;
+import eu.client.modules.impl.core.RotationsModule;
+import eu.client.modules.impl.movement.HitboxDesyncModule;
+import eu.client.utils.IMinecraft;
+import eu.client.utils.miscellaneous.RenderPosition;
+import eu.client.utils.rotations.RotationUtils;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.item.enchantment.EnchantmentHelper;
+import net.minecraft.world.item.enchantment.Enchantments;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.ExperienceOrb;
+import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.boss.enderdragon.EndCrystal;
+import net.minecraft.world.effect.MobEffectUtil;
+import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.entity.projectile.ProjectileUtil;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
+import net.minecraft.network.protocol.game.ServerboundPlayerInputPacket;
+import net.minecraft.world.entity.player.Input;
+import net.minecraft.network.protocol.game.ServerboundSwingPacket;
+import net.minecraft.network.protocol.game.ServerboundUseItemOnPacket;
+import net.minecraft.network.protocol.game.ServerboundAttackPacket;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.tags.FluidTags;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.EntityHitResult;
+import net.minecraft.world.phys.HitResult;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.core.Direction;
+import net.minecraft.util.Mth;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.Level;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Set;
+
+public class WorldUtils implements IMinecraft {
+    public static Set<Block> RIGHT_CLICKABLE_BLOCKS = Sets.newHashSet(Blocks.CHEST, Blocks.TRAPPED_CHEST, Blocks.ENDER_CHEST, Blocks.WHITE_SHULKER_BOX, Blocks.ORANGE_SHULKER_BOX, Blocks.MAGENTA_SHULKER_BOX, Blocks.LIGHT_BLUE_SHULKER_BOX, Blocks.YELLOW_SHULKER_BOX, Blocks.LIME_SHULKER_BOX, Blocks.PINK_SHULKER_BOX, Blocks.GRAY_SHULKER_BOX, Blocks.LIGHT_GRAY_SHULKER_BOX, Blocks.CYAN_SHULKER_BOX, Blocks.PURPLE_SHULKER_BOX, Blocks.BLUE_SHULKER_BOX, Blocks.BROWN_SHULKER_BOX, Blocks.GREEN_SHULKER_BOX, Blocks.RED_SHULKER_BOX, Blocks.BLACK_SHULKER_BOX, Blocks.ANVIL, Blocks.BELL, Blocks.OAK_BUTTON, Blocks.ACACIA_BUTTON, Blocks.BIRCH_BUTTON, Blocks.DARK_OAK_BUTTON, Blocks.JUNGLE_BUTTON, Blocks.SPRUCE_BUTTON, Blocks.STONE_BUTTON, Blocks.COMPARATOR, Blocks.REPEATER, Blocks.OAK_FENCE_GATE, Blocks.SPRUCE_FENCE_GATE, Blocks.BIRCH_FENCE_GATE, Blocks.JUNGLE_FENCE_GATE, Blocks.DARK_OAK_FENCE_GATE, Blocks.ACACIA_FENCE_GATE, Blocks.BREWING_STAND, Blocks.DISPENSER, Blocks.DROPPER, Blocks.LEVER, Blocks.NOTE_BLOCK, Blocks.JUKEBOX, Blocks.BEACON, Blocks.BLACK_BED, Blocks.BLUE_BED, Blocks.BROWN_BED, Blocks.CYAN_BED, Blocks.GRAY_BED, Blocks.GREEN_BED, Blocks.LIGHT_BLUE_BED, Blocks.LIGHT_GRAY_BED, Blocks.LIME_BED, Blocks.MAGENTA_BED, Blocks.ORANGE_BED, Blocks.PINK_BED, Blocks.PURPLE_BED, Blocks.RED_BED, Blocks.WHITE_BED, Blocks.YELLOW_BED, Blocks.FURNACE, Blocks.OAK_DOOR, Blocks.SPRUCE_DOOR, Blocks.BIRCH_DOOR, Blocks.JUNGLE_DOOR, Blocks.ACACIA_DOOR, Blocks.DARK_OAK_DOOR, Blocks.CAKE, Blocks.ENCHANTING_TABLE, Blocks.DRAGON_EGG, Blocks.HOPPER, Blocks.REPEATING_COMMAND_BLOCK, Blocks.COMMAND_BLOCK, Blocks.CHAIN_COMMAND_BLOCK, Blocks.CRAFTING_TABLE, Blocks.ACACIA_TRAPDOOR, Blocks.BIRCH_TRAPDOOR, Blocks.DARK_OAK_TRAPDOOR, Blocks.JUNGLE_TRAPDOOR, Blocks.OAK_TRAPDOOR, Blocks.SPRUCE_TRAPDOOR, Blocks.CAKE, Blocks.ACACIA_SIGN, Blocks.ACACIA_WALL_SIGN, Blocks.BIRCH_SIGN, Blocks.BIRCH_WALL_SIGN, Blocks.DARK_OAK_SIGN, Blocks.DARK_OAK_WALL_SIGN, Blocks.JUNGLE_SIGN, Blocks.JUNGLE_WALL_SIGN, Blocks.OAK_SIGN, Blocks.OAK_WALL_SIGN, Blocks.SPRUCE_SIGN, Blocks.SPRUCE_WALL_SIGN, Blocks.CRIMSON_SIGN, Blocks.CRIMSON_WALL_SIGN, Blocks.WARPED_SIGN, Blocks.WARPED_WALL_SIGN, Blocks.BLAST_FURNACE, Blocks.SMOKER, Blocks.CARTOGRAPHY_TABLE, Blocks.GRINDSTONE, Blocks.LECTERN, Blocks.LOOM, Blocks.STONECUTTER, Blocks.SMITHING_TABLE);
+    private static final ItemStack NETHERITE_PICKAXE = new ItemStack(Items.NETHERITE_PICKAXE);
+
+    public static void placeBlock(BlockPos position, Direction direction, InteractionHand hand, boolean rotate, boolean crystalDestruction) {
+        placeBlock(position, direction, hand, rotate, crystalDestruction, false);
+    }
+
+    public static void placeBlock(BlockPos position, Direction direction, InteractionHand hand, boolean rotate, boolean crystalDestruction, boolean render) {
+        placeBlock(position, direction, hand, null, rotate, crystalDestruction, render);
+    }
+
+    public static void placeBlock(BlockPos position, Direction direction, InteractionHand hand, Runnable runnable, boolean rotate, boolean crystalDestruction, boolean render) {
+        Vec3 vec3d = position.getCenter();
+        BlockPos offsetPosition;
+
+        if (direction == null) {
+            direction = Direction.UP;
+            offsetPosition = position;
+        } else {
+            offsetPosition = position.relative(direction);
+            vec3d = vec3d.add(direction.getStepX() / 2.0, direction.getStepY() / 2.0, direction.getStepZ() / 2.0);
+        }
+
+        float prevYaw = EUClient.ROTATION_MANAGER.getServerYaw();
+        float prevPitch = EUClient.ROTATION_MANAGER.getServerPitch();
+
+        if (rotate) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(vec3d.x, vec3d.y, vec3d.z));
+        if (crystalDestruction) destroyCrystals(position);
+        if (runnable != null) runnable.run();
+
+        boolean sprint = mc.player.isSprinting();
+        boolean sneak = WorldUtils.RIGHT_CLICKABLE_BLOCKS.contains(mc.level.getBlockState(offsetPosition).getBlock()) && !mc.player.isShiftKeyDown();
+
+        // On the proxy, skip sprint stop/start — the client controls sprint state.
+        // This saves 2 packets per block placement and significantly speeds up Surround.
+        boolean isProxy = eu.client.pingbypass.PingBypassFlags.proxyForwardingActive
+                && EUClient.PINGBYPASS_CONFIG != null && EUClient.PINGBYPASS_CONFIG.isServer();
+        if (!isProxy && sprint) mc.player.connection.send(new ServerboundPlayerCommandPacket(mc.player, ServerboundPlayerCommandPacket.Action.STOP_SPRINTING));
+        if (sneak) mc.player.connection.send(new ServerboundPlayerInputPacket(new Input(false, false, false, false, false, true, false)));
+
+        BlockHitResult blockHitResult = new BlockHitResult(vec3d, direction.getOpposite(), offsetPosition, false);
+        NetworkUtils.sendSequencedPacket(sequence -> new ServerboundUseItemOnPacket(hand, blockHitResult, sequence));
+        mc.getConnection().send(new ServerboundSwingPacket(hand));
+
+        if (rotate && EUClient.MODULE_MANAGER.getModule(RotationsModule.class).snapBack.getValue()) EUClient.ROTATION_MANAGER.packetRotate(prevYaw, prevPitch);
+
+        EUClient.WORLD_MANAGER.getPlaceTimer().reset();
+
+        if (sneak) mc.player.connection.send(new ServerboundPlayerInputPacket(new Input(false, false, false, false, false, false, false)));
+        if (!isProxy && sprint) mc.player.connection.send(new ServerboundPlayerCommandPacket(mc.player, ServerboundPlayerCommandPacket.Action.START_SPRINTING));
+
+        if (render) {
+            RenderPosition renderPosition = new RenderPosition(position);
+            if(!EUClient.RENDER_MANAGER.renderPositions.contains(renderPosition)) {
+                EUClient.RENDER_MANAGER.renderPositions.add(renderPosition);
+
+                // Sync render to connected client when running as proxy
+                if (eu.client.pingbypass.PingBypassFlags.proxyForwardingActive
+                        && EUClient.PINGBYPASS_CONFIG != null && EUClient.PINGBYPASS_CONFIG.isServer()
+                        && EUClient.PROXY_SERVER != null) {
+                    var packet = new net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket(
+                            eu.client.pingbypass.protocol.PbCustomPayload.fromPacket(
+                                    new eu.client.pingbypass.protocol.packets.S2CBlockRenderPacket(position)));
+                    for (net.minecraft.network.Connection conn : EUClient.PROXY_SERVER.getConnections()) {
+                        if (conn.isConnected()) conn.send(packet);
+                    }
+                }
+            }
+        }
+    }
+
+    public static boolean isPlaceable(BlockPos position) {
+        return isPlaceable(position, false);
+    }
+
+    public static boolean isPlaceable(BlockPos position, boolean excludeSelf) {
+        if (!mc.level.getBlockState(position).canBeReplaced()) return false;
+        return mc.level.getEntities((Entity) null, new AABB(position), entity -> true).stream().noneMatch(entity -> !(entity instanceof EndCrystal) && !(entity instanceof ExperienceOrb) && !(entity instanceof ItemEntity) && !(entity.equals(mc.player) && excludeSelf));
+    }
+
+    public static boolean isCrystalPlaceable(BlockPos position) {
+        if (!mc.level.getBlockState(position).canBeReplaced()) return false;
+        return mc.level.getEntities((Entity) null, new AABB(position), entity -> true).stream().noneMatch(entity -> !(entity instanceof EndCrystal) && !(entity instanceof ExperienceOrb));
+    }
+
+    public static void destroyCrystals(BlockPos position) {
+        List<Entity> surroundingCrystals = mc.level.getEntities((Entity) null, new AABB(position), entity -> true).stream().filter(entity -> entity instanceof EndCrystal).toList();
+        if (surroundingCrystals.isEmpty()) return;
+
+        for (Entity entity : surroundingCrystals) {
+            mc.player.connection.send(new ServerboundAttackPacket(entity.getId()));
+            mc.player.connection.send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
+            break;
+        }
+    }
+
+    public static Vec3 getHitVector(BlockPos position, Direction direction) {
+        return position.getCenter().add(direction.getStepX() / 2.0, direction.getStepY() / 2.0, direction.getStepZ() / 2.0);
+    }
+
+    public static Direction getClosestDirection(BlockPos position, boolean strictDirection) {
+        if (strictDirection) {
+            if (mc.player.getY() >= position.getY()) return Direction.UP;
+
+            BlockHitResult result = mc.level.clip(new ClipContext(mc.player.getEyePosition(), Vec3.atCenterOf(position), ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, mc.player));
+            if (result == null || result.getType() != HitResult.Type.BLOCK || result.getDirection() == null) {
+                return getClosestDirection(position);
+            }
+
+            return result.getDirection();
+        } else {
+            return getClosestDirection(position);
+        }
+    }
+
+    private static Direction getClosestDirection(BlockPos position) {
+        Direction closestDirection = null;
+        Vec3 offsetPosition = null;
+
+        for (Direction direction : Direction.values()) {
+            Vec3 newOffset = getHitVector(position, direction);
+            if (closestDirection == null) {
+                closestDirection = direction;
+                offsetPosition = newOffset;
+                continue;
+            }
+
+            if (mc.player.distanceToSqr(newOffset) < mc.player.distanceToSqr(offsetPosition)) {
+                closestDirection = direction;
+                offsetPosition = newOffset;
+            }
+        }
+
+        return closestDirection;
+    }
+
+    public static Direction getDirection(BlockPos position, boolean strictDirection) {
+        return getDirection(position, null, strictDirection);
+    }
+
+    public static Direction getDirection(BlockPos position, List<BlockPos> exceptions, boolean strictDirection) {
+        List<Direction> strictDirections = new ArrayList<>();
+        if (strictDirection) strictDirections = getStrictDirections(mc.player.getEyePosition(), Vec3.atCenterOf(position));
+
+        Direction fallback = null;
+        for (Direction direction : Direction.values()) {
+            BlockPos offset = position.relative(direction);
+            if (strictDirection && !strictDirections.contains(direction.getOpposite())) continue;
+            if (mc.level.getBlockState(offset).canBeReplaced() && (exceptions == null || !exceptions.contains(offset))) {
+                continue;
+            }
+
+            // Prefer non-interactable blocks to avoid opening containers
+            if (RIGHT_CLICKABLE_BLOCKS.contains(mc.level.getBlockState(offset).getBlock())) {
+                if (fallback == null) fallback = direction;
+                continue;
+            }
+
+            return direction;
+        }
+
+        // Fall back to interactable block if no other option (sneak packet will handle it)
+        return fallback;
+    }
+
+    public static List<Direction> getStrictDirections(Vec3 eyePos, Vec3 blockPos) {
+        List<Direction> directions = new ArrayList<>();
+
+        double differenceX = eyePos.x - blockPos.x;
+        double differenceY = eyePos.y - blockPos.y;
+        double differenceZ = eyePos.z - blockPos.z;
+
+        if (differenceY > 0.5) {
+            directions.add(Direction.UP);
+        } else if (differenceY < -0.5) {
+            directions.add(Direction.DOWN);
+        } else {
+            directions.add(Direction.UP);
+            directions.add(Direction.DOWN);
+        }
+
+        if (differenceX > 0.5) {
+            directions.add(Direction.EAST);
+        } else if (differenceX < -0.5) {
+            directions.add(Direction.WEST);
+        } else {
+            directions.add(Direction.EAST);
+            directions.add(Direction.WEST);
+        }
+
+        if (differenceZ > 0.5) {
+            directions.add(Direction.SOUTH);
+        } else if (differenceZ < -0.5) {
+            directions.add(Direction.NORTH);
+        } else {
+            directions.add(Direction.SOUTH);
+            directions.add(Direction.NORTH);
+        }
+
+        return directions;
+    }
+
+    public static HitResult getRaytraceTarget(float yaw, float pitch, double x, double y, double z) {
+        Vec3 rotationVector = new Vec3(Mth.sin(-yaw * 0.017453292F) * Mth.cos(pitch * 0.017453292F), -Mth.sin(pitch * 0.017453292F), Mth.cos(-yaw * 0.017453292F) * Mth.cos(pitch * 0.017453292F));
+        HitResult result = mc.level.clip(new ClipContext(new Vec3(x, y, z), new Vec3(x + rotationVector.x * 5, y + rotationVector.y * 5, z + rotationVector.z * 5), ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, mc.player));
+
+        Vec3 vec3d = new Vec3(x, y + mc.player.getEyeHeight(mc.player.getPose()), z);
+        double distance = 25;
+        if (result != null) distance = result.getLocation().distanceToSqr(vec3d);
+
+        Vec3 multipliedVector = vec3d.add(rotationVector.x * 5, rotationVector.y * 5, rotationVector.z * 5);
+        AABB box = new AABB(x - .3, y, z - .3, x + .3, y + 1.8, z + .3).expandTowards(rotationVector.scale(5)).inflate(1.0, 1.0, 1.0);
+
+        EntityHitResult entityHitResult = ProjectileUtil.getEntityHitResult(mc.player, vec3d, multipliedVector, box, (entity) -> !entity.isSpectator() && entity.isPickable(), distance);
+        if (entityHitResult != null) {
+            if (vec3d.distanceToSqr(entityHitResult.getLocation()) < distance || result == null) {
+                if (entityHitResult.getEntity() instanceof LivingEntity) {
+                    return entityHitResult;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    public static boolean canSee(Entity entity) {
+        return canSee(entity.getX(), entity.getY(), entity.getZ());
+    }
+
+    public static boolean canSee(BlockPos position)     {
+        return canSee(position.getX() + 0.5, position.getY() + 0.5, position.getZ() + 0.5);
+    }
+
+    public static boolean canSee(Vec3 vec3d) {
+        return canSee(vec3d.x, vec3d.y, vec3d.z);
+    }
+
+    public static boolean canSee(double x, double y, double z) {
+        return mc.level.clip(new ClipContext(new Vec3(mc.player.getX(), mc.player.getEyeY(), mc.player.getZ()), new Vec3(x, y, z), ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, mc.player)).getType() == HitResult.Type.MISS;
+    }
+
+    public static boolean canBreak(BlockPos... pos) {
+        return Arrays.stream(pos).allMatch(blockPos -> mc.level.getBlockState(blockPos).getBlock().defaultDestroyTime() != -1);
+    }
+
+    public static boolean isReplaceable(BlockPos... pos) {
+        return Arrays.stream(pos).allMatch(blockPos -> mc.level.getBlockState(blockPos).canBeReplaced());
+    }
+
+    public static Block getBlock(BlockPos pos) {
+        return mc.level.getBlockState(pos).getBlock();
+    }
+
+    public static int getNetherPosition(int position) {
+        return mc.player.level().dimension() == Level.NETHER ? position * 8 : position / 8;
+    }
+
+    public static String getMovementDirection(Direction direction) {
+        if (direction.getName().equalsIgnoreCase("North")) return "-Z";
+        if (direction.getName().equalsIgnoreCase("East")) return "+X";
+        if (direction.getName().equalsIgnoreCase("South")) return "+Z";
+        if (direction.getName().equalsIgnoreCase("West")) return "-X";
+        return "N/A";
+    }
+
+    public static float getBreakTime(Player player, BlockState blockState) {
+        if (player == null) return 0.0f;
+
+        float speed = NETHERITE_PICKAXE.getItem().getDestroySpeed(NETHERITE_PICKAXE, blockState) + 26;
+        return (1.0f / (speed / blockState.getBlock().defaultDestroyTime() / 30)) * 50f;
+    }
+
+    public static double getBreakDelta(BlockState blockState, int slot) {
+        if (slot == -1) return 0.0f;
+        float speed = mc.player.getInventory().getItem(slot).getItem().getDestroySpeed(mc.player.getInventory().getItem(slot), blockState);
+
+        if (speed > 1.0f) {
+            ItemStack stack = mc.player.getInventory().getItem(slot);
+            int efficiency = EnchantmentHelper.getItemEnchantmentLevel(mc.level.registryAccess().lookupOrThrow(Registries.ENCHANTMENT).getOrThrow(Enchantments.EFFICIENCY), stack);
+            if (efficiency > 0 && !stack.isEmpty()) speed += efficiency * efficiency + 1;
+        }
+
+        if (MobEffectUtil.hasDigSpeed(mc.player)) speed *= 1.0f + (MobEffectUtil.getDigSpeedAmplification(mc.player) + 1) * 0.2f;
+        if (mc.player.hasEffect(MobEffects.MINING_FATIGUE)) {
+            speed *= (switch (mc.player.getEffect(MobEffects.MINING_FATIGUE).getAmplifier()) {
+                case 0 -> 0.3f;
+                case 1 -> 0.09f;
+                case 2 -> 0.0027f;
+                default -> 8.1E-4f;
+            });
+        }
+
+        if (mc.player.isEyeInFluid(FluidTags.WATER) && !(EnchantmentHelper.getEnchantmentLevel(mc.level.registryAccess().lookupOrThrow(Registries.ENCHANTMENT).getOrThrow(Enchantments.AQUA_AFFINITY), mc.player) > 0)) speed /= 5.0f;
+        if (!mc.player.onGround()) speed /= 5.0f;
+
+        return speed / blockState.getBlock().defaultDestroyTime() / (mc.player.hasCorrectToolForDrops(blockState) ? 30 : 100);
+    }
+
+    public static float getMineSpeed(BlockState state, int slot) {
+        if (mc.player == null) return 0;
+        float speed = mc.player.getInventory().getItem(slot).getItem().getDestroySpeed(mc.player.getInventory().getItem(slot), state);
+
+        if (speed > 1) {
+            ItemStack stack = mc.player.getInventory().getItem(slot);
+            int efficiency = EnchantmentHelper.getItemEnchantmentLevel(mc.level.registryAccess().lookupOrThrow(Registries.ENCHANTMENT).getOrThrow(Enchantments.EFFICIENCY), stack);
+            if (efficiency > 0 && !stack.isEmpty()) speed += (float) (StrictMath.pow(efficiency, 2) + 1);
+        }
+
+        if (mc.player.hasEffect(MobEffects.HASTE)) speed *= 1 + (mc.player.getEffect(MobEffects.HASTE).getAmplifier() + 1) * 0.2F;
+        if (mc.player.hasEffect(MobEffects.MINING_FATIGUE)) speed *= (float) Math.pow(0.3f, mc.player.getEffect(MobEffects.MINING_FATIGUE).getAmplifier() + 1);
+        if (mc.player.isEyeInFluid(FluidTags.WATER)) speed *= (float) mc.player.getAttribute(Attributes.SUBMERGED_MINING_SPEED).getValue();
+        if (!mc.player.onGround()) speed /= 5;
+
+        speed = speed < 0 ? 0 : speed;
+        return speed / state.getBlock().defaultDestroyTime() / (mc.player.hasCorrectToolForDrops(state) ? 30 : 100);
+    }
+
+    public static boolean blocksMovement(BlockState state) {
+        return state.getBlock() != Blocks.COBWEB && state.getBlock() != Blocks.BAMBOO_SAPLING && !state.canBeReplaced();
+    }
+
+    public static boolean equals(BlockPos x, BlockPos y) {
+        if(x == null && y == null) {
+            return true;
+        } else if(x == null || y == null) {
+            return false;
+        } else {
+            return x.equals(y);
+        }
+    }
+
+    public static String getDimension() {
+        return mc.player.level().dimension().identifier().toString().replace("minecraft:", "");
+    }
+
+    public static List<Player> getCollisions(BlockPos pos) {
+        List<Player> collisions = new ArrayList<>();
+        for(Player player : mc.level.players()) {
+            if(player == null || player.isRemoved()) continue;
+            if(player.getBoundingBox().intersects(new AABB(pos))) collisions.add(player);
+        }
+        return collisions;
+    }
+}

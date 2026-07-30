@@ -1,0 +1,161 @@
+plugins {
+	id 'java'
+	id 'net.fabricmc.fabric-loom' version '1.17-SNAPSHOT'
+	id 'com.gradleup.shadow' version '9.0.0-beta4'
+	id 'com.github.gmazzo.buildconfig' version '5.5.1'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+	archivesName = project.mod_id
+}
+
+repositories {
+	maven {
+		name = "meteor-maven"
+		url = "https://maven.meteordev.org/releases"
+	}
+	maven {
+		name = "meteor-maven"
+		url = "https://maven.meteordev.org"
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	// Minecraft 26.x ships unobfuscated: the jar already carries Mojang's
+	// official names, so no `mappings` declaration is needed (or possible —
+	// there is no client_mappings artifact for these versions).
+	// Unobfuscated Minecraft: mods no longer need remapping, so plain
+	// `implementation` replaces the old `modImplementation`.
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	implementation(shadow("org.reflections:reflections:0.10.2"))
+	implementation(shadow("meteordevelopment:discord-ipc:1.1"))
+
+	testImplementation "net.jqwik:jqwik:1.9.2"
+	testImplementation "org.junit.jupiter:junit-jupiter:5.11.4"
+	testImplementation "org.mockito:mockito-core:5.14.2"
+	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+}
+
+def getCommitHash = { ->
+	def gitProcess = 'git rev-parse HEAD'.execute()
+	gitProcess.waitFor()
+	return gitProcess.text.trim().take(10)
+}
+
+def getRevisionCount = { ->
+	def gitProcess = 'git rev-list --all --count'.execute()
+	gitProcess.waitFor()
+	return gitProcess.text.trim()
+}
+
+
+buildConfig {
+	className("BuildConstants")
+	packageName(group)
+
+	buildConfigField(String, 'MOD_NAME', project.mod_name)
+	buildConfigField(String, 'MOD_ID', project.mod_id)
+	buildConfigField(String, 'MOD_VERSION', project.mod_version)
+	buildConfigField(String, 'MINECRAFT_VERSION', project.minecraft_version)
+	buildConfigField(String, 'GIT_HASH', getCommitHash())
+	buildConfigField(String, 'GIT_REVISION', getRevisionCount())
+}
+
+processResources {
+	inputs.property "version", project.version
+
+	filesMatching("fabric.mod.json") {
+		expand "version": project.version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+	it.options.compilerArgs += ['-Xmaxerrs', '9000', '-Xmaxwarns', '100']
+}
+
+loom {
+	accessWidenerPath = file("src/main/resources/euclient.accesswidener")
+}
+
+// Lombok wired manually instead of via io.freefair.lombok: that plugin (8.11,
+// built for Gradle 8) silently fails to add Lombok to javac's -processorpath
+// under Gradle 9.6.1, so annotation processing no-ops and no getters/
+// constructors generate. Declaring compileOnly + annotationProcessor directly
+// is the standard, version-agnostic wiring. 1.18.42 supports JDK 25.
+dependencies {
+	compileOnly "org.projectlombok:lombok:1.18.42"
+	annotationProcessor "org.projectlombok:lombok:1.18.42"
+	testCompileOnly "org.projectlombok:lombok:1.18.42"
+	testAnnotationProcessor "org.projectlombok:lombok:1.18.42"
+}
+
+java {
+	withSourcesJar()
+
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+}
+
+test {
+	useJUnitPlatform()
+}
+
+jar {
+	// Unobfuscated Minecraft removes Loom's remapJar step, so the shadow jar is
+	// now the distributable. Give the plain jar a classifier to avoid colliding
+	// with the shadow jar's output name.
+	archiveClassifier.set("slim")
+
+	from("LICENSE") {
+		rename { "${it}_${project.base.archivesName.get()}"}
+	}
+}
+
+shadowJar {
+	configurations = [project.configurations.shadow]
+	// No remap step means this is the final mod jar.
+	archiveClassifier.set("")
+
+	from("LICENSE") {
+		rename { "${it}_${project.base.archivesName.get()}"}
+	}
+
+	doLast {
+		copy {
+			from archiveFile
+			into file('test-proxy/.minecraft/mods')
+		}
+	}
+}
+
+assemble.dependsOn(shadowJar)
+build.dependsOn(shadowJar)
+
+tasks.register("exportMcSources", Copy) {
+    dependsOn "genSources"
+
+    doFirst {
+        def sourceJars = fileTree(".gradle/loom-cache/").matching {
+            include "**/*-sources.jar"
+        }.files
+
+        if (sourceJars.isEmpty()) {
+            throw new GradleException("No sources jar found. Run genSources first.")
+        }
+
+        // Pick the most recent one (usually correct)
+        def latestJar = sourceJars.max { it.lastModified() }
+
+        println "Using sources jar: ${latestJar}"
+
+        from(zipTree(latestJar))
+        into("$buildDir/exported-sources")
+    }
+}

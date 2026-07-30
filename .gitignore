@@ -1,0 +1,23 @@
+.gradle/
+build/
+.idea/
+*.iml
+out/
+run/
+.codegraph/
+.mcref/
+.port/
+.remember/
+.claude/
+
+# scratch/tooling, not needed to build
+parsed.txt
+*.log
+check.sh
+find_real.py
+parse_errors.py
+script.sh
+launcher.sh
+PORT_PLAN.md
+Plan.md
+images/
