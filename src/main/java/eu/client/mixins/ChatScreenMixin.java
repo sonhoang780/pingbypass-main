@@ -20,14 +20,14 @@ public class ChatScreenMixin extends Screen {
         super(title);
     }
 
-    @Inject(method = "sendMessage", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/multiplayer/ClientPacketListener;sendChat(Ljava/lang/String;)V"), cancellable = true)
+    @Inject(method = "handleChatInput", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/multiplayer/ClientPacketListener;sendChat(Ljava/lang/String;)V"), cancellable = true)
     private void sendMessage(String chatText, boolean addToHistory, CallbackInfo info) {
         ChatInputEvent event = new ChatInputEvent(chatText);
         EUClient.EVENT_HANDLER.post(event);
         if (event.isCancelled()) info.cancel();
     }
 
-    @Inject(method = "sendMessage", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/multiplayer/ClientPacketListener;sendCommand(Ljava/lang/String;)V"), cancellable = true)
+    @Inject(method = "handleChatInput", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/multiplayer/ClientPacketListener;sendCommand(Ljava/lang/String;)V"), cancellable = true)
     private void sendCommand(String chatText, boolean addToHistory, CallbackInfo info) {
         CommandInputEvent event = new CommandInputEvent(chatText);
         EUClient.EVENT_HANDLER.post(event);

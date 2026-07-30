@@ -35,7 +35,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public abstract class MinecraftClientMixin implements IMinecraft {
     @Shadow @Nullable public LocalPlayer player;
 
-    @Shadow private int itemUseCooldown;
+    @Shadow private int rightClickDelay;
 
     @Shadow @Final public Options options;
 
@@ -46,12 +46,12 @@ public abstract class MinecraftClientMixin implements IMinecraft {
 
     @Shadow @Nullable public Entity crosshairPickEntity;
 
-    @Inject(method = "<init>", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/Minecraft;setOverlay(Lnet/minecraft/client/gui/screen/Overlay;)V", shift = At.Shift.BEFORE))
+    @Inject(method = "<init>", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/Minecraft;setOverlay(Lnet/minecraft/client/gui/screens/Overlay;)V", shift = At.Shift.BEFORE))
     private void init(GameConfig args, CallbackInfo info) {
         EUClient.onPostInitialize();
     }
 
-    @Inject(method = "render", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/Minecraft;runTasks()V", shift = At.Shift.AFTER))
+    @Inject(method = "renderFrame", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/Minecraft;runAllTasks()V", shift = At.Shift.AFTER))
     private void runTickHook(boolean tick, CallbackInfo info) {
         EUClient.EVENT_HANDLER.post(new GameLoopEvent());
     }
@@ -61,20 +61,20 @@ public abstract class MinecraftClientMixin implements IMinecraft {
         EUClient.EVENT_HANDLER.post(new TickEvent());
     }
 
-    @Inject(method = "doItemUse", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/network/LocalPlayer;isRiding()Z", ordinal = 0, shift = At.Shift.BEFORE))
+    @Inject(method = "startUseItem", at = @At("HEAD"))
     private void doItemUse(CallbackInfo info) {
         if (EUClient.MODULE_MANAGER != null && EUClient.MODULE_MANAGER.getModule(FastPlaceModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(FastPlaceModule.class).isValidItem(player.getMainHandItem().getItem())) {
-            itemUseCooldown = EUClient.MODULE_MANAGER.getModule(FastPlaceModule.class).ticks.getValue().intValue();
+            rightClickDelay = EUClient.MODULE_MANAGER.getModule(FastPlaceModule.class).ticks.getValue().intValue();
         }
     }
 
-    @ModifyExpressionValue(method = "handleBlockBreaking", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/network/LocalPlayer;isUsingItem()Z"))
+    @ModifyExpressionValue(method = "continueAttack", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/player/LocalPlayer;isUsingItem()Z"))
     private boolean handleBlockBreaking(boolean original) {
         if (EUClient.MODULE_MANAGER != null && EUClient.MODULE_MANAGER.getModule(MultiTaskModule.class).isToggled()) return false;
         return original;
     }
 
-    @ModifyExpressionValue(method = "doItemUse", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/network/ClientPlayerInteractionManager;isBreakingBlock()Z"))
+    @ModifyExpressionValue(method = "startUseItem", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/multiplayer/MultiPlayerGameMode;isDestroying()Z"))
     private boolean handleInputEvents(boolean original) {
         if (EUClient.MODULE_MANAGER != null && EUClient.MODULE_MANAGER.getModule(MultiTaskModule.class).isToggled()) return false;
         return original;
