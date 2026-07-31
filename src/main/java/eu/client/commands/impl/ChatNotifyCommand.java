@@ -7,9 +7,24 @@ import eu.client.modules.Module;
 import eu.client.utils.chat.ChatUtils;
 
 import java.util.ArrayList;
+import java.util.List;
 
 @RegisterCommand(name = "chatnotify", tag = "ChatNotify", description = "Manages the toggle notification status of the client's modules.", syntax = "<true|false|list|reset> | <[module]> <true|false|reset>")
 public class ChatNotifyCommand extends Command {
+    @Override
+    public List<String> getSuggestions(String[] args) {
+        if (args.length == 0) {
+            List<String> names = new ArrayList<>(moduleNames());
+            names.add("true");
+            names.add("false");
+            names.add("list");
+            names.add("reset");
+            return names;
+        }
+        if (args.length == 1 && EUClient.MODULE_MANAGER.getModule(args[0]) != null) return List.of("true", "false", "reset");
+        return List.of();
+    }
+
     @Override
     public void execute(String[] args) {
         if (args.length == 2) {

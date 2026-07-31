@@ -2,12 +2,18 @@ package eu.client.utils.font;
 
 import it.unimi.dsi.fastutil.chars.Char2ObjectArrayMap;
 import lombok.Getter;
+import eu.client.mixins.accessors.AbstractTextureAccessor;
 import eu.client.mixins.accessors.NativeImageAccessor;
 import com.mojang.blaze3d.platform.NativeImage;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.textures.AddressMode;
+import com.mojang.blaze3d.textures.FilterMode;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.resources.Identifier;
 import org.lwjgl.system.MemoryUtil;
+
+import java.util.OptionalDouble;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -151,6 +157,14 @@ public class GlyphMap {
         this.texture = texture;
         this.textureId = Identifier.fromNamespaceAndPath("euclient", "glyph_page_" + page);
         Minecraft.getInstance().getTextureManager().register(this.textureId, texture);
+
+        // Glyphs are rasterized with real antialiasing (see privateGenerate above), but the default
+        // sampler is nearest-neighbor -- fine for vanilla's pixel-art fonts, but it re-introduces
+        // blocky/jagged edges on our smooth AWT-rendered glyphs once scaled in world-space nametags.
+        // Linear-filter this atlas so the AA we already baked into the pixels actually shows.
+        ((AbstractTextureAccessor) (Object) texture).setSampler(RenderSystem.getDevice().createSampler(
+                AddressMode.CLAMP_TO_EDGE, AddressMode.CLAMP_TO_EDGE,
+                FilterMode.LINEAR, FilterMode.LINEAR, 1, OptionalDouble.empty()));
 
         generated = true;
     }

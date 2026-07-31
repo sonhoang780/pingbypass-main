@@ -56,7 +56,6 @@ public class NameTagsModule extends Module {
     public ColorSetting fillColor = new ColorSetting("FillColor", "The color that will be used for the fill rendering.", new ModeSetting.Visibility(border, "Fill", "Both"), new ColorSetting.Color(new Color(0, 0, 0, 100), false, false));
     public ColorSetting outlineColor = new ColorSetting("OutlineColor", "The color that will be used for the outline rendering.", new ModeSetting.Visibility(border, "Outline", "Both"), new ColorSetting.Color(new Color(0, 0, 0, 100), false, false));
 
-
     @SubscribeEvent
     public void onRenderWorld(RenderWorldEvent.Post event) {
         PoseStack matrices = event.getMatrices();
@@ -122,13 +121,13 @@ public class NameTagsModule extends Module {
                 int stackX = -(108 / 2) + (i * 18) + 1;
                 int stackY = -EUClient.FONT_MANAGER.getHeight() - 1 - (items.getValue() ? 18 + maxEnchants : 1);
 
-                // ponytail: 3D item-model rendering dropped here. The old ItemRenderer/BakedModel
-                // immediate-mode API (getItemGlintConsumer/renderBakedItemModel) is gone in 26.1.2 —
-                // item models now render exclusively through SubmitNodeCollector (a per-frame object
-                // handed down by the game's own render pass), which isn't available to reach into
-                // from an out-of-band HUD/nametag draw call. Re-add when a SubmitNodeCollector hook
-                // is wired up for standalone item rendering (see HeldItemRendererMixin, same blocker).
                 if (items.getValue()) {
+                    matrices.pushPose();
+                    matrices.translate(stackX + 8, stackY + 8, 0);
+                    matrices.scale(16, -16, -0.001f);
+                    Renderer3D.renderItem(matrices, stack, player, vertexConsumers);
+                    matrices.popPose();
+
                     if (stack.getItem().equals(Items.ENCHANTED_GOLDEN_APPLE)) {
                         matrices.pushPose();
                         matrices.translate(stackX, stackY, 0);

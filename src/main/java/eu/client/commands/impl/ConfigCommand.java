@@ -7,9 +7,16 @@ import eu.client.utils.chat.ChatUtils;
 import eu.client.utils.system.FileUtils;
 
 import java.io.IOException;
+import java.util.List;
 
 @RegisterCommand(name = "config", tag = "Config", description = "Allows you to manage the client's configuration system.", syntax = "<load|save> <[name]> | <reload|save|current>")
 public class ConfigCommand extends Command {
+    @Override
+    public List<String> getSuggestions(String[] args) {
+        if (args.length == 0) return List.of("load", "save", "reload", "current");
+        return List.of();
+    }
+
     @Override
     public void execute(String[] args) {
         if (args.length == 2) {

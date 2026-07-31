@@ -8,9 +8,21 @@ import eu.client.utils.chat.ChatUtils;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
+import java.util.List;
 
 @RegisterCommand(name = "waypoint", tag = "Waypoint", description = "Allows you to manage the client's custom waypoints.", syntax = "<add|del> <[x, y, z]|[x, z]> | <clear|list>", aliases = {"w"})
 public class WaypointCommand extends Command {
+
+    @Override
+    public List<String> getSuggestions(String[] args) {
+        if (args.length == 0) return List.of("add", "del", "clear", "list");
+        if (args.length == 1 && args[0].equalsIgnoreCase("del")) {
+            List<String> names = new ArrayList<>();
+            for (var waypoint : EUClient.WAYPOINT_MANAGER.getWaypoints()) names.add(waypoint.getName());
+            return names;
+        }
+        return List.of();
+    }
 
     @Override
     public void execute(String[] args) {

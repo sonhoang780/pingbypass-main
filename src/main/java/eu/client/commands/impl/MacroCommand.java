@@ -7,9 +7,16 @@ import eu.client.utils.chat.ChatUtils;
 import eu.client.utils.input.KeyboardUtils;
 
 import java.util.Arrays;
+import java.util.List;
 
 @RegisterCommand(name = "macro", tag = "Macro", description = "Allows you to manage the client's macro system.", syntax = "add <[key]> <[message]> | remove <[key]> | <clear|list>")
 public class MacroCommand extends Command {
+    @Override
+    public List<String> getSuggestions(String[] args) {
+        if (args.length == 0) return List.of("add", "remove", "clear", "list");
+        return List.of();
+    }
+
     @Override
     public void execute(String[] args) {
         if (args.length >= 3) {

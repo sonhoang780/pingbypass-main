@@ -6,8 +6,15 @@ import eu.client.commands.RegisterCommand;
 import eu.client.utils.chat.ChatUtils;
 import net.minecraft.util.Util;
 
+import java.util.List;
+
 @RegisterCommand(name = "grab", description = "Lets you copy various things to your clipboard.", syntax = "<ip|coords|name>")
 public class GrabCommand extends Command {
+    @Override
+    public List<String> getSuggestions(String[] args) {
+        return args.length == 0 ? List.of("ip", "coords", "name") : List.of();
+    }
+
     @Override
     public void execute(String[] args) {
         if (args.length == 1) {

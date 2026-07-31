@@ -107,6 +107,14 @@ public class ChatManager implements IMinecraft {
     }
 
     private void addTextMessage(Component message, String identifier) {
+        // Font glyph baking uploads to the GPU and RenderSystem hard-asserts render-thread
+        // ownership in 26.1.2. Callers can reach this from off-thread contexts (e.g. packet
+        // listeners run synchronously on the Netty IO thread), so hop to the render thread.
+        if (!mc.isSameThread()) {
+            mc.execute(() -> addTextMessage(message, identifier));
+            return;
+        }
+
         GuiMessage line = new GuiMessage(mc.gui.getGuiTicks(), message, null, GuiMessageSource.SYSTEM_CLIENT, GuiMessageTag.system());
 
         ((IChatHudLine) (Object) line).euclient$setClientMessage(true);

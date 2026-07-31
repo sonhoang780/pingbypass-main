@@ -31,7 +31,7 @@ public class FontModule extends Module {
 
     @SubscribeEvent
     public void onSettingChange(SettingChangeEvent event) {
-        if (event.getSetting() == name || event.getSetting() == size || event.getSetting() == style) {
+        if (event.getSetting() == name || event.getSetting() == size || event.getSetting() == style || event.getSetting() == customFont) {
             updateFontRenderer();
         }
     }

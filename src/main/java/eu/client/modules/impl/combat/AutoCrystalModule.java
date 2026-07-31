@@ -66,6 +66,7 @@ public class AutoCrystalModule extends Module {
     public ModeSetting placements = new ModeSetting("Placements", "The version of the game that will be used for crystal placement calculations.", new CategorySetting.Visibility(placeCategory), "Native", new String[]{"Native", "Protocol"});
     public BooleanSetting blockDestruction = new BooleanSetting("BlockDestruction", "Places crystals on top of mined blocks in order to damage opponents.", new CategorySetting.Visibility(placeCategory), true);
     public ModeSetting autoSwitch = new ModeSetting("Switch", "Automatically switches to a crystal if you aren't currently holding one.", new CategorySetting.Visibility(placeCategory), "None", new String[]{"None", "Normal", "Silent", "AltSwap"});
+    public BooleanSetting swapBack = new BooleanSetting("SwapBack", "Switches back to the item you were holding before the module started switching to crystals, once the module is disabled.", new ModeSetting.Visibility(autoSwitch, "Normal"), false);
 
     public CategorySetting miscellaneousCategory = new CategorySetting("Miscellaneous", "The category for all miscellaneous settings.");
     public ModeSetting sequential = new ModeSetting("Sequential", "The sequence that the module's processes will be run in.", new CategorySetting.Visibility(miscellaneousCategory), "Strong", new String[]{"None", "Strict", "Strong"});
@@ -158,6 +159,12 @@ public class AutoCrystalModule extends Module {
 
     private int highestID = -100000;
     private int kickTicks = 0;
+
+    // SwapBack (Switch=Normal only): captured the FIRST time we switch away from a non-crystal item
+    // and left alone on every placement after that -- placeCrystals() reads the CURRENT selected slot
+    // as "previousSlot" each call, which after the first switch would just be the crystal slot itself,
+    // not the real original item. Restored once, when the module is disabled, not after every place.
+    private int savedSlot = -1;
 
     @SubscribeEvent
     public void onPlayerUpdate(PlayerUpdateEvent event) {
@@ -334,6 +341,7 @@ public class AutoCrystalModule extends Module {
         boolean flag = module.switchReset.getValue() && (module.switchMode.getValue().equalsIgnoreCase("Normal") || module.switchMode.getValue().equalsIgnoreCase("AltSwap") || module.switchMode.getValue().equalsIgnoreCase("AltPickup"));
 
         if (!autoSwitch.getValue().equalsIgnoreCase("None") &&  mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
+            if (!flag && autoSwitch.getValue().equalsIgnoreCase("Normal") && swapBack.getValue() && savedSlot == -1) savedSlot = previousSlot;
             InventoryUtils.switchSlot(flag ? "AltSwap" : autoSwitch.getValue(), slot, previousSlot);
             switched = true;
         }
@@ -379,6 +387,11 @@ public class AutoCrystalModule extends Module {
 
     @Override
     public void onDisable() {
+        if (savedSlot != -1) {
+            InventoryUtils.switchBackNormal(savedSlot);
+            savedSlot = -1;
+        }
+
         attackRunnable = null;
         placeRunnable = null;
 
@@ -493,6 +506,7 @@ public class AutoCrystalModule extends Module {
             if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(position).add(0, 1, 0)));
 
             if (mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
+                if (autoSwitch.getValue().equalsIgnoreCase("Normal") && swapBack.getValue() && savedSlot == -1) savedSlot = previousSlot;
                 InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
                 switched = true;
             }

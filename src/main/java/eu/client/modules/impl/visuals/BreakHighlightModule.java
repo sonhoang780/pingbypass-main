@@ -49,7 +49,7 @@ public class BreakHighlightModule extends Module {
             if(mc.level.getBlockState(mine.pos).getBlock().equals(Blocks.AIR)) return;
 
             float scale = Easing.toDelta(mine.time, (int) mine.breakTime);
-            AABB box = new AABB(mine.pos).contract(0.5, 0.5, 0.5).inflate(scale / 2.0);
+            AABB box = new AABB(mine.pos).deflate(0.5).inflate(scale / 2.0);
             if (mode.getValue().equalsIgnoreCase("Fill") || mode.getValue().equalsIgnoreCase("Both")) Renderer3D.renderBox(event.getMatrices(), box, fillColor.getColor());
             if (mode.getValue().equalsIgnoreCase("Outline") || mode.getValue().equalsIgnoreCase("Both")) Renderer3D.renderBoxOutline(event.getMatrices(), box, outlineColor.getColor());
         });

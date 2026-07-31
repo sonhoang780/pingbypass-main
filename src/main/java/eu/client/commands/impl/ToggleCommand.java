@@ -9,8 +9,27 @@ import eu.client.settings.impl.BooleanSetting;
 import eu.client.utils.chat.ChatUtils;
 import net.minecraft.ChatFormatting;
 
+import java.util.List;
+
 @RegisterCommand(name = "toggle", tag = "Toggle", description = "Toggles a specified module or a setting on and off.", syntax = "<[module]> | <[module]> <[setting]>", aliases = {"t"})
 public class ToggleCommand extends Command {
+    @Override
+    public List<String> getSuggestions(String[] args) {
+        if (args.length == 0) return moduleNames();
+
+        if (args.length == 1) {
+            Module module = EUClient.MODULE_MANAGER.getModule(args[0]);
+            if (module == null) return List.of();
+
+            return module.getSettings().stream()
+                    .filter(s -> s instanceof BooleanSetting)
+                    .map(s -> s.getName().toLowerCase())
+                    .toList();
+        }
+
+        return List.of();
+    }
+
     @Override
     public void execute(String[] args) {
         if (args.length == 1 || args.length == 2) {

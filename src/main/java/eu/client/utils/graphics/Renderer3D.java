@@ -1,16 +1,37 @@
 package eu.client.utils.graphics;
 
+import com.mojang.blaze3d.pipeline.BlendFunction;
+import com.mojang.blaze3d.pipeline.ColorTargetState;
+import com.mojang.blaze3d.pipeline.DepthStencilState;
+import com.mojang.blaze3d.pipeline.RenderPipeline;
+import com.mojang.blaze3d.platform.CompareOp;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.MeshData;
 import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.vertex.QuadInstance;
 import com.mojang.blaze3d.vertex.Tesselator;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import eu.client.EUClient;
+import eu.client.mixins.accessors.ItemStackRenderStateAccessor;
+import eu.client.mixins.accessors.LayerRenderStateAccessor;
+import eu.client.mixins.accessors.RenderPipelinesAccessor;
 import eu.client.utils.IMinecraft;
+import it.unimi.dsi.fastutil.ints.IntList;
 import net.minecraft.client.renderer.MultiBufferSource;
-import net.minecraft.client.renderer.rendertype.RenderTypes;
+import net.minecraft.client.renderer.feature.ItemFeatureRenderer;
+import net.minecraft.client.renderer.item.ItemStackRenderState;
+import net.minecraft.client.renderer.rendertype.RenderSetup;
+import net.minecraft.client.renderer.rendertype.RenderSetup.OutlineProperty;
+import net.minecraft.client.renderer.rendertype.RenderType;
+import net.minecraft.client.renderer.texture.OverlayTexture;
+import net.minecraft.client.resources.model.geometry.BakedQuad;
+import net.minecraft.resources.Identifier;
+import net.minecraft.util.LightCoordsUtil;
+import net.minecraft.world.entity.ItemOwner;
+import net.minecraft.world.item.ItemDisplayContext;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
@@ -19,10 +40,33 @@ import org.lwjgl.opengl.GL11;
 
 import java.awt.*;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 public class Renderer3D implements IMinecraft {
     public static boolean RENDERING = false;
+
+    // PORT: the 1.21.4 renderer wrapped every draw in RenderSystem.disableDepthTest()/
+    // enableDepthTest() so ESP-style boxes/lines always show through solid terrain. That
+    // imperative API is gone in 26.1.2 -- depth testing is now baked into the RenderPipeline
+    // itself. RenderTypes.debugQuads()/lines() keep depth *testing* on (only depth *writing* is
+    // off), so our boxes get occluded by whatever block they're drawn inside of (Expand needed
+    // "phasing into" the block to see it; Rise z-fought against the block's own top face at
+    // progress~1.0). Clone the same snippets with CompareOp.ALWAYS_PASS to restore the old
+    // always-visible behavior.
+    private static final RenderType NO_DEPTH_QUADS = RenderType.create("euclient_no_depth_quads",
+            RenderSetup.builder(RenderPipeline.builder(new RenderPipeline.Snippet[]{RenderPipelinesAccessor.getDebugFilledSnippet()})
+                    .withLocation("euclient/no_depth_quads")
+                    .withCull(false)
+                    .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
+                    .build()).sortOnUpload().createRenderSetup());
+
+    private static final RenderType NO_DEPTH_LINES = RenderType.create("euclient_no_depth_lines",
+            RenderSetup.builder(RenderPipeline.builder(new RenderPipeline.Snippet[]{RenderPipelinesAccessor.getLinesSnippet()})
+                    .withLocation("euclient/no_depth_lines")
+                    .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
+                    .build()).createRenderSetup());
 
     public static List<VertexCollection> QUADS = new ArrayList<>();
     public static List<VertexCollection> DEBUG_LINES = new ArrayList<>();
@@ -148,6 +192,94 @@ public class Renderer3D implements IMinecraft {
                 new Vertex(matrix, (float) to.x, (float) to.y, (float) to.z, color.getRGB())));
     }
 
+    // PORT: 1.21.4 rendered nametag items immediately -- walk the ItemRenderState's layers, apply
+    // each layer's transform, push its baked quads straight into the shared VertexConsumerProvider,
+    // then draw(). The public 26.1.2 replacement (ItemStackRenderState.submit) instead *defers* into
+    // GameRenderer's SubmitNodeStorage, which only drains inside vanilla's own renderAllFeatures()
+    // pass -- a different point in the frame under a different projection. Every attempt to bridge
+    // that gap (early-flushing the dispatcher, or bouncing items through the 2D GUI item path) either
+    // mispositioned the icons or made them flicker, because the queue's lifetime doesn't line up with
+    // our render event. So mirror the original exactly: same layer walk, immediate quads, same
+    // ItemFeatureRenderer.renderItem() emit logic, nothing queued.
+    private static final QuadInstance QUAD_INSTANCE = new QuadInstance();
+    private static final ItemStackRenderState ITEM_RENDER_STATE = new ItemStackRenderState();
+
+    // 1.21.4 wrapped the whole item render block in GL11.glDepthFunc(GL_ALWAYS) so nametag items
+    // stayed visible through terrain (same reasoning as NO_DEPTH_QUADS/LINES above). Raw GL calls
+    // don't work against this pipeline (depth state is baked per-RenderType, not global GL state,
+    // and would get clobbered whenever the buffer actually flushes at endBatch() later) -- so build
+    // no-depth clones of the two RenderTypes item quads actually use (vanilla's BakedQuad.MaterialInfo
+    // only ever resolves to one of Sheets.cutout/translucentItemSheet(), both backed by ITEM_CUTOUT/
+    // ITEM_TRANSLUCENT), keyed by atlas texture like vanilla's own memoized item RenderTypes are.
+    private static final Map<Identifier, RenderType> NO_DEPTH_ITEM_CUTOUT = new HashMap<>();
+    private static final Map<Identifier, RenderType> NO_DEPTH_ITEM_TRANSLUCENT = new HashMap<>();
+
+    private static RenderType noDepthItemRenderType(BakedQuad.MaterialInfo material) {
+        boolean translucent = material.layer().translucent();
+        Identifier texture = material.sprite().atlasLocation();
+        Map<Identifier, RenderType> cache = translucent ? NO_DEPTH_ITEM_TRANSLUCENT : NO_DEPTH_ITEM_CUTOUT;
+
+        return cache.computeIfAbsent(texture, t -> {
+            RenderPipeline.Builder pipelineBuilder = RenderPipeline.builder(new RenderPipeline.Snippet[]{RenderPipelinesAccessor.getItemSnippet()})
+                    .withLocation(translucent ? "euclient/no_depth_item_translucent" : "euclient/no_depth_item_cutout")
+                    .withShaderDefine("ALPHA_CUTOUT", 0.1F)
+                    .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false));
+            if (translucent) pipelineBuilder.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT));
+
+            return RenderType.create(translucent ? "euclient_no_depth_item_translucent" : "euclient_no_depth_item_cutout",
+                    RenderSetup.builder(pipelineBuilder.build())
+                            .withTexture("Sampler0", t)
+                            .useLightmap()
+                            .affectsCrumbling()
+                            .setOutline(OutlineProperty.AFFECTS_OUTLINE)
+                            .createRenderSetup());
+        });
+    }
+
+    public static void renderItem(PoseStack matrices, ItemStack stack, ItemOwner owner, MultiBufferSource.BufferSource vertexConsumers) {
+        if (!RENDERING || stack.isEmpty()) return;
+
+        ITEM_RENDER_STATE.clear();
+        mc.getItemModelResolver().updateForTopItem(ITEM_RENDER_STATE, stack, ItemDisplayContext.GUI, mc.level, owner, 0);
+
+        ItemStackRenderStateAccessor stateAccessor = (ItemStackRenderStateAccessor) ITEM_RENDER_STATE;
+        QUAD_INSTANCE.setLightCoords(LightCoordsUtil.FULL_BRIGHT);
+        QUAD_INSTANCE.setOverlayCoords(OverlayTexture.NO_OVERLAY);
+
+        for (int i = 0; i < stateAccessor.euclient$getActiveLayerCount(); i++) {
+            LayerRenderStateAccessor layer = (LayerRenderStateAccessor) stateAccessor.euclient$getLayers()[i];
+
+            matrices.pushPose();
+            layer.euclient$applyTransform(matrices.last());
+
+            IntList tints = layer.euclient$getTintLayers();
+            int[] tintLayers = tints != null ? tints.toArray(new int[0]) : new int[0];
+            boolean hasFoil = layer.euclient$getFoilType() != ItemStackRenderState.FoilType.NONE;
+
+            for (BakedQuad quad : layer.euclient$getQuads()) {
+                BakedQuad.MaterialInfo material = quad.materialInfo();
+                RenderType renderType = noDepthItemRenderType(material);
+
+                int tintIndex = material.isTinted() ? material.tintIndex() : -1;
+                QUAD_INSTANCE.setColor(tintIndex >= 0 && tintIndex < tintLayers.length ? tintLayers[tintIndex] : -1);
+
+                if (hasFoil) {
+                    vertexConsumers.getBuffer(ItemFeatureRenderer.getFoilRenderType(renderType, true)).putBakedQuad(matrices.last(), quad, QUAD_INSTANCE);
+                }
+
+                vertexConsumers.getBuffer(renderType).putBakedQuad(matrices.last(), quad, QUAD_INSTANCE);
+            }
+
+            matrices.popPose();
+        }
+
+        // Do NOT endBatch() here -- this runs once per queued item. The foil/glint render types are
+        // translucent and depend on being sorted against the rest of the frame's translucent geometry;
+        // flushing them piecemeal per item (a different subset each call) made the sort order flicker
+        // frame to frame. GameRendererMixin.renderWorld$swap already does a single endBatch() once all
+        // nametags for the frame have been queued -- let that flush everything together, same as text.
+    }
+
     public static void renderScaledText(PoseStack matrices, String text, double x, double y, double z, int scale, boolean background, Color color) {
         Vec3 cam = mc.gameRenderer.getMainCamera().position();
         float distance = (float) Math.sqrt(cam.distanceToSqr(x, y, z));
@@ -193,7 +325,7 @@ public class Renderer3D implements IMinecraft {
             for (VertexCollection collection : quads) collection.quad(buffer);
 
             MeshData mesh = buffer.build();
-            if (mesh != null) RenderTypes.debugQuads().draw(mesh);
+            if (mesh != null) NO_DEPTH_QUADS.draw(mesh);
         }
 
         if (!debugLines.isEmpty()) {
@@ -216,12 +348,20 @@ public class Renderer3D implements IMinecraft {
             }
 
             MeshData mesh = buffer.build();
-            if (mesh != null) RenderTypes.lines().draw(mesh);
+            if (mesh != null) NO_DEPTH_LINES.draw(mesh);
 
             GL11.glDisable(GL11.GL_LINE_SMOOTH);
         }
 
         RenderSystem.getDevice();
+
+        // draw() is called twice per frame now (once before RenderWorldEvent, once after --
+        // see GameRendererMixin) so Post-phase callers (e.g. NameTagsModule's border, which needs
+        // to run after text width is known) still get drawn this frame instead of being silently
+        // dropped when prepare() wipes the list at the start of the next frame. Clear after each
+        // pass so the first draw() call doesn't repaint stale entries during the second.
+        quads.clear();
+        debugLines.clear();
     }
 
     public static boolean isFrustumVisible(AABB box) {

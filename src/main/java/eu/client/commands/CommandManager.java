@@ -11,6 +11,7 @@ import org.reflections.Reflections;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 @Getter @Setter
 public class CommandManager {
@@ -60,5 +61,39 @@ public class CommandManager {
 
     public Command getCommand(String name) {
         return commands.stream().filter(c -> c.getName().equalsIgnoreCase(name.toLowerCase()) || c.getAliases().contains(name.toLowerCase())).findFirst().orElse(null);
+    }
+
+    // Chat-bar suggestion list for the raw text currently in the input box (prefix included).
+    // Returns candidates for whichever token is still being typed, already filtered to ones that
+    // start with it -- the caller (ChatScreenMixin) just needs to render the list.
+    public List<String> getSuggestions(String rawInput) {
+        if (!rawInput.startsWith(prefix)) return List.of();
+
+        String input = rawInput.substring(prefix.length());
+        // -1 limit keeps a trailing empty token when the string ends in a space, so
+        // ".module hud " (about to type the setting name) is treated as a fresh, empty token.
+        String[] split = input.split(" ", -1);
+
+        if (split.length <= 1) {
+            String partial = split.length == 0 ? "" : split[0].toLowerCase();
+            return commands.stream()
+                    .map(Command::getName)
+                    .distinct()
+                    .filter(name -> name.toLowerCase().startsWith(partial))
+                    .sorted()
+                    .toList();
+        }
+
+        Command command = getCommand(split[0]);
+        if (command == null) return List.of();
+
+        String partial = split[split.length - 1].toLowerCase();
+        String[] priorArgs = Arrays.copyOfRange(split, 1, split.length - 1);
+
+        return command.getSuggestions(priorArgs).stream()
+                .filter(suggestion -> suggestion.toLowerCase().startsWith(partial))
+                .distinct()
+                .sorted()
+                .toList();
     }
 }

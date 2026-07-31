@@ -5,8 +5,15 @@ import eu.client.commands.Command;
 import eu.client.commands.RegisterCommand;
 import eu.client.utils.chat.ChatUtils;
 
+import java.util.List;
+
 @RegisterCommand(name = "prefix", tag = "Prefix", description = "Allows you to change the client's command prefix.", syntax = "<[input]> | <reset>")
 public class PrefixCommand extends Command {
+    @Override
+    public List<String> getSuggestions(String[] args) {
+        return args.length == 0 ? List.of("reset") : List.of();
+    }
+
     @Override
     public void execute(String[] args) {
         if (args.length == 1) {

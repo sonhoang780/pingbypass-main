@@ -315,6 +315,27 @@ public class WorldUtils implements IMinecraft {
         return "N/A";
     }
 
+    private static final String[] FACING_NAMES = {"South", "South West", "West", "North West", "North", "North East", "East", "South East"};
+    private static final String[] FACING_AXES = {"+Z", "-X +Z", "-X", "-X -Z", "-Z", "+X -Z", "+X", "+X +Z"};
+
+    // Direction.getName() only snaps to one of the 4 cardinal axes, so a diagonal yaw (e.g. facing
+    // exactly between +X and -Z) reports just one of them. Bucket the raw yaw into 8 octants instead
+    // so diagonal facings report both axis components (e.g. "+X -Z"), matching vanilla's own F3 debug
+    // direction readout (which does the same 8-way "South West"/"North East" style naming).
+    public static String getFacingName(float yaw) {
+        return FACING_NAMES[getFacingOctant(yaw)];
+    }
+
+    public static String getFacingAxes(float yaw) {
+        return FACING_AXES[getFacingOctant(yaw)];
+    }
+
+    private static int getFacingOctant(float yaw) {
+        float angle = yaw % 360.0f;
+        if (angle < 0) angle += 360.0f;
+        return Math.round(angle / 45.0f) % 8;
+    }
+
     public static float getBreakTime(Player player, BlockState blockState) {
         if (player == null) return 0.0f;
 
@@ -345,7 +366,7 @@ public class WorldUtils implements IMinecraft {
         if (mc.player.isEyeInFluid(FluidTags.WATER) && !(EnchantmentHelper.getEnchantmentLevel(mc.level.registryAccess().lookupOrThrow(Registries.ENCHANTMENT).getOrThrow(Enchantments.AQUA_AFFINITY), mc.player) > 0)) speed /= 5.0f;
         if (!mc.player.onGround()) speed /= 5.0f;
 
-        return speed / blockState.getBlock().defaultDestroyTime() / (mc.player.hasCorrectToolForDrops(blockState) ? 30 : 100);
+        return speed / blockState.getBlock().defaultDestroyTime() / (!blockState.requiresCorrectToolForDrops() || mc.player.getInventory().getItem(slot).isCorrectToolForDrops(blockState) ? 30 : 100);
     }
 
     public static float getMineSpeed(BlockState state, int slot) {
@@ -364,7 +385,7 @@ public class WorldUtils implements IMinecraft {
         if (!mc.player.onGround()) speed /= 5;
 
         speed = speed < 0 ? 0 : speed;
-        return speed / state.getBlock().defaultDestroyTime() / (mc.player.hasCorrectToolForDrops(state) ? 30 : 100);
+        return speed / state.getBlock().defaultDestroyTime() / (!state.requiresCorrectToolForDrops() || mc.player.getInventory().getItem(slot).isCorrectToolForDrops(state) ? 30 : 100);
     }
 
     public static boolean blocksMovement(BlockState state) {

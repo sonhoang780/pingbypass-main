@@ -2,14 +2,19 @@
 
 #define Width 3
 
-uniform sampler2D DiffuseSampler;
+uniform sampler2D InSampler;
+
+layout(std140) uniform SamplerInfo {
+    vec2 OutSize;
+    vec2 InSize;
+};
+
+layout(std140) uniform OutlineConfig {
+    int RenderMode;
+    float FillOpacity;
+};
 
 in vec2 texCoord;
-in vec2 oneTexel;
-
-uniform vec2 InSize;
-uniform int RenderMode;
-uniform float FillOpacity;
 
 out vec4 fragColor;
 
@@ -18,9 +23,10 @@ float quad(float x) {
 }
 
 void main() {
+    vec2 oneTexel = 1.0 / InSize;
     float divider = 5;
     float maxSample = 3;
-    vec4 current = texture(DiffuseSampler, texCoord);
+    vec4 current = texture(InSampler, texCoord);
 
     if (current.a != 0) {
         if (RenderMode == 1) discard;
@@ -31,10 +37,10 @@ void main() {
 
         for (float x = -Width; x < Width; x++) {
             for (float y = -Width; y < Width; y++) {
-                vec4 texture = texture(DiffuseSampler, texCoord + vec2(x, y) * oneTexel);
+                vec4 texel = texture(InSampler, texCoord + vec2(x, y) * oneTexel);
 
-                if (texture.a != 0) {
-                    current = texture;
+                if (texel.a != 0) {
+                    current = texel;
                     alpha += max(0, (maxSample - distance(vec2(x, y), vec2(0))) / divider);
                 }
             }

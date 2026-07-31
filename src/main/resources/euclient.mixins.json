@@ -21,6 +21,8 @@
     "accessors.ConnectionAccessor",
     "accessors.CustomPayloadC2SPacketAccessor",
     "accessors.EntityAccessor",
+    "accessors.ItemStackRenderStateAccessor",
+    "accessors.LayerRenderStateAccessor",
     "accessors.LimbAnimatorAccessor",
     "accessors.PlayerListS2CPacketAccessor",
     "accessors.PlayerMoveC2SPacketAccessor",
@@ -73,6 +75,7 @@
     "TextRendererMixin",
     "TitleScreenMixin",
     "WorldRendererMixin",
+    "accessors.AbstractTextureAccessor",
     "accessors.ChatHudAccessor",
     "accessors.ClientInputAccessor",
     "accessors.ClientPlayerEntityAccessor",
@@ -84,6 +87,7 @@
     "accessors.MinecraftClientAccessor",
     "accessors.MouseAccessor",
     "accessors.NativeImageAccessor",
-    "accessors.PostEffectProcessorAccessor"
+    "accessors.PostEffectProcessorAccessor",
+    "accessors.RenderPipelinesAccessor"
   ]
 }

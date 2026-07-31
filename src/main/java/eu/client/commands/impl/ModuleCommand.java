@@ -15,7 +15,9 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.item.Item;
 
 import java.awt.*;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 @RegisterCommand(name = "module", tag = "Module", description = "Allows you to view and change this module's settings.", syntax = "<[setting]> <[...]> | <list|reset>")
 public class ModuleCommand extends Command {
@@ -26,6 +28,47 @@ public class ModuleCommand extends Command {
 
         setName(module.getName().toLowerCase());
         setTag(module.getName());
+    }
+
+    @Override
+    public List<String> getSuggestions(String[] args) {
+        if (args.length == 0) {
+            List<String> names = new ArrayList<>();
+            names.add("list");
+            names.add("reset");
+            for (Setting setting : module.getSettings()) {
+                if (!(setting instanceof CategorySetting)) names.add(setting.getName().toLowerCase());
+            }
+            return names;
+        }
+
+        if (args.length == 1) {
+            Setting uncastedSetting = module.getSetting(args[0]);
+            if (uncastedSetting == null) return List.of();
+
+            return switch (uncastedSetting) {
+                case BooleanSetting ignored -> List.of("true", "false", "reset");
+                case NumberSetting ignored -> List.of("reset");
+                case ModeSetting setting -> {
+                    List<String> modes = new ArrayList<>(setting.getModes());
+                    modes.add("reset");
+                    modes.add("list");
+                    yield modes;
+                }
+                case StringSetting ignored -> List.of("force-reset");
+                case BindSetting ignored -> List.of("reset");
+                case ColorSetting ignored -> List.of("red", "green", "blue", "alpha", "sync", "rainbow", "code", "reset");
+                case WhitelistSetting ignored -> List.of("add", "del", "clear", "list");
+                default -> List.of();
+            };
+        }
+
+        if (args.length == 2 && module.getSetting(args[0]) instanceof ColorSetting) {
+            String channel = args[1].toLowerCase();
+            if (channel.equals("sync") || channel.equals("rainbow")) return List.of("true", "false");
+        }
+
+        return List.of();
     }
 
     @Override

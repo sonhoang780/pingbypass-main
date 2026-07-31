@@ -54,7 +54,6 @@ public class SpeedMineModule extends Module {
     public NumberSetting instantDelay = new NumberSetting("InstantDelay", "The amount of time that has to pass before instantly mining blocks.", new BooleanSetting.Visibility(instant, true), 0, 0, 20);
     public NumberSetting instantTimeout = new NumberSetting("InstantTimeout", "The amount of time that cancel instantly mine while no block to mine.", new BooleanSetting.Visibility(instant, true), 60, 0, 100);
     public BooleanSetting grim = new BooleanSetting("Grim", "Adds a bypass catered to the Grim anticheat.", false);
-    public BooleanSetting clientRemove = new BooleanSetting("ClientRemove", "Removes the block client-side immediately for instant visual feedback.", true);
     public BooleanSetting strict = new BooleanSetting("Strict", "Waits for the server to tick you before switching back.", false);
     public BooleanSetting whileEating = new BooleanSetting("WhileEating", "Mines blocks while eating.", true);
     public WhitelistSetting whitelist = new WhitelistSetting("Whitelist", "Mines only the blocks that are on this list. If empty, every block will be mined.", WhitelistSetting.Type.BLOCKS);
@@ -442,7 +441,7 @@ public class SpeedMineModule extends Module {
         if (mc.level.getBlockState(pos).canBeReplaced()) return;
 
         AABB box = new AABB(pos);
-        if (animation.getValue().equalsIgnoreCase("Expand")) box = new AABB(pos).contract(0.5, 0.5, 0.5).inflate(Mth.clamp(progress / 2.0, 0.0, 0.5));
+        if (animation.getValue().equalsIgnoreCase("Expand")) box = new AABB(pos).deflate(0.5).inflate(Mth.clamp(progress / 2.0, 0.0, 0.5));
         if (animation.getValue().equalsIgnoreCase("Rise")) box = new AABB(pos.getX(), pos.getY(), pos.getZ(), pos.getX() + 1.0, pos.getY() + progress, pos.getZ() + 1.0);
 
         Color fill = fillColor.getColor();
@@ -618,11 +617,6 @@ public class SpeedMineModule extends Module {
                             else if (switchAction == null) InventoryUtils.switchBack(switchMode.getValue(), slot, previousSlot);
                         }
 
-                        // Remove block client-side so modules see it as air immediately
-                        if (clientRemove.getValue()) {
-                            mc.level.removeBlock(position, false);
-                        }
-
                         if (!instantMine || secondary) mineTimer.reset();
                     }
 
@@ -658,7 +652,7 @@ public class SpeedMineModule extends Module {
             AABB box = new AABB(position);
             double progress = Mth.lerp(mc.getDeltaTracker().getGameTimeDeltaPartialTick(false), prevProgress / getSpeed(), this.progress / getSpeed());
 
-            if (animation.getValue().equalsIgnoreCase("Expand")) box = new AABB(position).contract(0.5, 0.5, 0.5).inflate(Mth.clamp(progress / 2.0, 0.0, 0.5));
+            if (animation.getValue().equalsIgnoreCase("Expand")) box = new AABB(position).deflate(0.5).inflate(Mth.clamp(progress / 2.0, 0.0, 0.5));
             if (animation.getValue().equalsIgnoreCase("Rise")) box = new AABB(position.getX(), position.getY(), position.getZ(), position.getX() + 1.0, position.getY() + progress, position.getZ() + 1.0);
 
             Color fill = fillColor.getColor();

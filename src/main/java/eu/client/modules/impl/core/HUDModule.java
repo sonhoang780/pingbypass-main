@@ -4,6 +4,7 @@ import eu.client.EUClient;
 import eu.client.events.SubscribeEvent;
 import eu.client.events.impl.RenderOverlayEvent;
 import eu.client.events.impl.TickEvent;
+import eu.client.managers.HudElementRegistry;
 import eu.client.modules.Module;
 import eu.client.modules.RegisterModule;
 import eu.client.settings.impl.*;
@@ -117,6 +118,31 @@ public class HUDModule extends Module {
     public NumberSetting rainbowOffset = new NumberSetting("RainbowOffset", "Offset", "The offset that will be applied to the rainbow.", new ModeSetting.Visibility(colorMode, "Rainbow", "Wave"), 10L, 1L, 50L);
     public BooleanSetting inversion = new BooleanSetting("Inversion", "Inverts primary and secondary colors.", new CategorySetting.Visibility(colorCategory), false);
 
+    // Aggregate gates for HUDEditor -- Items/Information don't already have a single on/off (they
+    // bundle several independently-toggleable pieces), so these wrap the whole block for the
+    // editor's per-element enable/disable without touching the existing fine-grained settings above.
+    public BooleanSetting itemsElement = new BooleanSetting("ItemsElement", "Whether the armor/totem/crystal/xp counters are shown at all. See HUDEditor.", true);
+    public BooleanSetting informationElement = new BooleanSetting("InformationElement", "Whether the ping/fps/tps/etc information block is shown at all. See HUDEditor.", true);
+
+    // Per-element drag offsets, edited via HUDEditorModule -- never shown as a normal ClickGui row.
+    public PositionSetting watermarkPosition = new PositionSetting("WatermarkPosition", "Drag offset for the watermark HUD element.");
+    public PositionSetting welcomerPosition = new PositionSetting("WelcomerPosition", "Drag offset for the welcomer HUD element.");
+    public PositionSetting moduleListPosition = new PositionSetting("ModuleListPosition", "Drag offset for the module list HUD element.");
+    public PositionSetting playerRadarPosition = new PositionSetting("PlayerRadarPosition", "Drag offset for the player radar HUD element.");
+    public PositionSetting itemsPosition = new PositionSetting("ItemsPosition", "Drag offset for the item counters HUD element.");
+    public PositionSetting informationPosition = new PositionSetting("InformationPosition", "Drag offset for the information HUD element.");
+    public PositionSetting coordinatesPosition = new PositionSetting("CoordinatesPosition", "Drag offset for the coordinates HUD element.");
+
+    {
+        HudElementRegistry.register("Watermark", watermark, watermarkPosition);
+        HudElementRegistry.register("Welcomer", welcomer, welcomerPosition);
+        HudElementRegistry.register("ModuleList", moduleList, moduleListPosition);
+        HudElementRegistry.register("PlayerRadar", playerRadar, playerRadarPosition);
+        HudElementRegistry.register("Items", itemsElement, itemsPosition);
+        HudElementRegistry.register("Information", informationElement, informationPosition);
+        HudElementRegistry.register("Coordinates", coordinates, coordinatesPosition);
+    }
+
     private final Animation potionsAnimation = new Animation(300, Easing.Method.EASE_OUT_CUBIC);
     private final Animation chatAnimation = new Animation(300, Easing.Method.EASE_OUT_CUBIC);
     private float chatOffset;
@@ -217,19 +243,43 @@ public class HUDModule extends Module {
 
         Renderer2D.renderQuad(event.getContext(), 2, mc.getWindow().getGuiScaledHeight() - chatOffset, mc.getWindow().getGuiScaledWidth() - 2, mc.getWindow().getGuiScaledHeight() + 12 - chatOffset, new Color(0, 0, 0, (int) (mc.options.textBackgroundOpacity().get() * 255)));
 
-        if (watermark.getValue()) {
-            String text = watermarkText.getValue() + (watermarkVersion.getValue() ? (watermarkSync.getValue() ? "" : inversion.getValue() ? ChatFormatting.GRAY : ChatFormatting.WHITE) + " " + EUClient.MOD_VERSION + (watermarkMinecraftVersion.getValue() ? "-mc" + EUClient.MINECRAFT_VERSION : "") + (watermarkRevision.getValue() ? "+" + EUClient.GIT_REVISION + "." + EUClient.GIT_HASH : "") : "");
-            drawText(event.getContext(), text, 2, 2);
-        }
+        Matrix3x2fStack matrices = event.getMatrices();
 
-        if(uptime.getValue()) {
-            String[] hms = FormattingUtils.formatSeconds((System.currentTimeMillis() - EUClient.UPTIME)/1000);
-            drawText(event.getContext(), "Uptime " + ChatFormatting.WHITE + hms[0] + ":" + hms[1] + ":" + hms[2], 2, 2 + (watermark.getValue() ? EUClient.FONT_MANAGER.getHeight() : 0), informationSync.getValue() ? null : new Color(170, 170, 170));
+        if (watermark.getValue() || uptime.getValue()) {
+            matrices.pushMatrix();
+            matrices.translate(watermarkPosition.getX(), watermarkPosition.getY());
+
+            int width = 0, lines = 0;
+
+            if (watermark.getValue()) {
+                String text = watermarkText.getValue() + (watermarkVersion.getValue() ? (watermarkSync.getValue() ? "" : inversion.getValue() ? ChatFormatting.GRAY : ChatFormatting.WHITE) + " " + EUClient.MOD_VERSION + (watermarkMinecraftVersion.getValue() ? "-mc" + EUClient.MINECRAFT_VERSION : "") + (watermarkRevision.getValue() ? "+" + EUClient.GIT_REVISION + "." + EUClient.GIT_HASH : "") : "");
+                drawText(event.getContext(), text, 2, 2);
+                width = Math.max(width, EUClient.FONT_MANAGER.getWidth(text));
+                lines++;
+            }
+
+            if (uptime.getValue()) {
+                String[] hms = FormattingUtils.formatSeconds((System.currentTimeMillis() - EUClient.UPTIME)/1000);
+                String text = "Uptime " + ChatFormatting.WHITE + hms[0] + ":" + hms[1] + ":" + hms[2];
+                drawText(event.getContext(), text, 2, 2 + (watermark.getValue() ? EUClient.FONT_MANAGER.getHeight() : 0), informationSync.getValue() ? null : new Color(170, 170, 170));
+                width = Math.max(width, EUClient.FONT_MANAGER.getWidth(text));
+                lines++;
+            }
+
+            HudElementRegistry.reportBounds("Watermark", 2, 2, 2 + width, 2 + lines * EUClient.FONT_MANAGER.getHeight());
+            matrices.popMatrix();
         }
 
         if (welcomer.getValue()) {
+            matrices.pushMatrix();
+            matrices.translate(welcomerPosition.getX(), welcomerPosition.getY());
+
             String text = welcomerText.getValue().replace("[username]", (welcomerSync.getValue() ? "" : inversion.getValue() ? ChatFormatting.GRAY : ChatFormatting.WHITE) + mc.player.getName().getString() + ChatFormatting.RESET);
-            drawText(event.getContext(), text, mc.getWindow().getGuiScaledWidth() / 2.0f - EUClient.FONT_MANAGER.getWidth(text) / 2.0f, 6);
+            float x = mc.getWindow().getGuiScaledWidth() / 2.0f - EUClient.FONT_MANAGER.getWidth(text) / 2.0f;
+            drawText(event.getContext(), text, x, 6);
+
+            HudElementRegistry.reportBounds("Welcomer", x, 6, x + EUClient.FONT_MANAGER.getWidth(text), 6 + EUClient.FONT_MANAGER.getHeight());
+            matrices.popMatrix();
         }
     }
 
@@ -240,27 +290,51 @@ public class HUDModule extends Module {
 
         float potionOffset = potionsAnimation.get(!vanillaPotions.getValue().equalsIgnoreCase("Move") || mc.player.getActiveEffects().isEmpty() ? 0 : (EntityUtils.hasNegativeEffects(mc.player) ? 51 : 25));
 
+        Matrix3x2fStack matrices = event.getMatrices();
+        matrices.pushMatrix();
+        matrices.translate(moduleListPosition.getX(), moduleListPosition.getY());
+
+        int maxWidth = 0;
         int index = 0;
         for (ModuleEntry entry : moduleEntries) {
             float x = mc.getWindow().getGuiScaledWidth() - (entry.module().getAnimationOffset().get(entry.module().isToggled() ? EUClient.FONT_MANAGER.getWidth(entry.text()) + 2 : 0));
             float y = 2 + potionOffset + (index * EUClient.FONT_MANAGER.getHeight());
 
             drawModuleText(entry.module(), event.getContext(), entry.text(), x, y);
+            maxWidth = Math.max(maxWidth, EUClient.FONT_MANAGER.getWidth(entry.text()) + 2);
             index++;
         }
+
+        if (!moduleEntries.isEmpty()) {
+            float right = mc.getWindow().getGuiScaledWidth();
+            HudElementRegistry.reportBounds("ModuleList", right - maxWidth, 2 + potionOffset, right, 2 + potionOffset + moduleEntries.size() * EUClient.FONT_MANAGER.getHeight());
+        }
+        matrices.popMatrix();
     }
 
     @SubscribeEvent
     public void renderPlayerRadar(RenderOverlayEvent event) {
         if (!playerRadar.getValue()) return;
 
+        Matrix3x2fStack matrices = event.getMatrices();
+        matrices.pushMatrix();
+        matrices.translate(playerRadarPosition.getX(), playerRadarPosition.getY());
+
+        int maxWidth = 0;
         int offset = 0;
         for (PlayerEntry entry : playerEntries) {
             if (entry.headTexture() != null) PlayerFaceExtractor.extractRenderState(event.getContext(), entry.headTexture(), 2, 1 + (EUClient.FONT_MANAGER.getHeight() * 2) + ((EUClient.FONT_MANAGER.getHeight() + 1) * offset), EUClient.FONT_MANAGER.getHeight(), true, false, Color.WHITE.getRGB());
-            drawText(event.getContext(), entry.text(), 2 + (entry.headTexture() != null ? EUClient.FONT_MANAGER.getHeight() + 2 : 0), 2 + (EUClient.FONT_MANAGER.getHeight() * 2) + ((EUClient.FONT_MANAGER.getHeight() + 1) * offset), EUClient.FRIEND_MANAGER.contains(entry.player().getName().getString()) ? EUClient.FRIEND_MANAGER.getDefaultFriendColor() : null);
+            int textX = 2 + (entry.headTexture() != null ? EUClient.FONT_MANAGER.getHeight() + 2 : 0);
+            drawText(event.getContext(), entry.text(), textX, 2 + (EUClient.FONT_MANAGER.getHeight() * 2) + ((EUClient.FONT_MANAGER.getHeight() + 1) * offset), EUClient.FRIEND_MANAGER.contains(entry.player().getName().getString()) ? EUClient.FRIEND_MANAGER.getDefaultFriendColor() : null);
 
+            maxWidth = Math.max(maxWidth, textX + EUClient.FONT_MANAGER.getWidth(entry.text()));
             offset++;
         }
+
+        if (!playerEntries.isEmpty()) {
+            HudElementRegistry.reportBounds("PlayerRadar", 2, 1 + EUClient.FONT_MANAGER.getHeight() * 2, maxWidth, 1 + (EUClient.FONT_MANAGER.getHeight() * 2) + ((EUClient.FONT_MANAGER.getHeight() + 1) * playerEntries.size()));
+        }
+        matrices.popMatrix();
     }
 
     private static final net.minecraft.world.entity.EquipmentSlot[] ARMOR_SLOTS = {
@@ -279,8 +353,15 @@ public class HUDModule extends Module {
     @SubscribeEvent
     public void renderItems(RenderOverlayEvent event) {
         if (mc.player == null) return;
+        if (!itemsElement.getValue()) return;
 
         Matrix3x2fStack matrices = event.getMatrices();
+        matrices.pushMatrix();
+        matrices.translate(itemsPosition.getX(), itemsPosition.getY());
+
+        int centerX = mc.getWindow().getGuiScaledWidth() / 2;
+        int bottomY = mc.getWindow().getGuiScaledHeight();
+        HudElementRegistry.reportBounds("Items", centerX - 90, bottomY - 60, centerX + 124, bottomY - 15);
 
         if (armor.getValue()) {
             int offset = 0;
@@ -354,13 +435,18 @@ public class HUDModule extends Module {
                 matrices.popMatrix();
             }
         }
+
+        matrices.popMatrix();
     }
 
     @SubscribeEvent
     public void renderInformation(RenderOverlayEvent event) {
         if (mc.player == null) return;
+        if (!informationElement.getValue()) return;
 
         Matrix3x2fStack matrices = event.getMatrices();
+        matrices.pushMatrix();
+        matrices.translate(informationPosition.getX(), informationPosition.getY());
 
         int offset = 0;
 
@@ -413,27 +499,51 @@ public class HUDModule extends Module {
                     offset++;
                 }
             }
+
+            int maxWidth = 0;
+            for (String text : informationEntries) maxWidth = Math.max(maxWidth, EUClient.FONT_MANAGER.getWidth(text));
+            float right = mc.getWindow().getGuiScaledWidth();
+            float bottom = mc.getWindow().getGuiScaledHeight() - chatOffset;
+            HudElementRegistry.reportBounds("Information", right - 2 - maxWidth, bottom - 2 - offset * EUClient.FONT_MANAGER.getHeight(), right, bottom);
         }
+
+        matrices.popMatrix();
     }
 
     @SubscribeEvent
     public void renderCoordinates(RenderOverlayEvent event) {
         if (mc.player == null || mc.level == null) return;
+        if (!coordinates.getValue() && !direction.getValue()) return;
+
+        Matrix3x2fStack matrices = event.getMatrices();
+        matrices.pushMatrix();
+        matrices.translate(coordinatesPosition.getX(), coordinatesPosition.getY());
 
         float chatOffset = positionChatOffset.getValue() ? this.chatOffset : 0;
         int offset = 0;
+        int maxWidth = 0;
+        int lines = 0;
 
         if (coordinates.getValue())  {
             String text = getSecondary() + String.valueOf(mc.player.getBlockX()) + (netherCoordinates.getValue() ? ChatFormatting.GRAY + " [" + getSecondary() + WorldUtils.getNetherPosition(mc.player.getBlockX()) + ChatFormatting.GRAY + "]" : "") + (inversion.getValue() || positionSync.getValue() ? ChatFormatting.RESET : ChatFormatting.GRAY) + ", " + getSecondary() + mc.player.getBlockY() + (inversion.getValue() || positionSync.getValue() ? ChatFormatting.RESET : ChatFormatting.GRAY) + ", " + getSecondary() + mc.player.getBlockZ() + (netherCoordinates.getValue() ? ChatFormatting.GRAY + " [" + getSecondary() + WorldUtils.getNetherPosition(mc.player.getBlockZ()) + ChatFormatting.GRAY + "]" : "");
 
             drawText(event.getContext(), text, 2, mc.getWindow().getGuiScaledHeight() - chatOffset - offset - EUClient.FONT_MANAGER.getHeight() - 2);
+            maxWidth = Math.max(maxWidth, EUClient.FONT_MANAGER.getWidth(text));
             offset += EUClient.FONT_MANAGER.getHeight();
+            lines++;
         }
 
         if (direction.getValue()) {
-            String text = getPrimary() + StringUtils.capitalize(mc.player.getDirection().getName()) + (inversion.getValue() ? getSecondary() : ChatFormatting.GRAY) + " [" + (inversion.getValue() ? getSecondary() : ChatFormatting.WHITE) + WorldUtils.getMovementDirection(mc.player.getDirection()) + (inversion.getValue() ? getSecondary() : ChatFormatting.GRAY) + "]";
+            String text = getPrimary() + WorldUtils.getFacingName(mc.player.getYRot()) + (inversion.getValue() ? getSecondary() : ChatFormatting.GRAY) + " [" + (inversion.getValue() ? getSecondary() : ChatFormatting.WHITE) + WorldUtils.getFacingAxes(mc.player.getYRot()) + (inversion.getValue() ? getSecondary() : ChatFormatting.GRAY) + "]";
             drawText(event.getContext(), text, 2, mc.getWindow().getGuiScaledHeight() - chatOffset - offset - EUClient.FONT_MANAGER.getHeight() - 2, positionSync.getValue() ? null : Color.WHITE);
+            maxWidth = Math.max(maxWidth, EUClient.FONT_MANAGER.getWidth(text));
+            lines++;
         }
+
+        float bottom = mc.getWindow().getGuiScaledHeight() - chatOffset;
+        HudElementRegistry.reportBounds("Coordinates", 2, bottom - 2 - lines * EUClient.FONT_MANAGER.getHeight(), 2 + maxWidth, bottom - 2);
+
+        matrices.popMatrix();
     }
 
     private void drawModuleText(Module module, GuiGraphicsExtractor context, String text, float x, float y) {

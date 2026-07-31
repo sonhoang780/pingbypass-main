@@ -10,6 +10,12 @@ import java.util.List;
 @RegisterCommand(name = "help", tag = "Help", description = "Shows you a list of all of the client's commands or information about a certain command.", syntax = "empty | <[command]>", aliases = {"cmds"})
 public class HelpCommand extends Command {
     @Override
+    public List<String> getSuggestions(String[] args) {
+        if (args.length != 0) return List.of();
+        return EUClient.COMMAND_MANAGER.getCommands().stream().map(Command::getName).toList();
+    }
+
+    @Override
     public void execute(String[] args) {
         if (args.length == 1)  {
             Command command = EUClient.COMMAND_MANAGER.getCommand(args[0]);

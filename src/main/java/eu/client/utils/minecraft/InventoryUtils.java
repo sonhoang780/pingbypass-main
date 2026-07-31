@@ -41,6 +41,17 @@ public class InventoryUtils implements IMinecraft {
         }
     }
 
+    // switchBack()'s "Normal" case is intentionally a no-op (mirrors what a real player switching
+    // slots does -- most callers, e.g. SpeedMine, want to stay on the tool after a Normal-mode
+    // switch). AutoCrystal's SwapBack setting opts into actually switching back for that one caller,
+    // so this stays a separate opt-in helper rather than changing switchBack's shared behavior.
+    public static void switchBackNormal(int previousSlot) {
+        if (previousSlot == -1 || previousSlot == EUClient.POSITION_MANAGER.getServerSlot()) return;
+
+        mc.player.getInventory().setSelectedSlot(previousSlot);
+        ((ClientPlayerInteractionManagerAccessor) mc.gameMode).invokeSyncSelectedSlot();
+    }
+
     public static void switchBack(String mode, int slot, int previousSlot) {
         if (mode.equalsIgnoreCase("None")) return;
         if (previousSlot == -1) return;

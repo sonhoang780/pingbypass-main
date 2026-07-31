@@ -46,8 +46,13 @@ public abstract class MinecraftClientMixin implements IMinecraft {
 
     @Shadow @Nullable public Entity crosshairPickEntity;
 
-    @Inject(method = "<init>", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/Minecraft;setOverlay(Lnet/minecraft/client/gui/screens/Overlay;)V", shift = At.Shift.BEFORE))
+    @Inject(method = "<init>", at = @At("TAIL"))
     private void init(GameConfig args, CallbackInfo info) {
+        // ConfigManager can re-toggle modules (e.g. PingBypass) whose onEnable() reconnects via
+        // ConnectScreen.startConnecting -> Minecraft.disconnect -> ... -> renderFrame(). In 26.1.2
+        // that render call now happens synchronously and reads fields (framerateLimitTracker) that
+        // are only assigned later in this constructor, so this must run after <init> fully completes
+        // rather than mid-construction (BEFORE setOverlay, where 1.21.4 originally hooked it).
         EUClient.onPostInitialize();
     }
 

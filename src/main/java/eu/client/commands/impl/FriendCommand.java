@@ -11,6 +11,13 @@ import java.util.List;
 @RegisterCommand(name = "friend", tag = "Friend", description = "Allows you to manage the client's friend list.", syntax = "<add|del> <[player]> | <clear|list>", aliases = {"f", "friends"})
 public class FriendCommand extends Command {
     @Override
+    public List<String> getSuggestions(String[] args) {
+        if (args.length == 0) return List.of("add", "del", "clear", "list");
+        if (args.length == 1 && args[0].equalsIgnoreCase("del")) return EUClient.FRIEND_MANAGER.getFriends();
+        return List.of();
+    }
+
+    @Override
     public void execute(String[] args) {
         if (args.length == 2) {
             switch (args[0].toLowerCase()) {

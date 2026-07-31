@@ -4,7 +4,8 @@
   },
   "passes": [
     {
-      "program": "euclient:program/outline",
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "euclient:program/outline",
       "inputs": [
         {
           "sampler_name": "In",
@@ -13,19 +14,29 @@
         }
       ],
       "output": "swap",
-      "uniforms": []
+      "uniforms": {
+        "OutlineConfig": [
+          { "name": "RenderMode", "type": "int", "value": 1 },
+          { "name": "FillOpacity", "type": "float", "value": 1.0 }
+        ]
+      }
     },
     {
-      "program": "minecraft:post/blit",
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/blit",
       "inputs": [
         {
           "sampler_name": "In",
           "target": "swap",
           "bilinear": true
         }
-      ] ,
+      ],
       "output": "minecraft:main",
-      "uniforms": []
+      "uniforms": {
+        "BlitConfig": [
+          { "name": "ColorModulate", "type": "vec4", "value": [ 1.0, 1.0, 1.0, 1.0 ] }
+        ]
+      }
     }
   ]
 }

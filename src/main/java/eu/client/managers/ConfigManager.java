@@ -203,6 +203,7 @@ public class ConfigManager {
                         case BindSetting setting -> setting.resetValue();
                         case ColorSetting setting -> setting.resetValue();
                         case WhitelistSetting setting -> setting.clear();
+                        case PositionSetting setting -> setting.resetValue();
                         default -> {}
                     }
 
@@ -222,6 +223,12 @@ public class ConfigManager {
                         setting.setColor(new Color(Math.clamp(Integer.parseInt(data[0]), 0, 255), Math.clamp(Integer.parseInt(data[1]), 0, 255), Math.clamp(Integer.parseInt(data[2]), 0, 255), Math.clamp(Integer.parseInt(data[3]), 0, 255)));
                         setting.setSync(Boolean.parseBoolean(data[4]));
                         setting.setRainbow(Boolean.parseBoolean(data[5]));
+                    }
+                    case PositionSetting setting -> {
+                        String[] data = valueObject.getAsString().split(",");
+                        if (data.length != 2) continue;
+
+                        setting.set(Float.parseFloat(data[0]), Float.parseFloat(data[1]));
                     }
                     case WhitelistSetting setting -> {
                         String[] data = valueObject.getAsString().split(",");
@@ -286,6 +293,7 @@ public class ConfigManager {
                         for (String id : setting.getWhitelistIds()) objects.add(id);
                         settingsObject.add(setting.getName(), new JsonPrimitive(objects.toString()));
                     }
+                    case PositionSetting setting -> settingsObject.add(setting.getName(), new JsonPrimitive(setting.getX() + "," + setting.getY()));
                     default -> {}
                 }
             }

@@ -7,10 +7,23 @@ import eu.client.modules.Module;
 import eu.client.utils.chat.ChatUtils;
 import eu.client.utils.input.KeyboardUtils;
 
+import java.util.ArrayList;
 import java.util.List;
 
 @RegisterCommand(name = "bind", tag = "Bind", description = "Changes the toggle keybind of a module.", syntax = "<[module]> <[key]|reset> | <reset|list> ", aliases = {"b", "key", "keybind"})
 public class BindCommand extends Command {
+    @Override
+    public List<String> getSuggestions(String[] args) {
+        if (args.length == 0) {
+            List<String> names = new ArrayList<>(moduleNames());
+            names.add("reset");
+            names.add("list");
+            return names;
+        }
+        if (args.length == 1 && EUClient.MODULE_MANAGER.getModule(args[0]) != null) return List.of("reset");
+        return List.of();
+    }
+
     @Override
     public void execute(String[] args) {
         if (args.length == 2) {

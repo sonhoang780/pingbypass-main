@@ -28,21 +28,47 @@ public abstract class GameRendererMixin {
         Renderer3D.prepare();
     }
 
+    // PORT: in 26.1.2 view-bob (bobHurt/bobView) is composed into the PROJECTION matrix
+    // (GameRenderer.renderLevel: `projectionMatrix.mul(bobStack.last().pose())`), not the
+    // model-view matrix -- unlike the pre-port pipeline where bob lived in model-view and had
+    // to be inverted-out here for world-space rendering to stay bob-free. `modelViewMatrix`
+    // (cameraState.viewRotationMatrix) never contains bob now, so multiplying by an inverted
+    // bob stack here no longer cancels anything -- it *injects* an uncancelled bob transform,
+    // which is exactly why BlockHighlight/AutoCrystal/etc. boxes visibly bobbed while walking.
+    // Modules get a fresh, bob-free PoseStack instead of the old (bobbed) local capture.
     @Inject(method = "renderLevel", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/LevelRenderer;renderLevel(Lcom/mojang/blaze3d/resource/GraphicsResourceAllocator;Lnet/minecraft/client/DeltaTracker;ZLnet/minecraft/client/renderer/state/level/CameraRenderState;Lorg/joml/Matrix4fc;Lcom/mojang/blaze3d/buffers/GpuBufferSlice;Lorg/joml/Vector4f;ZLnet/minecraft/client/renderer/chunk/ChunkSectionsToRender;)V", shift = At.Shift.AFTER))
-    private void renderWorld$swap(DeltaTracker tickCounter, CallbackInfo info, @Local(ordinal = 0) Matrix4fc modelViewMatrix, @Local PoseStack bobStack) {
+    private void renderWorld$swap(DeltaTracker tickCounter, CallbackInfo info, @Local(ordinal = 0) Matrix4fc modelViewMatrix) {
         float tickDelta = tickCounter.getGameTimeDeltaPartialTick(false);
 
         RenderSystem.getModelViewStack().pushMatrix();
 
         RenderSystem.getModelViewStack().mul(modelViewMatrix);
-        RenderSystem.getModelViewStack().mul(bobStack.last().pose().invert());
 
-        EUClient.EVENT_HANDLER.post(new RenderWorldEvent(bobStack, tickDelta));
+        PoseStack noBobStack = new PoseStack();
+
+        EUClient.EVENT_HANDLER.post(new RenderWorldEvent(noBobStack, tickDelta));
 
         Renderer3D.draw(Renderer3D.QUADS, Renderer3D.DEBUG_LINES, false);
         Renderer3D.draw(Renderer3D.SHINE_QUADS, Renderer3D.SHINE_DEBUG_LINES, true);
 
-        EUClient.EVENT_HANDLER.post(new RenderWorldEvent.Post(bobStack, tickDelta));
+        EUClient.EVENT_HANDLER.post(new RenderWorldEvent.Post(noBobStack, tickDelta));
+
+        // Post-phase callers (e.g. NameTagsModule's border, which needs the text width computed
+        // earlier in the same handler) add to Renderer3D.QUADS/DEBUG_LINES here too, but the only
+        // draw() call was above, before this event fired -- so that geometry sat unused until
+        // prepare() wiped it at the start of the next frame and never actually rendered. Flush again.
+        Renderer3D.draw(Renderer3D.QUADS, Renderer3D.DEBUG_LINES, false);
+        Renderer3D.draw(Renderer3D.SHINE_QUADS, Renderer3D.SHINE_DEBUG_LINES, true);
+
+        // Modules that draw world-space text via the vanilla font (mc.font.drawInBatch) queue
+        // into the shared MultiBufferSource instead of drawing immediately -- unlike our own
+        // immediate-mode RenderType draws above, that queued geometry doesn't actually hit the
+        // GPU until something calls endBatch(). Nothing does until the HUD/hand pass reassigns
+        // the projection matrix, so by the time it flushes the 3D world projection is gone and
+        // the text renders wildly mispositioned/skewed (worse than the CustomFont path, which
+        // draws immediately here and is therefore unaffected). Force the flush now, while the
+        // correct 3D projection from this renderLevel call is still bound.
+        net.minecraft.client.Minecraft.getInstance().renderBuffers().bufferSource().endBatch();
 
         RenderSystem.getModelViewStack().popMatrix();
     }
