@@ -6,6 +6,7 @@ import eu.client.utils.IMinecraft;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.WebBlock;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.InsideBlockEffectApplier;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.level.Level;
@@ -16,8 +17,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(WebBlock.class)
 public class CobwebBlockMixin implements IMinecraft {
-    @Inject(method = "onEntityCollision", at = @At("HEAD"), cancellable = true)
-    private void onEntityCollision(BlockState state, Level world, BlockPos pos, Entity entity, CallbackInfo info) {
+    @Inject(method = "entityInside", at = @At("HEAD"), cancellable = true)
+    private void onEntityCollision(BlockState state, Level world, BlockPos pos, Entity entity, InsideBlockEffectApplier effectApplier, boolean bl, CallbackInfo info) {
         if (EUClient.MODULE_MANAGER.getModule(FastWebModule.class).isToggled()) {
             if (EUClient.MODULE_MANAGER.getModule(FastWebModule.class).sneak.getValue() && !mc.player.isShiftKeyDown()) return;
 

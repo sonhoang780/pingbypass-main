@@ -21,20 +21,24 @@ import java.util.List;
 
 @Mixin(PlayerTabOverlay.class)
 public abstract class PlayerListHudMixin {
-    @Shadow @Final private Minecraft client;
+    @Shadow @Final private Minecraft minecraft;
 
-    @Shadow @Final private static Comparator<PlayerInfo> ENTRY_ORDERING;
+    @Shadow @Final private static Comparator<PlayerInfo> PLAYER_COMPARATOR;
 
-    @Shadow protected abstract Component applyGameModeFormatting(PlayerInfo entry, MutableComponent name);
+    @Shadow private Component decorateName(PlayerInfo entry, MutableComponent name) {
+        throw new UnsupportedOperationException();
+    }
 
-    @Inject(method = "collectPlayerEntries", at = @At("HEAD"), cancellable = true)
+    // collectPlayerEntries renamed to getPlayerInfos(), no longer takes a scoreboard/limit param (fixed limit 80 upstream)
+    @Inject(method = "getPlayerInfos", at = @At("HEAD"), cancellable = true)
     private void collectPlayerEntries(CallbackInfoReturnable<List<PlayerInfo>> info) {
         if (EUClient.MODULE_MANAGER.getModule(ExtraTabModule.class).isToggled()) {
-            info.setReturnValue(client.player.connection.getOnlinePlayers().stream().sorted(ENTRY_ORDERING).limit(EUClient.MODULE_MANAGER.getModule(ExtraTabModule.class).limit.getValue().longValue()).toList());
+            info.setReturnValue(minecraft.player.connection.getOnlinePlayers().stream().sorted(PLAYER_COMPARATOR).limit(EUClient.MODULE_MANAGER.getModule(ExtraTabModule.class).limit.getValue().longValue()).toList());
         }
     }
 
-    @Inject(method = "getPlayerName", at = @At(value = "HEAD"), cancellable = true)
+    // getPlayerName renamed to getNameForDisplay(PlayerInfo); applyGameModeFormatting renamed to decorateName(PlayerInfo, MutableComponent)
+    @Inject(method = "getNameForDisplay", at = @At(value = "HEAD"), cancellable = true)
     private void getPlayerName(PlayerInfo entry, CallbackInfoReturnable<Component> info) {
         if (EUClient.MODULE_MANAGER.getModule(ExtraTabModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(ExtraTabModule.class).friends.getValue() && EUClient.FRIEND_MANAGER.contains(entry.getProfile().name())) {
             if (entry.getTabListDisplayName() != null) {
@@ -54,11 +58,11 @@ public abstract class PlayerListHudMixin {
                     text.append(sibling);
                 }
 
-                info.setReturnValue(applyGameModeFormatting(entry, text));
+                info.setReturnValue(decorateName(entry, text));
                 return;
             }
 
-            info.setReturnValue(applyGameModeFormatting(entry, PlayerTeam.formatNameForTeam(entry.getTeam(), Component.literal(entry.getProfile().name()))));
+            info.setReturnValue(decorateName(entry, PlayerTeam.formatNameForTeam(entry.getTeam(), Component.literal(entry.getProfile().name()))));
         }
     }
 }

@@ -11,7 +11,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(ClientPacketListener.class)
 public class ClientPlayNetworkHandlerMixin {
-    @Inject(method = "onGameJoin", at = @At("TAIL"))
+    @Inject(method = "handleLogin", at = @At("TAIL"))
     private void onGameJoin(ClientboundLoginPacket packet, CallbackInfo info) {
         EUClient.EVENT_HANDLER.post(new ClientConnectEvent());
     }

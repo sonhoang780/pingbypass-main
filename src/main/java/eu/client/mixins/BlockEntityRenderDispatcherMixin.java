@@ -4,7 +4,7 @@ import eu.client.EUClient;
 import eu.client.modules.impl.visuals.NoRenderModule;
 import eu.client.utils.IMinecraft;
 import net.minecraft.client.renderer.SubmitNodeCollector;
-import net.minecraft.client.renderer.blockentity.BlockEntityRenderer;
+import net.minecraft.client.renderer.blockentity.BlockEntityRenderDispatcher;
 import net.minecraft.client.renderer.blockentity.state.BlockEntityRenderState;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
 import com.mojang.blaze3d.vertex.PoseStack;
@@ -13,8 +13,8 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-@Mixin(BlockEntityRenderer.class)
-public interface BlockEntityRenderDispatcherMixin extends IMinecraft {
+@Mixin(BlockEntityRenderDispatcher.class)
+public class BlockEntityRenderDispatcherMixin implements IMinecraft {
     @Inject(method = "submit", at = @At("HEAD"), cancellable = true)
     private void euclient$submit(BlockEntityRenderState state, PoseStack matrices, SubmitNodeCollector collector, CameraRenderState cameraState, CallbackInfo info) {
         NoRenderModule noRender = EUClient.MODULE_MANAGER.getModule(NoRenderModule.class);

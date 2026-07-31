@@ -26,13 +26,13 @@ public abstract class PlayerEntityMixin extends LivingEntity implements IMinecra
         super(entityType, world);
     }
 
-    @ModifyReturnValue(method = "isPushedByFluids", at = @At("RETURN"))
+    @ModifyReturnValue(method = "isPushedByFluid", at = @At("RETURN"))
     private boolean isPushedByFluids(boolean original) {
         if ((Object) this == mc.player && EUClient.MODULE_MANAGER.getModule(VelocityModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(VelocityModule.class).antiLiquidPush.getValue()) return false;
         return original;
     }
 
-    @Inject(method = "attack", at = @At(value = "INVOKE", target = "Lnet/minecraft/entity/player/Player;setSprinting(Z)V", shift = At.Shift.AFTER))
+    @Inject(method = "attack", at = @At("TAIL"))
     private void attack(CallbackInfo callbackInfo) {
         if (EUClient.MODULE_MANAGER.getModule(KeepSprintModule.class).isToggled()) {
             float multiplier = 0.6f + 0.4f * EUClient.MODULE_MANAGER.getModule(KeepSprintModule.class).motion.getValue().floatValue();
@@ -52,21 +52,21 @@ public abstract class PlayerEntityMixin extends LivingEntity implements IMinecra
         }
     }
 
-    @Inject(method = "getBlockInteractionRange", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "blockInteractionRange", at = @At("HEAD"), cancellable = true)
     private void getBlockInteractionRange(CallbackInfoReturnable<Double> info) {
         if (EUClient.MODULE_MANAGER.getModule(ReachModule.class).isToggled()) {
             info.setReturnValue(EUClient.MODULE_MANAGER.getModule(ReachModule.class).amount.getValue().doubleValue());
         }
     }
 
-    @Inject(method = "getEntityInteractionRange", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "entityInteractionRange", at = @At("HEAD"), cancellable = true)
     private void getEntityInteractionRange(CallbackInfoReturnable<Double> info) {
         if (EUClient.MODULE_MANAGER.getModule(ReachModule.class).isToggled()) {
             info.setReturnValue(EUClient.MODULE_MANAGER.getModule(ReachModule.class).amount.getValue().doubleValue());
         }
     }
 
-    @Inject(method = "getMovementSpeed", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "getSpeed", at = @At("HEAD"), cancellable = true)
     private void getMovementSpeed(CallbackInfoReturnable<Float> info) {
         if (EUClient.MODULE_MANAGER.getModule(SpeedModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(SpeedModule.class).mode.getValue().equalsIgnoreCase("Vanilla")) {
             info.setReturnValue(EUClient.MODULE_MANAGER.getModule(SpeedModule.class).vanillaSpeed.getValue().floatValue());

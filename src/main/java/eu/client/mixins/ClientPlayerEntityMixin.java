@@ -11,7 +11,6 @@ import eu.client.modules.impl.movement.NoSlowModule;
 import eu.client.modules.impl.movement.VelocityModule;
 import eu.client.modules.impl.player.NoEntityTraceModule;
 import eu.client.modules.impl.player.SwingModule;
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.client.player.LocalPlayer;
@@ -35,40 +34,42 @@ public abstract class ClientPlayerEntityMixin extends AbstractClientPlayer {
         super(world, profile);
     }
 
-    @Shadow @Final protected Minecraft client;
+    @Shadow protected abstract void updateAutoJump(float dx, float dz);
 
-    @Shadow protected abstract void autoJump(float dx, float dz);
+    @Shadow @Final public ClientPacketListener connection;
 
-    @Shadow @Final public ClientPacketListener networkHandler;
-
-    @Inject(method = "tick", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/network/AbstractClientPlayer;tick()V", shift = At.Shift.BEFORE))
+    @Inject(method = "tick", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/player/AbstractClientPlayer;tick()V", shift = At.Shift.BEFORE))
     private void tick$BEFORE(CallbackInfo info) {
         EUClient.EVENT_HANDLER.post(new PlayerUpdateEvent());
     }
 
-    @Inject(method = "tick", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/network/AbstractClientPlayer;tick()V", shift = At.Shift.AFTER))
+    @Inject(method = "tick", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/player/AbstractClientPlayer;tick()V", shift = At.Shift.AFTER))
     private void tick$AFTER(CallbackInfo info) {
         EUClient.EVENT_HANDLER.post(new UpdateMovementEvent());
     }
 
-    @Inject(method = "tick", at = @At(value = "FIELD", target = "Lnet/minecraft/client/network/LocalPlayer;tickables:Ljava/util/List;", shift = At.Shift.BEFORE))
+    @Inject(method = "tick", at = @At(value = "FIELD", target = "Lnet/minecraft/client/player/LocalPlayer;ambientSoundHandlers:Ljava/util/List;", shift = At.Shift.BEFORE))
     private void tick$tickables(CallbackInfo ci) {
         EUClient.EVENT_HANDLER.post(new UpdateMovementEvent.Post());
     }
 
-    @WrapOperation(method = "sendMovementPackets", at = @At(value = "FIELD", target = "Lnet/minecraft/client/network/LocalPlayer;lastYaw:F", ordinal = 0))
-    private float sendMovementPackets$lastYaw(LocalPlayer instance, Operation<Float> original) {
+    // PORT: sendMovementPackets was inlined into tick()/sendPosition() -- the passenger-rotation
+    // send path in tick() itself is left alone (not covered by the old feature either); this wraps
+    // the on-foot movement-send path (sendPosition), which reads getYRot/getXRot both to build the
+    // outgoing packet and to refresh the yRotLast/xRotLast change-detection cache.
+    @WrapOperation(method = "sendPosition", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/player/LocalPlayer;getYRot()F"))
+    private float sendPosition$getYRot(LocalPlayer instance, Operation<Float> original) {
         if (EUClient.ROTATION_MANAGER.getRotation() != null) return EUClient.ROTATION_MANAGER.getServerYaw();
         return original.call(instance);
     }
 
-    @WrapOperation(method = "sendMovementPackets", at = @At(value = "FIELD", target = "Lnet/minecraft/client/network/LocalPlayer;lastPitch:F", ordinal = 0))
-    private float sendMovementPackets$lastPitch(LocalPlayer instance, Operation<Float> original) {
+    @WrapOperation(method = "sendPosition", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/player/LocalPlayer;getXRot()F"))
+    private float sendPosition$getXRot(LocalPlayer instance, Operation<Float> original) {
         if (EUClient.ROTATION_MANAGER.getRotation() != null) return EUClient.ROTATION_MANAGER.getServerPitch();
         return original.call(instance);
     }
 
-    @ModifyExpressionValue(method = "tickMovement", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/network/LocalPlayer;isUsingItem()Z"))
+    @ModifyExpressionValue(method = "modifyInput", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/player/LocalPlayer;isUsingItem()Z"))
     private boolean tickMovement$isUsingItem(boolean original) {
         if (EUClient.MODULE_MANAGER.getModule(NoSlowModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(NoSlowModule.class).items.getValue() && !EUClient.MODULE_MANAGER.getModule(NoSlowModule.class).shouldSlow()) return false;
         return original;
@@ -86,11 +87,11 @@ public abstract class ClientPlayerEntityMixin extends AbstractClientPlayer {
             double prevZ = getZ();
 
             super.move(movementType, event.getMovement());
-            autoJump((float) (getX() - prevX), (float) (getZ() - prevZ));
+            updateAutoJump((float) (getX() - prevX), (float) (getZ() - prevZ));
         }
     }
 
-    @Inject(method = "sendMovementPackets", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "sendPosition", at = @At("HEAD"), cancellable = true)
     private void sendMovementPackets(CallbackInfo info) {
         // When proxy forwarding is active on the SERVER (proxy), cancel sendMovementPackets.
         // The client's movement packets are forwarded by PbPlayHandler.onPlayerMove.
@@ -120,7 +121,7 @@ public abstract class ClientPlayerEntityMixin extends AbstractClientPlayer {
         return original;
     }
 
-    @ModifyExpressionValue(method = "canStartSprinting", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/network/LocalPlayer;isUsingItem()Z"))
+    @ModifyExpressionValue(method = "canStartSprinting", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/player/LocalPlayer;isSlowDueToUsingItem()Z"))
     private boolean canStartSprinting$isUsingItem(boolean original) {
         NoSlowModule module = EUClient.MODULE_MANAGER.getModule(NoSlowModule.class);
         if (EUClient.MODULE_MANAGER != null && module.isToggled() && module.items.getValue()) {
@@ -130,7 +131,7 @@ public abstract class ClientPlayerEntityMixin extends AbstractClientPlayer {
         return original;
     }
 
-    @Inject(method = "pushOutOfBlocks", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "moveTowardsClosestSpace", at = @At("HEAD"), cancellable = true)
     private void pushOutOfBlocks(double x, double z, CallbackInfo info) {
         if (EUClient.MODULE_MANAGER.getModule(VelocityModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(VelocityModule.class).antiBlockPush.getValue()) {
             info.cancel();
@@ -152,7 +153,7 @@ public abstract class ClientPlayerEntityMixin extends AbstractClientPlayer {
                 }
 
                 if (EUClient.MODULE_MANAGER.getModule(SwingModule.class).hand.getValue().equalsIgnoreCase("Packet") || !EUClient.MODULE_MANAGER.getModule(SwingModule.class).noPacket.getValue()) {
-                    networkHandler.send(new ServerboundSwingPacket(hand));
+                    connection.send(new ServerboundSwingPacket(hand));
                 }
             }
 
@@ -160,14 +161,14 @@ public abstract class ClientPlayerEntityMixin extends AbstractClientPlayer {
         }
     }
 
-    @Inject(method = "tickNausea", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "handlePortalTransitionEffect", at = @At("HEAD"), cancellable = true)
     private void tickNausea(boolean fromPortalEffect, CallbackInfo info) {
         if (EUClient.MODULE_MANAGER.getModule(InventoryControlModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(InventoryControlModule.class).portals.getValue()) {
             info.cancel();
         }
     }
 
-    @Inject(method = "setCurrentHand", at = @At(value = "HEAD"))
+    @Inject(method = "startUsingItem", at = @At(value = "HEAD"))
     private void setCurrentHand(InteractionHand hand, CallbackInfo info) {
         EUClient.EVENT_HANDLER.post(new ChangeHandEvent());
     }

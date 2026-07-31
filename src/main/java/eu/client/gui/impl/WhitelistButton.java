@@ -11,7 +11,7 @@ import eu.client.utils.minecraft.IdentifierUtils;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import com.mojang.blaze3d.platform.InputConstants;
-import net.minecraft.core.registries.Registries;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.ChatFormatting;
 import org.lwjgl.glfw.GLFW;
 
@@ -475,9 +475,9 @@ public class WhitelistButton extends Button {
     private List<String> getAllElements() {
         List<String> temp = new ArrayList<>();
         if (setting.getType() == WhitelistSetting.Type.BLOCKS) {
-            mc.level.registryAccess().lookupOrThrow(Registries.BLOCK).listElements().forEach(e -> temp.add(e.key().identifier().toString()));
+            BuiltInRegistries.BLOCK.entrySet().forEach(e -> temp.add(e.getKey().identifier().toString()));
         } else {
-            mc.level.registryAccess().lookupOrThrow(Registries.ITEM).listElements().forEach(e -> temp.add(e.key().identifier().toString()));
+            BuiltInRegistries.ITEM.entrySet().forEach(e -> temp.add(e.getKey().identifier().toString()));
         }
 
         temp.sort((a, b) -> {

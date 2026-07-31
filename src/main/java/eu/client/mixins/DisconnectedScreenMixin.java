@@ -21,7 +21,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(DisconnectedScreen.class)
 public class DisconnectedScreenMixin extends Screen {
-    @Shadow @Final private LinearLayout grid;
+    @Shadow @Final private LinearLayout layout;
 
     @Unique private Button toggleButton;
     @Unique private Button button;
@@ -31,7 +31,7 @@ public class DisconnectedScreenMixin extends Screen {
         super(title);
     }
 
-    @Inject(method = "init", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/gui/widget/LinearLayout;refreshPositions()V", shift = At.Shift.BEFORE))
+    @Inject(method = "init", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/gui/layouts/LinearLayout;arrangeElements()V", shift = At.Shift.BEFORE))
     private void init(CallbackInfo info) {
         if (EUClient.SERVER_MANAGER.getLastConnection() != null) {
             button = new Button.Builder(Component.literal(getText()), button -> tryConnecting()).width(200).build();
@@ -44,8 +44,8 @@ public class DisconnectedScreenMixin extends Screen {
                 time = EUClient.MODULE_MANAGER.getModule(AutoReconnectModule.class).delay.getValue().intValue() * 20;
             }).width(200).build();
 
-            grid.addChild(button);
-            grid.addChild(toggleButton);
+            layout.addChild(button);
+            layout.addChild(toggleButton);
         }
     }
 

@@ -40,7 +40,7 @@ public class SprintModule extends Module {
     }
 
     public boolean shouldSprint() {
-        if (!((ClientPlayerEntityAccessor) mc.player).invokeCanSprint()) return false;
+        if (!((ClientPlayerEntityAccessor) mc.player).invokeCanSprint(true)) return false;
         if (mc.player.isInWater() && !mc.player.isUnderWater()) return false;
         if (mc.player.isSwimming() && !mc.player.onGround() && !mc.player.input.keyPresses.shift() && !mc.player.isInWater()) return false;
 

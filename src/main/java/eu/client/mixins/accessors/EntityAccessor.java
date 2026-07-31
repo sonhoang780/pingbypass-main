@@ -7,7 +7,7 @@ import org.spongepowered.asm.mixin.gen.Invoker;
 
 @Mixin(Entity.class)
 public interface EntityAccessor {
-    @Invoker("movementInputToVelocity")
+    @Invoker("getInputVector")
     static Vec3 invokeMovementInputToVelocity(Vec3 movementInput, float speed, float yaw) {
         throw new AssertionError();
     }

@@ -15,7 +15,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(SlimeBlock.class)
 public class SlimeBlockMixin implements IMinecraft {
-    @Inject(method = "onSteppedOn", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "stepOn", at = @At("HEAD"), cancellable = true)
     private void onSteppedOn(Level world, BlockPos pos, BlockState state, Entity entity, CallbackInfo info) {
         if (entity == mc.player && EUClient.MODULE_MANAGER.getModule(NoSlowModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(NoSlowModule.class).slimeBlocks.getValue()) {
             info.cancel();

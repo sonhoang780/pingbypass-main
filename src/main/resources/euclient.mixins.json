@@ -16,14 +16,12 @@
     "NetworkStateTransitionHandlerMixin",
     "PlayerEntityMixin",
     "PropertiesMixin",
-    "RegistryLoaderMixin",
     "SlimeBlockMixin",
     "TextVisitFactoryMixin",
     "accessors.ConnectionAccessor",
     "accessors.CustomPayloadC2SPacketAccessor",
     "accessors.EntityAccessor",
     "accessors.LimbAnimatorAccessor",
-    "accessors.PlayerInteractEntityC2SPacketAccessor",
     "accessors.PlayerListS2CPacketAccessor",
     "accessors.PlayerMoveC2SPacketAccessor",
     "accessors.PlayerPositionAccessor",
@@ -69,6 +67,7 @@
     "ParticleManagerMixin",
     "PlayerListEntryMixin",
     "PlayerListHudMixin",
+    "ProjectionMixin",
     "RenderTickCounterDynamicMixin",
     "ScreenMixin",
     "TextRendererMixin",
@@ -85,7 +84,6 @@
     "accessors.MinecraftClientAccessor",
     "accessors.MouseAccessor",
     "accessors.NativeImageAccessor",
-    "accessors.PostEffectProcessorAccessor",
-    "accessors.WorldRendererAccessor"
+    "accessors.PostEffectProcessorAccessor"
   ]
 }

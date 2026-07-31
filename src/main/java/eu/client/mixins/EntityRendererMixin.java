@@ -20,7 +20,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(EntityRenderer.class)
 public class EntityRendererMixin<T extends Entity, S extends EntityRenderState> {
-    @Inject(method = "getDisplayName", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "getNameTag", at = @At("HEAD"), cancellable = true)
     private void getDisplayName(T entity, CallbackInfoReturnable<Component> info) {
         if (entity instanceof Player && EUClient.MODULE_MANAGER.getModule(NameTagsModule.class).isToggled()) {
             info.setReturnValue(null);

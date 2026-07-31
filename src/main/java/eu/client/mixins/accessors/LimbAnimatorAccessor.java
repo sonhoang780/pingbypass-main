@@ -6,6 +6,6 @@ import org.spongepowered.asm.mixin.gen.Accessor;
 
 @Mixin(WalkAnimationState.class)
 public interface LimbAnimatorAccessor {
-    @Accessor("pos")
+    @Accessor("position")
     void setPos(float pos);
 }

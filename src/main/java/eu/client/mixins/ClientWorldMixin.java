@@ -2,27 +2,18 @@ package eu.client.mixins;
 
 import eu.client.EUClient;
 import eu.client.events.impl.EntitySpawnEvent;
-import eu.client.modules.impl.visuals.AtmosphereModule;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.phys.Vec3;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-import java.awt.*;
-
+// PORT: getSkyColor(Vec3, float) no longer exists -- sky color is now driven by the
+// EnvironmentAttributes.SKY_COLOR attribute, consumed inside AtmosphericFogEnvironment.getBaseColor,
+// which BackgroundRendererMixin already overrides for AtmosphereModule. Nothing left to hook here.
 @Mixin(ClientLevel.class)
 public class ClientWorldMixin {
-    @Inject(method = "getSkyColor", at = @At("HEAD"), cancellable = true)
-    private void getSkyColor(Vec3 cameraPos, float tickDelta, CallbackInfoReturnable<Integer> info) {
-        if (EUClient.MODULE_MANAGER.getModule(AtmosphereModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(AtmosphereModule.class).modifyFog.getValue()) {
-            info.setReturnValue(EUClient.MODULE_MANAGER.getModule(AtmosphereModule.class).fogColor.getColor().getRGB());
-        }
-    }
-
     @Inject(method = "addEntity", at = @At(value = "HEAD"))
     private void addEntity(Entity entity, CallbackInfo info) {
         EUClient.EVENT_HANDLER.post(new EntitySpawnEvent(entity));

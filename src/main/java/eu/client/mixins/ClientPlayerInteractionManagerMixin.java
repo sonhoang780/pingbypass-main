@@ -28,7 +28,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(MultiPlayerGameMode.class)
 public class ClientPlayerInteractionManagerMixin {
-    @Shadow @Final private Minecraft client;
+    @Shadow @Final private Minecraft minecraft;
 
     @Inject(method = "ensureHasSentCarriedItem", at = @At("HEAD"), cancellable = true)
     private void syncSelectedSlot(CallbackInfo info) {
@@ -63,24 +63,24 @@ public class ClientPlayerInteractionManagerMixin {
     @Inject(method = "useItemOn", at = @At(value = "HEAD"), cancellable = true)
     private void interactBlock(LocalPlayer player, InteractionHand hand, BlockHitResult hitResult, CallbackInfoReturnable<InteractionResult> info) {
         NoInteractModule noInteractModule = EUClient.MODULE_MANAGER.getModule(NoInteractModule.class);
-        if (noInteractModule.isToggled() && noInteractModule.shouldNoInteract() && noInteractModule.mode.getValue().equalsIgnoreCase("Disable") && WorldUtils.RIGHT_CLICKABLE_BLOCKS.contains(client.level.getBlockState(hitResult.getBlockPos()).getBlock())) {
+        if (noInteractModule.isToggled() && noInteractModule.shouldNoInteract() && noInteractModule.mode.getValue().equalsIgnoreCase("Disable") && WorldUtils.RIGHT_CLICKABLE_BLOCKS.contains(minecraft.level.getBlockState(hitResult.getBlockPos()).getBlock())) {
             info.setReturnValue(InteractionResult.FAIL);
         }
     }
 
-    @Inject(method = "useItemOn", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/network/MultiPlayerGameMode;sendSequencedPacket(Lnet/minecraft/client/world/ClientWorld;Lnet/minecraft/client/network/SequencedPacketCreator;)V"))
+    @Inject(method = "useItemOn", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/multiplayer/MultiPlayerGameMode;startPrediction(Lnet/minecraft/client/multiplayer/ClientLevel;Lnet/minecraft/client/multiplayer/prediction/PredictiveAction;)V"))
     private void interactBlock$BEFORE(LocalPlayer player, InteractionHand hand, BlockHitResult hitResult, CallbackInfoReturnable<InteractionResult> cir) {
         NoInteractModule noInteractModule = EUClient.MODULE_MANAGER.getModule(NoInteractModule.class);
-        if (!client.player.isShiftKeyDown() && noInteractModule.isToggled() && noInteractModule.shouldNoInteract() && noInteractModule.mode.getValue().equalsIgnoreCase("Sneak") && WorldUtils.RIGHT_CLICKABLE_BLOCKS.contains(client.level.getBlockState(hitResult.getBlockPos()).getBlock())) {
-            client.player.connection.send(new ServerboundPlayerInputPacket(new Input(false, false, false, false, false, true, false)));
+        if (!minecraft.player.isShiftKeyDown() && noInteractModule.isToggled() && noInteractModule.shouldNoInteract() && noInteractModule.mode.getValue().equalsIgnoreCase("Sneak") && WorldUtils.RIGHT_CLICKABLE_BLOCKS.contains(minecraft.level.getBlockState(hitResult.getBlockPos()).getBlock())) {
+            minecraft.player.connection.send(new ServerboundPlayerInputPacket(new Input(false, false, false, false, false, true, false)));
         }
     }
 
-    @Inject(method = "useItemOn", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/network/MultiPlayerGameMode;sendSequencedPacket(Lnet/minecraft/client/world/ClientWorld;Lnet/minecraft/client/network/SequencedPacketCreator;)V", shift = At.Shift.AFTER))
+    @Inject(method = "useItemOn", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/multiplayer/MultiPlayerGameMode;startPrediction(Lnet/minecraft/client/multiplayer/ClientLevel;Lnet/minecraft/client/multiplayer/prediction/PredictiveAction;)V", shift = At.Shift.AFTER))
     private void interactBlock$AFTER(LocalPlayer player, InteractionHand hand, BlockHitResult hitResult, CallbackInfoReturnable<InteractionResult> info) {
         NoInteractModule noInteractModule = EUClient.MODULE_MANAGER.getModule(NoInteractModule.class);
-        if (!client.player.isShiftKeyDown() && noInteractModule.isToggled() && noInteractModule.shouldNoInteract() && noInteractModule.mode.getValue().equalsIgnoreCase("Sneak") && WorldUtils.RIGHT_CLICKABLE_BLOCKS.contains(client.level.getBlockState(hitResult.getBlockPos()).getBlock())) {
-            client.player.connection.send(new ServerboundPlayerInputPacket(new Input(false, false, false, false, false, false, false)));
+        if (!minecraft.player.isShiftKeyDown() && noInteractModule.isToggled() && noInteractModule.shouldNoInteract() && noInteractModule.mode.getValue().equalsIgnoreCase("Sneak") && WorldUtils.RIGHT_CLICKABLE_BLOCKS.contains(minecraft.level.getBlockState(hitResult.getBlockPos()).getBlock())) {
+            minecraft.player.connection.send(new ServerboundPlayerInputPacket(new Input(false, false, false, false, false, false, false)));
         }
     }
 

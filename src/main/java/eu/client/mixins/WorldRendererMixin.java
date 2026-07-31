@@ -19,7 +19,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 // BackgroundRendererMixin's still-deferred fog rearchitecture.
 @Mixin(LevelRenderer.class)
 public abstract class WorldRendererMixin {
-    @ModifyVariable(method = "renderLevel", at = @At("HEAD"), argsOnly = true)
+    @ModifyVariable(method = "renderLevel", at = @At("HEAD"), argsOnly = true, ordinal = 0)
     private boolean renderOutline(boolean renderOutline) {
         if (EUClient.MODULE_MANAGER != null && EUClient.MODULE_MANAGER.getModule(BlockHighlightModule.class).isToggled()) {
             return false;
@@ -28,7 +28,7 @@ public abstract class WorldRendererMixin {
         return renderOutline;
     }
 
-    @ModifyArg(method = "renderLevel", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/LevelRenderer;cullTerrain(Lnet/minecraft/client/Camera;Lnet/minecraft/client/renderer/culling/Frustum;Z)V"), index = 2)
+    @ModifyArg(method = "update", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/LevelRenderer;cullTerrain(Lnet/minecraft/client/Camera;Lnet/minecraft/client/renderer/culling/Frustum;Z)V"), index = 2)
     private boolean cullTerrain$isSpectator(boolean spectator) {
         return EUClient.MODULE_MANAGER.getModule(FreecamModule.class).isToggled() || spectator;
     }

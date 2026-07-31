@@ -17,13 +17,14 @@ public interface ClientPlayerEntityAccessor {
     @Invoker("isMoving")
     boolean invokeIsWalking();
 
-    // BEST-EFFORT: Yarn LocalPlayer.canSprint() (private, food>6 || allowFlying, AND !hasVehicle)
-    // no longer exists by that name; sprint-food gating moved to Player.hasEnoughFoodToDoExhaustiveManoeuvres()
-    // (protected, foodData.hasEnoughFood() || abilities.mayfly) which is invoked via
-    // LocalPlayer.isSprintingPossible(). Vehicle handling is now separate (vehicleCanSprint).
-    // Closest surviving equivalent; flagged as approximate.
-    @Invoker("hasEnoughFoodToDoExhaustiveManoeuvres")
-    boolean invokeCanSprint();
+    // Yarn LocalPlayer.canSprint() no longer exists; closest surviving equivalent is
+    // LocalPlayer.isSprintingPossible(boolean), which covers mobility-restriction, vehicle-sprint,
+    // and the old food>6||flying check (via Player.hasEnoughFoodToDoExhaustiveManoeuvres(), not
+    // directly targetable here since it's declared on the Player superclass, not LocalPlayer).
+    // The boolean param gates an internal isInShallowWater() check; pass true since callers
+    // already do their own water-state checks separately.
+    @Invoker("isSprintingPossible")
+    boolean invokeCanSprint(boolean ignoreWater);
 
     @Invoker("sendPosition")
     void invokeSendMovementPackets();

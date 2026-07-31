@@ -9,7 +9,7 @@ import org.spongepowered.asm.mixin.injection.At;
 
 @Mixin(WalkAnimationState.class)
 public class LimbAnimatorMixin {
-    @ModifyReturnValue(method = "getPos()F", at = @At("RETURN"))
+    @ModifyReturnValue(method = "position()F", at = @At("RETURN"))
     private float getPos(float original) {
         if(EUClient.MODULE_MANAGER.getModule(NoRenderModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(NoRenderModule.class).limbSwing.getValue()) {
             return 0;
@@ -18,7 +18,7 @@ public class LimbAnimatorMixin {
         }
     }
 
-    @ModifyReturnValue(method = "getPos(F)F", at = @At("RETURN"))
+    @ModifyReturnValue(method = "position(F)F", at = @At("RETURN"))
     private float getPos2(float original) {
         if(EUClient.MODULE_MANAGER.getModule(NoRenderModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(NoRenderModule.class).limbSwing.getValue()) {
             return 0;
@@ -27,7 +27,7 @@ public class LimbAnimatorMixin {
         }
     }
 
-    @ModifyReturnValue(method = "getSpeed()F", at = @At("RETURN"))
+    @ModifyReturnValue(method = "speed()F", at = @At("RETURN"))
     private float getSpeed(float original) {
         if(EUClient.MODULE_MANAGER.getModule(NoRenderModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(NoRenderModule.class).limbSwing.getValue()) {
             return 0;
@@ -36,7 +36,7 @@ public class LimbAnimatorMixin {
         }
     }
 
-    @ModifyReturnValue(method = "getSpeed(F)F", at = @At("RETURN"))
+    @ModifyReturnValue(method = "speed(F)F", at = @At("RETURN"))
     private float getSpeed2(float original) {
         if(EUClient.MODULE_MANAGER.getModule(NoRenderModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(NoRenderModule.class).limbSwing.getValue()) {
             return 0;

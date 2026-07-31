@@ -15,12 +15,12 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(KeyboardHandler.class)
 public class KeyboardMixin {
-    @Shadow @Final private Minecraft client;
+    @Shadow @Final private Minecraft minecraft;
 
     @Inject(method = "keyPress", at = @At("HEAD"))
     private void keyPress(long handle, int action, KeyEvent event, CallbackInfo info) {
         EUClient.EVENT_HANDLER.post(new UnfilteredKeyInputEvent(event.key(), event.scancode(), action, event.modifiers()));
-        if (handle == client.getWindow().handle() && action == 1 && client.screen == null) {
+        if (handle == minecraft.getWindow().handle() && action == 1 && minecraft.screen == null) {
             EUClient.EVENT_HANDLER.post(new KeyInputEvent(event.key(), event.modifiers()));
         }
     }

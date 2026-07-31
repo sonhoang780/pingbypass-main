@@ -19,11 +19,9 @@ import java.awt.*;
 
 @Mixin(TitleScreen.class)
 public abstract class TitleScreenMixin extends Screen implements IMinecraft {
-    @Shadow private boolean doBackgroundFade;
+    @Shadow private boolean fading;
 
-    @Shadow private float backgroundAlpha;
-
-    @Shadow private long backgroundFadeStart;
+    @Shadow private long fadeInStart;
 
     protected TitleScreenMixin(Component title) {
         super(title);
@@ -67,15 +65,11 @@ public abstract class TitleScreenMixin extends Screen implements IMinecraft {
         if (primaryText.isEmpty()) return;
 
         float f = 1.0F;
-        if (doBackgroundFade) {
-            float g = (float) (Util.getMillis() - backgroundFadeStart) / 2000.0F;
-            if (g > 1.0F) {
-                doBackgroundFade = false;
-                backgroundAlpha = 1.0F;
-            } else {
+        if (fading) {
+            float g = (float) (Util.getMillis() - fadeInStart) / 2000.0F;
+            if (g <= 1.0F) {
                 g = Mth.clamp(g, 0.0F, 1.0F);
                 f = Mth.clampedMap(g, 0.5F, 1.0F, 0.0F, 1.0F);
-                this.backgroundAlpha = Mth.clampedMap(g, 0.0F, 0.5F, 0.0F, 1.0F);
             }
         }
 

@@ -51,7 +51,7 @@ public abstract class MinecraftClientMixin implements IMinecraft {
         EUClient.onPostInitialize();
     }
 
-    @Inject(method = "renderFrame", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/Minecraft;runAllTasks()V", shift = At.Shift.AFTER))
+    @Inject(method = "runTick", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/Minecraft;runAllTasks()V", shift = At.Shift.AFTER))
     private void runTickHook(boolean tick, CallbackInfo info) {
         EUClient.EVENT_HANDLER.post(new GameLoopEvent());
     }
