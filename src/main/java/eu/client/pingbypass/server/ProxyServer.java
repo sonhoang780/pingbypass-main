@@ -3,7 +3,6 @@ package eu.client.pingbypass.server;
 import com.google.common.collect.Lists;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import eu.client.pingbypass.PingBypassConfig;
-import eu.client.pingbypass.modules.ProxyModuleManager;
 import eu.client.pingbypass.protocol.PbProtocolHandler;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
@@ -48,7 +47,6 @@ public class ProxyServer {
     private final List<Connection> connections = Collections.synchronizedList(Lists.newArrayList());
     private final PingBypassConfig config;
     private final PbProtocolHandler protocolHandler;
-    private final ProxyModuleManager moduleManager;
     private volatile boolean alive;
     private volatile boolean stayConnected;
     private volatile Connection serverConnection;
@@ -58,19 +56,8 @@ public class ProxyServer {
         this.config = config;
         this.alive = true;
         this.protocolHandler = new PbProtocolHandler();
-        this.moduleManager = new ProxyModuleManager();
         this.registryCache = new RegistryCache();
         this.protocolHandler.registerStayHandler(this);
-    }
-
-    /**
-     * Initializes the proxy module manager and registers module protocol handlers.
-     * Must be called after {@code EUClient.MODULE_MANAGER} is initialized, since
-     * the proxy reuses the real module instances from the client's ModuleManager.
-     */
-    public void initModules() {
-        this.moduleManager.init();
-        this.protocolHandler.registerModuleHandlers(this.moduleManager);
     }
 
     /**
@@ -204,10 +191,6 @@ public class ProxyServer {
 
     public PbProtocolHandler getProtocolHandler() {
         return protocolHandler;
-    }
-
-    public ProxyModuleManager getModuleManager() {
-        return moduleManager;
     }
 
     public boolean isStayConnected() {
