@@ -133,14 +133,20 @@ public class SpeedMineModule extends Module {
 
         boolean primaryPosChanged = primaryPos == null ? proxyPrimaryPos != null : !primaryPos.equals(proxyPrimaryPos);
         prevProxyPrimaryProgress = primaryPosChanged ? primaryProgress : proxyPrimaryProgress;
-        proxyPrimaryUpdateInterval = Math.max(1L, now - proxyPrimaryUpdateTime);
+        // Bounded above as well as below: proxyPrimaryUpdateTime starts at 0 (epoch), so the
+        // very first update here would otherwise compute "now - 0" -- a multi-decade interval --
+        // and interpolatedProgress's `t` would stay ~0 forever, looking exactly like "stuck, not
+        // interpolating". The same bug recurs any time updates stop for a while (module toggled
+        // off/on, network hiccup) since the gap is just as large relative to a normal ~50ms tick.
+        // Capping at the max interpolation window this method is meant to smooth over fixes both.
+        proxyPrimaryUpdateInterval = Mth.clamp(now - proxyPrimaryUpdateTime, 1L, 500L);
         proxyPrimaryUpdateTime = now;
         proxyPrimaryPos = primaryPos;
         proxyPrimaryProgress = primaryProgress;
 
         boolean secondaryPosChanged = secondaryPos == null ? proxySecondaryPos != null : !secondaryPos.equals(proxySecondaryPos);
         prevProxySecondaryProgress = secondaryPosChanged ? secondaryProgress : proxySecondaryProgress;
-        proxySecondaryUpdateInterval = Math.max(1L, now - proxySecondaryUpdateTime);
+        proxySecondaryUpdateInterval = Mth.clamp(now - proxySecondaryUpdateTime, 1L, 500L);
         proxySecondaryUpdateTime = now;
         proxySecondaryPos = secondaryPos;
         proxySecondaryProgress = secondaryProgress;
