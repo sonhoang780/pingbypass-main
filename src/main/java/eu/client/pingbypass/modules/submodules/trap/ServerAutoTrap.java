@@ -1,35 +1,36 @@
-package eu.client.modules.impl.combat;
+package eu.client.pingbypass.modules.submodules.trap;
 
 import eu.client.EUClient;
-import eu.client.events.SubscribeEvent;
-import eu.client.events.impl.PlayerUpdateEvent;
-import eu.client.modules.Module;
-import eu.client.modules.RegisterModule;
+import eu.client.pingbypass.modules.PbModule;
+import eu.client.settings.Setting;
 import eu.client.settings.impl.BooleanSetting;
-import eu.client.settings.impl.CategorySetting;
 import eu.client.settings.impl.ModeSetting;
 import eu.client.settings.impl.NumberSetting;
+import eu.client.utils.IMinecraft;
 import eu.client.utils.minecraft.HoleUtils;
 import eu.client.utils.minecraft.InventoryUtils;
 import eu.client.utils.minecraft.WorldUtils;
 import eu.client.utils.system.ThreadExecutor;
 import net.minecraft.client.player.AbstractClientPlayer;
-import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.item.BlockItem;
-import net.minecraft.world.InteractionHand;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.util.Mth;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.List;
 
-@RegisterModule(name = "AutoTrap", description = "Automatically places blocks around you to prevent other people from getting inside your hole.", category = Module.Category.COMBAT)
-public class AutoTrapModule extends Module {
+/**
+ * Proxy-only AutoTrap, ported from AutoTrapModule's shouldRunOnProxy()-guarded branch with
+ * the guard removed -- runs only on the proxy's own LocalPlayer.
+ */
+public class ServerAutoTrap extends PbModule implements IMinecraft {
     public ModeSetting autoSwitch = new ModeSetting("Switch", "The mode that will be used for automatically switching to necessary items.", "Silent", InventoryUtils.SWITCH_MODES);
     public ModeSetting mode = new ModeSetting("Mode", "The offsets that will be used when trapping.", "Full", new String[]{"Partial", "Full"});
-    public BooleanSetting head = new BooleanSetting("Head", "Whether or not to cover the block on the players head.", new ModeSetting.Visibility(mode, "Full"), true);
+    public BooleanSetting head = new BooleanSetting("Head", "Whether or not to cover the block on the players head.", true);
     public BooleanSetting asynchronous = new BooleanSetting("Asynchronous", "Performs calculations on separate threads.", true);
     public NumberSetting limit = new NumberSetting("Limit", "The number of blocks that can be placed per tick.", 4, 1, 20);
     public NumberSetting delay = new NumberSetting("Delay", "The amount of ticks that have to be waited for between placements.", 0, 0, 20);
@@ -53,8 +54,30 @@ public class AutoTrapModule extends Module {
     private int ticks = 0;
     private int blocksPlaced = 0;
 
-    @SubscribeEvent
-    public void onPlayerUpdate(PlayerUpdateEvent event) {
+    public ServerAutoTrap() {
+        super("AutoTrap");
+    }
+
+    @Override
+    public void onEnable() {
+        if (mc.player == null || mc.level == null) setToggled(false);
+    }
+
+    @Override
+    public void onDisable() {
+        positions = new ArrayList<>();
+    }
+
+    @Override
+    public List<Setting> getSettings() {
+        return List.of(autoSwitch, mode, head, asynchronous, limit, delay, range, enemyRange,
+                await, rotate, strictDirection, crystalDestruction, holeCheck, antiStep,
+                whileEating, selfDisable, itemDisable, render);
+    }
+
+    @Override
+    public void tick() {
+        if (mc.player == null || mc.level == null) return;
         if (!whileEating.getValue() && mc.player.isUsingItem()) return;
 
         List<AbstractClientPlayer> players = mc.level.players();
@@ -68,7 +91,7 @@ public class AutoTrapModule extends Module {
 
             if (autoSwitch.getValue().equalsIgnoreCase("None") && !(mc.player.getMainHandItem().getItem() instanceof BlockItem)) {
                 if (itemDisable.getValue()) {
-                    EUClient.CHAT_MANAGER.tagged("You are currently not holding any blocks.", getName());
+                    EUClient.LOGGER.info("[PB] AutoTrap: not holding any blocks");
                     setToggled(false);
                 }
 
@@ -81,7 +104,7 @@ public class AutoTrapModule extends Module {
 
             if (slot == -1) {
                 if (itemDisable.getValue()) {
-                    EUClient.CHAT_MANAGER.tagged("No blocks could be found in your hotbar.", getName());
+                    EUClient.LOGGER.info("[PB] AutoTrap: no blocks found in hotbar");
                     setToggled(false);
                 }
 
@@ -138,17 +161,6 @@ public class AutoTrapModule extends Module {
         else runnable.run();
     }
 
-    @Override
-    public void onEnable() {
-        if (mc.player == null || mc.level == null) setToggled(false);
-    }
-
-    @Override
-    public void onDisable() {
-        positions = new ArrayList<>();
-    }
-
-    @Override
     public String getMetaData() {
         return String.valueOf(positions.size());
     }

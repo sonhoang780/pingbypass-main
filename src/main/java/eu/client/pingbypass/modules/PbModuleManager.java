@@ -18,7 +18,7 @@ public class PbModuleManager {
      * no longer proxyEnhanced (that flag now only gates the not-yet-migrated modules still on
      * ProxyModuleManager). Update this set as more modules migrate.
      */
-    public static final Set<String> MIGRATED_MODULE_NAMES = Set.of("AutoCrystal", "AutoTotem", "Surround", "SpeedMine");
+    public static final Set<String> MIGRATED_MODULE_NAMES = Set.of("AutoCrystal", "AutoTotem", "Surround", "SpeedMine", "AutoTrap");
 
     private final List<PbModule> modules = new ArrayList<>();
 
