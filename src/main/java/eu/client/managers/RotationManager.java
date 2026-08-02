@@ -235,6 +235,11 @@ public class RotationManager implements IMinecraft {
         return PRIORITIES.getOrDefault(module.getName(), 0);
     }
 
+    /** Same lookup as getModulePriority(Module), for PbModule (proxy-only, not a client Module). */
+    public int getModulePriority(String moduleName) {
+        return PRIORITIES.getOrDefault(moduleName, 0);
+    }
+
     private int compareRotations(Rotation target, Rotation rotation) {
         if (target.getPriority() == rotation.getPriority()) return -Long.compare(target.getTime(), rotation.getTime());
         return -Integer.compare(target.getPriority(), rotation.getPriority());

@@ -436,17 +436,31 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
             switch (packetId) {
                 case eu.client.pingbypass.protocol.packets.C2SModuleTogglePacket.ID -> {
                     var pkt = new eu.client.pingbypass.protocol.packets.C2SModuleTogglePacket(buf);
-                    Module module = EUClient.MODULE_MANAGER.getModule(pkt.getModuleName());
-                    if (module != null) {
+                    eu.client.pingbypass.modules.PbModule pbModule = EUClient.PB_MODULE_MANAGER.getModule(pkt.getModuleName());
+                    if (pbModule != null) {
                         Minecraft.getInstance().execute(() -> {
-                            module.setToggled(pkt.isEnabled(), false);
-                            LOGGER.info("[PB] Module {} toggled to {}", pkt.getModuleName(), pkt.isEnabled());
+                            eu.client.pingbypass.modules.SyncModule.applyToggle(pbModule, pkt.isEnabled());
+                            LOGGER.info("[PB] PbModule {} toggled to {}", pkt.getModuleName(), pkt.isEnabled());
                         });
+                    } else {
+                        Module module = EUClient.MODULE_MANAGER.getModule(pkt.getModuleName());
+                        if (module != null) {
+                            Minecraft.getInstance().execute(() -> {
+                                module.setToggled(pkt.isEnabled(), false);
+                                LOGGER.info("[PB] Module {} toggled to {}", pkt.getModuleName(), pkt.isEnabled());
+                            });
+                        }
                     }
                 }
                 case eu.client.pingbypass.protocol.packets.C2SSettingChangePacket.ID -> {
                     var pkt = new eu.client.pingbypass.protocol.packets.C2SSettingChangePacket(buf);
-                    handleSettingChange(pkt);
+                    eu.client.pingbypass.modules.PbModule pbModule = EUClient.PB_MODULE_MANAGER.getModule(pkt.getModuleName());
+                    if (pbModule != null) {
+                        Minecraft.getInstance().execute(() ->
+                                eu.client.pingbypass.modules.SyncModule.applySetting(pbModule, pkt.getSettingName(), pkt.getValue()));
+                    } else {
+                        handleSettingChange(pkt);
+                    }
                 }
                 case eu.client.pingbypass.protocol.packets.C2SFriendSyncPacket.ID -> {
                     var pkt = new eu.client.pingbypass.protocol.packets.C2SFriendSyncPacket(buf);

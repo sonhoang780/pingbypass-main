@@ -1,138 +1,119 @@
-package eu.client.modules.impl.combat;
+package eu.client.pingbypass.modules.submodules.crystal;
 
-import lombok.AllArgsConstructor;
-import lombok.Getter;
 import eu.client.EUClient;
 import eu.client.events.SubscribeEvent;
 import eu.client.events.impl.*;
-import eu.client.modules.Module;
-import eu.client.modules.RegisterModule;
+import eu.client.modules.impl.combat.SuicideModule;
 import eu.client.modules.impl.player.SpeedMineModule;
 import eu.client.modules.impl.player.ThrowXPModule;
+import eu.client.pingbypass.modules.PbModule;
+import eu.client.settings.Setting;
 import eu.client.settings.impl.*;
-import eu.client.utils.color.ColorUtils;
+import eu.client.utils.IMinecraft;
 import eu.client.utils.minecraft.DamageUtils;
 import eu.client.utils.minecraft.InventoryUtils;
+import eu.client.utils.minecraft.NetworkUtils;
 import eu.client.utils.minecraft.PositionUtils;
 import eu.client.utils.minecraft.WorldUtils;
 import eu.client.utils.rotations.RotationUtils;
 import eu.client.utils.system.Counter;
 import eu.client.utils.system.Timer;
-import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.world.level.block.Blocks;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
+import net.minecraft.network.protocol.game.ServerboundAttackPacket;
+import net.minecraft.network.protocol.game.ServerboundSwingPacket;
+import net.minecraft.network.protocol.game.ServerboundUseItemOnPacket;
+import net.minecraft.util.Mth;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.ExperienceOrb;
-import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.boss.enderdragon.EndCrystal;
-import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ExperienceBottleItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
-import net.minecraft.network.protocol.game.ServerboundAttackPacket;
-import net.minecraft.network.protocol.game.ServerboundSwingPacket;
-import net.minecraft.network.protocol.game.ServerboundUseItemOnPacket;
-import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
-import net.minecraft.world.InteractionHand;
-import net.minecraft.world.phys.BlockHitResult;
-import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.AABB;
-import net.minecraft.core.Direction;
-import net.minecraft.util.Mth;
+import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 
 import java.text.DecimalFormat;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
-@RegisterModule(name = "AutoCrystal", description = "Automatically places and attacks crystals to annihilate your opponents.", category = Module.Category.COMBAT)
-public class AutoCrystalModule extends Module {
-    public CategorySetting attackCategory = new CategorySetting("Attack", "The category for settings related to attacking crystals.");
-    public BooleanSetting attack = new BooleanSetting("Attack", "Enabled", "Automatically attacks crystals that are deemed safe.", new CategorySetting.Visibility(attackCategory), true);
-    public NumberSetting attackSpeed = new NumberSetting("AttackSpeed", "Speed", "The speed at which crystals will be attacked.", new CategorySetting.Visibility(attackCategory), 20.0f, 0.1f, 20.0f);
-    public NumberSetting attackRange = new NumberSetting("AttackRange", "Range", "The maximum distance at which crystals will be attacked.", new CategorySetting.Visibility(attackCategory), 4.5, 0.0, 8.0);
-    public NumberSetting attackWallsRange = new NumberSetting("AttackWallsRange", "WallsRange", "The maximum distance at which crystals will be attacked through walls.", new CategorySetting.Visibility(attackCategory), 4.5, 0.0, 8.0);
-    public ModeSetting antiWeakness = new ModeSetting("AntiWeakness", "Allows you to attack crystals when weaknessed.", new CategorySetting.Visibility(attackCategory), "None", new String[]{"None", "Normal", "Silent"});
-    public BooleanSetting instant = new BooleanSetting("Instant", "Instantly attacks crystals once they spawn.", new CategorySetting.Visibility(attackCategory), true);
-    public BooleanSetting inhibit = new BooleanSetting("Inhibit", "Prevents excessive attacks on crystals by blacklisting crystals when attacking them.", new CategorySetting.Visibility(attackCategory), true);
+/**
+ * Proxy-only AutoCrystal, ported from AutoCrystalModule's isRunningOnProxy()-guarded
+ * branches with the guards removed entirely -- this class only ever runs on the proxy's
+ * own LocalPlayer (mc.player, via IMinecraft.mc), so there is no second execution context
+ * to branch on. Render-only settings (color/animation/icon) are dropped: the proxy has no
+ * GUI to render for itself, it just forwards the raw target position via
+ * EUClient.RENDER_MANAGER.setRenderPosition(...) so the real client can render it.
+ */
+public class ServerAutoCrystal extends PbModule implements IMinecraft {
+    public BooleanSetting attack = new BooleanSetting("Attack", "Automatically attacks crystals that are deemed safe.", true);
+    public NumberSetting attackSpeed = new NumberSetting("AttackSpeed", "The speed at which crystals will be attacked.", 20.0f, 0.1f, 20.0f);
+    public NumberSetting attackRange = new NumberSetting("AttackRange", "The maximum distance at which crystals will be attacked.", 4.5, 0.0, 8.0);
+    public NumberSetting attackWallsRange = new NumberSetting("AttackWallsRange", "The maximum distance at which crystals will be attacked through walls.", 4.5, 0.0, 8.0);
+    public ModeSetting antiWeakness = new ModeSetting("AntiWeakness", "Allows you to attack crystals when weaknessed.", "None", new String[]{"None", "Normal", "Silent"});
+    public BooleanSetting instant = new BooleanSetting("Instant", "Instantly attacks crystals once they spawn.", true);
+    public BooleanSetting inhibit = new BooleanSetting("Inhibit", "Prevents excessive attacks on crystals by blacklisting crystals when attacking them.", true);
 
-    public CategorySetting placeCategory = new CategorySetting("Place", "The category for settings related to placing crystals.");
-    public BooleanSetting place = new BooleanSetting("Place", "Enabled", "Automatically places crystals on positions that are deemed safe and lethal enough.", new CategorySetting.Visibility(placeCategory), true);
-    public NumberSetting placeSpeed = new NumberSetting("PlaceSpeed", "Speed", "The speed at which crystals will be placed.", new CategorySetting.Visibility(placeCategory), 20.0f, 0.1f, 20.0f);
-    public NumberSetting placeRange = new NumberSetting("PlaceRange", "Range", "The maximum distance at which positions will be placed on.", new CategorySetting.Visibility(placeCategory), 4.5, 0.0, 8.0);
-    public NumberSetting placeWallsRange = new NumberSetting("PlaceWallsRange", "WallsRange", "The maximum distance at which positions will be placed on through walls.", new CategorySetting.Visibility(placeCategory), 4.5, 0.0, 8.0);
-    public ModeSetting placements = new ModeSetting("Placements", "The version of the game that will be used for crystal placement calculations.", new CategorySetting.Visibility(placeCategory), "Native", new String[]{"Native", "Protocol"});
-    public BooleanSetting blockDestruction = new BooleanSetting("BlockDestruction", "Places crystals on top of mined blocks in order to damage opponents.", new CategorySetting.Visibility(placeCategory), true);
-    public ModeSetting autoSwitch = new ModeSetting("Switch", "Automatically switches to a crystal if you aren't currently holding one.", new CategorySetting.Visibility(placeCategory), "None", new String[]{"None", "Normal", "Silent", "AltSwap"});
-    public BooleanSetting swapBack = new BooleanSetting("SwapBack", "Switches back to the item you were holding before the module started switching to crystals, once the module is disabled.", new ModeSetting.Visibility(autoSwitch, "Normal"), false);
+    public BooleanSetting place = new BooleanSetting("Place", "Automatically places crystals on positions that are deemed safe and lethal enough.", true);
+    public NumberSetting placeSpeed = new NumberSetting("PlaceSpeed", "The speed at which crystals will be placed.", 20.0f, 0.1f, 20.0f);
+    public NumberSetting placeRange = new NumberSetting("PlaceRange", "The maximum distance at which positions will be placed on.", 4.5, 0.0, 8.0);
+    public NumberSetting placeWallsRange = new NumberSetting("PlaceWallsRange", "The maximum distance at which positions will be placed on through walls.", 4.5, 0.0, 8.0);
+    public ModeSetting placements = new ModeSetting("Placements", "The version of the game that will be used for crystal placement calculations.", "Native", new String[]{"Native", "Protocol"});
+    public BooleanSetting blockDestruction = new BooleanSetting("BlockDestruction", "Places crystals on top of mined blocks in order to damage opponents.", true);
+    public ModeSetting autoSwitch = new ModeSetting("Switch", "Automatically switches to a crystal if you aren't currently holding one.", "None", new String[]{"None", "Normal", "Silent", "AltSwap"});
+    public BooleanSetting swapBack = new BooleanSetting("SwapBack", "Switches back to the item you were holding before the module started switching to crystals.", false);
 
-    public CategorySetting miscellaneousCategory = new CategorySetting("Miscellaneous", "The category for all miscellaneous settings.");
-    public ModeSetting sequential = new ModeSetting("Sequential", "The sequence that the module's processes will be run in.", new CategorySetting.Visibility(miscellaneousCategory), "Strong", new String[]{"None", "Strict", "Strong"});
-    public ModeSetting rotate = new ModeSetting("Rotate", "Automatically rotates to the crystal whenever attacking or placing.", new CategorySetting.Visibility(miscellaneousCategory), "Normal", new String[]{"None", "Normal", "Packet"});
-    public ModeSetting swing = new ModeSetting("Swing", "The hand that will be used for swinging.", new CategorySetting.Visibility(miscellaneousCategory), "Default", new String[]{"Default", "None", "Packet", "Mainhand", "Offhand", "Both"});
-    public BooleanSetting yawStep = new BooleanSetting("YawStep", "Performs your rotations over multiple ticks.", new CategorySetting.Visibility(miscellaneousCategory), false);
-    public NumberSetting yawStepThreshold = new NumberSetting("YawStepThreshold", "Threshold", "The threshold in order for yaw to be modified.", new BooleanSetting.Visibility(yawStep, true), 75, 1, 180);
-    public BooleanSetting raytrace = new BooleanSetting("Raytrace", "Avoids attacking or placing any crystals through walls.", new CategorySetting.Visibility(miscellaneousCategory), false);
-    public NumberSetting extrapolation = new NumberSetting("Extrapolation", "Extrapolates the target's position to calculate positions ahead of time.", new CategorySetting.Visibility(miscellaneousCategory), 0, 0, 20);
-    public NumberSetting enemyRange = new NumberSetting("EnemyRange", "The maximum distance at which enemies can be at.", new CategorySetting.Visibility(miscellaneousCategory), 10.0, 0.0, 24.0);
-    public BooleanSetting chestBreak = new BooleanSetting("ChestBreak", "Prevents other players from getting obsidian from ender chests by destroying the dropped items.", new CategorySetting.Visibility(miscellaneousCategory), false);
-    public BooleanSetting asynchronous = new BooleanSetting("Asynchronous", "Performs calculations on separate threads.", new CategorySetting.Visibility(miscellaneousCategory), true);
-    public BooleanSetting gameLoop = new BooleanSetting("GameLoop", "Runs the module on loop instead of ticks.", new CategorySetting.Visibility(miscellaneousCategory), false);
-    public NumberSetting loopDelay = new NumberSetting("LoopDelay", "The delay that has to be waited out before running the module again.", new BooleanSetting.Visibility(gameLoop, true), 50, 0, 1000);
-    public ModeSetting whileEating = new ModeSetting("WhileEating", "Places and attacks crystal while eating or using items.", new CategorySetting.Visibility(miscellaneousCategory), "Both", new String[]{"None", "Attack", "Place", "Both"});
+    public ModeSetting sequential = new ModeSetting("Sequential", "The sequence that the module's processes will be run in.", "Strong", new String[]{"None", "Strict", "Strong"});
+    public ModeSetting rotate = new ModeSetting("Rotate", "Automatically rotates to the crystal whenever attacking or placing.", "Normal", new String[]{"None", "Normal", "Packet"});
+    public ModeSetting swing = new ModeSetting("Swing", "The hand that will be used for swinging.", "Default", new String[]{"Default", "None", "Packet", "Mainhand", "Offhand", "Both"});
+    public BooleanSetting yawStep = new BooleanSetting("YawStep", "Performs your rotations over multiple ticks.", false);
+    public NumberSetting yawStepThreshold = new NumberSetting("YawStepThreshold", "The threshold in order for yaw to be modified.", 75, 1, 180);
+    public BooleanSetting raytrace = new BooleanSetting("Raytrace", "Avoids attacking or placing any crystals through walls.", false);
+    public NumberSetting extrapolation = new NumberSetting("Extrapolation", "Extrapolates the target's position to calculate positions ahead of time.", 0, 0, 20);
+    public NumberSetting enemyRange = new NumberSetting("EnemyRange", "The maximum distance at which enemies can be at.", 10.0, 0.0, 24.0);
+    public BooleanSetting chestBreak = new BooleanSetting("ChestBreak", "Prevents other players from getting obsidian from ender chests by destroying the dropped items.", false);
+    public BooleanSetting gameLoop = new BooleanSetting("GameLoop", "Runs the module on loop instead of ticks.", false);
+    public NumberSetting loopDelay = new NumberSetting("LoopDelay", "The delay that has to be waited out before running the module again.", 50, 0, 1000);
+    public ModeSetting whileEating = new ModeSetting("WhileEating", "Places and attacks crystal while eating or using items.", "Both", new String[]{"None", "Attack", "Place", "Both"});
 
-    public CategorySetting predictionCategory = new CategorySetting("Prediction", "The category for settings related to attack prediction.");
-    public BooleanSetting godSync = new BooleanSetting("GodSync", "Makes the attacking way faster by predicting entity IDs.", new CategorySetting.Visibility(predictionCategory), false);
-    public NumberSetting predictions = new NumberSetting("Predictions", "The amount of predictions that will be done after placing.", new CategorySetting.Visibility(predictionCategory), 10, 1, 20);
-    public NumberSetting offset = new NumberSetting("Offset", "The amount that the last entity ID should be offset by.", new CategorySetting.Visibility(predictionCategory), 0, 0, 2);
-    public ModeSetting godSwing = new ModeSetting("GodSwing", "Swing", "The swinging that will be done for each predicted attack.", new CategorySetting.Visibility(predictionCategory), "Normal", new String[]{"None", "Normal", "Strict"});
-    public BooleanSetting fast = new BooleanSetting("Fast", "Improves the speed of the prediction calculations at the cost of stability.", new CategorySetting.Visibility(predictionCategory), false);
-    public BooleanSetting antiKick = new BooleanSetting("AntiKick", "Prevents you from getting kicked by attacking invalid entity IDs.", new CategorySetting.Visibility(predictionCategory), false);
-    public NumberSetting kickThreshold = new NumberSetting("KickThreshold", "Threshold", "The tick threshold for the kick prevention.", new BooleanSetting.Visibility(antiKick, true), 5, 1, 10);
+    public BooleanSetting godSync = new BooleanSetting("GodSync", "Makes the attacking way faster by predicting entity IDs.", false);
+    public NumberSetting predictions = new NumberSetting("Predictions", "The amount of predictions that will be done after placing.", 10, 1, 20);
+    public NumberSetting offset = new NumberSetting("Offset", "The amount that the last entity ID should be offset by.", 0, 0, 2);
+    public ModeSetting godSwing = new ModeSetting("GodSwing", "The swinging that will be done for each predicted attack.", "Normal", new String[]{"None", "Normal", "Strict"});
+    public BooleanSetting fast = new BooleanSetting("Fast", "Improves the speed of the prediction calculations at the cost of stability.", false);
+    public BooleanSetting antiKick = new BooleanSetting("AntiKick", "Prevents you from getting kicked by attacking invalid entity IDs.", false);
+    public NumberSetting kickThreshold = new NumberSetting("KickThreshold", "The tick threshold for the kick prevention.", 5, 1, 10);
 
-    public CategorySetting facePlaceCategory = new CategorySetting("Faceplace", "The category for settings relating to faceplacing.");
-    public ModeSetting facePlaceMode = new ModeSetting("FaceplaceMode", "Mode", "The checks that will be done in order to faceplace.", new CategorySetting.Visibility(facePlaceCategory), "Dynamic", new String[]{"None", "Dynamic", "Always"});
-    public ModeSetting facePlaceSpeed = new ModeSetting("FaceplaceSpeed", "Speed", "The speed that players will be faceplaced at.", new CategorySetting.Visibility(facePlaceCategory), "Normal", new String[]{"Normal", "Custom"});
-    public NumberSetting facePlaceDelay = new NumberSetting("FaceplaceDelay", "Delay", "The ticks that have to be waited for before faceplacing again.", new ModeSetting.Visibility(facePlaceSpeed, "Custom"), 11, 0, 20);
-    public BooleanSetting healthPlace = new BooleanSetting("HealthPlace", "Whether or not to faceplace when the target's health is low.", new ModeSetting.Visibility(facePlaceMode, "Dynamic"), true);
-    public NumberSetting health = new NumberSetting("Health", "The health that the target needs to be at in order for the module to start faceplacing.", new BooleanSetting.Visibility(healthPlace, true), 8.0f, 0.0f, 36.0f);
-    public BooleanSetting armorPlace = new BooleanSetting("ArmorPlace", "Whether or not to faceplace when the target's armor is low on durability.", new ModeSetting.Visibility(facePlaceMode, "Dynamic"), true);
-    public NumberSetting percentage = new NumberSetting("Percentage", "The percentage that one of the target's armor pieces need to be at in order to start faceplacing.", new BooleanSetting.Visibility(armorPlace, true), 10, 1, 100);
+    public ModeSetting facePlaceMode = new ModeSetting("FaceplaceMode", "The checks that will be done in order to faceplace.", "Dynamic", new String[]{"None", "Dynamic", "Always"});
+    public ModeSetting facePlaceSpeed = new ModeSetting("FaceplaceSpeed", "The speed that players will be faceplaced at.", "Normal", new String[]{"Normal", "Custom"});
+    public NumberSetting facePlaceDelay = new NumberSetting("FaceplaceDelay", "The ticks that have to be waited for before faceplacing again.", 11, 0, 20);
+    public BooleanSetting healthPlace = new BooleanSetting("HealthPlace", "Whether or not to faceplace when the target's health is low.", true);
+    public NumberSetting health = new NumberSetting("Health", "The health that the target needs to be at in order for the module to start faceplacing.", 8.0f, 0.0f, 36.0f);
+    public BooleanSetting armorPlace = new BooleanSetting("ArmorPlace", "Whether or not to faceplace when the target's armor is low on durability.", true);
+    public NumberSetting percentage = new NumberSetting("Percentage", "The percentage that one of the target's armor pieces need to be at in order to start faceplacing.", 10, 1, 100);
 
-    public CategorySetting damageCategory = new CategorySetting("Damage", "The category for settings related to damage calculations.");
-    public NumberSetting minimumDamage = new NumberSetting("MinimumDamage", "Minimum", "The minimum damage that has to be dealt to enemies.", new CategorySetting.Visibility(damageCategory), 6.0, 0.0, 36.0);
-    public NumberSetting maximumSelfDamage = new NumberSetting("MaximumSelfDamage", "MaximumSelf", "The maximum damage that can be dealt to you by crystals.", new CategorySetting.Visibility(damageCategory), 10.0, 0.0, 36.0);
-    public NumberSetting lethalMultiplier = new NumberSetting("LethalMultiplier", "The amount of crystals that the target has to be killed by in order to ignore minimum damage.", new CategorySetting.Visibility(damageCategory), 1.5f, 0.0f, 4.0f);
-    public BooleanSetting antiSuicide = new BooleanSetting("AntiSuicide", "Prevents crystals from accidentally killing you when you're low on health.", new CategorySetting.Visibility(damageCategory), true);
-    public BooleanSetting ignoreTerrain = new BooleanSetting("IgnoreTerrain", "Ignores terrain that can be destroyed when calculating damage.", new CategorySetting.Visibility(damageCategory), true);
-
-    public CategorySetting renderCategory = new CategorySetting("Render", "Contains all of the settings relating to position rendering.");
-    public ModeSetting animationMode = new ModeSetting("Animation", "The animation that will be applied to the rendering.", new CategorySetting.Visibility(renderCategory), "Static", new String[]{"Static", "Slide"});
-    public ModeSetting mode = new ModeSetting("Mode", "The mode for the auto crystal render.", new CategorySetting.Visibility(renderCategory), "Fade", new String[]{"Fade", "Shrink"});
-    public NumberSetting duration = new NumberSetting("Duration", "The duration for the place render.", new CategorySetting.Visibility(renderCategory), 300, 0, 1000);
-    public NumberSetting slideSmoothness = new NumberSetting("Smoothness", "The smoothness for the slide while place position is changing.", new CategorySetting.Visibility(renderCategory), 1, 0, 20);
-    public ModeSetting renderMode = new ModeSetting("RenderMode", "The rendering that will be applied to the target position.", new CategorySetting.Visibility(renderCategory), "Both", new String[]{"None", "Fill", "Outline", "Both"});
-    public ColorSetting fillColorUp = new ColorSetting("FillColorUp", "The color that will be used for the fill gradiant upper part rendering.", new ModeSetting.Visibility(renderMode, "Fill", "Both"), ColorUtils.getDefaultFillColor());
-    public ColorSetting fillColorDown = new ColorSetting("FillColorDown", "The color that will be used for the fill gradiant lower part rendering.", new ModeSetting.Visibility(renderMode, "Fill", "Both"), ColorUtils.getDefaultFillColor());
-    public ColorSetting outlineColorUp = new ColorSetting("OutlineColorUp", "The color that will be used for the outline gradiant upper part rendering.", new ModeSetting.Visibility(renderMode, "Outline", "Both"), ColorUtils.getDefaultOutlineColor());
-    public ColorSetting outlineColorDown = new ColorSetting("OutlineColorDown", "The color that will be used for the outline gradiant lower part rendering.", new ModeSetting.Visibility(renderMode, "Outline", "Both"), ColorUtils.getDefaultOutlineColor());
-    public BooleanSetting renderDamage = new BooleanSetting("RenderDamage", "Damage", "Renders the damage that the position will do to the opponent.", new CategorySetting.Visibility(renderCategory), false);
-    public BooleanSetting icon = new BooleanSetting("Icon", "Renders a customizable crystal icon on the rendered position.", new CategorySetting.Visibility(renderCategory), false);
-    public NumberSetting iconScale = new NumberSetting("IconScale", "The scaling that will be applied to the crystal icon rendering.", new BooleanSetting.Visibility(icon, true), 3, 1, 5);
-    public NumberSetting iconRadius = new NumberSetting("IconRadius", "The difference between the outer circle and the inner circle.", new BooleanSetting.Visibility(icon, true), 2.0f, 0.0f, 5.0f);
-    public ColorSetting iconColor = new ColorSetting("IconColor", "The color that will be used for the crystal icon rendering.", new BooleanSetting.Visibility(icon, true), ColorUtils.getDefaultColor());
+    public NumberSetting minimumDamage = new NumberSetting("MinimumDamage", "The minimum damage that has to be dealt to enemies.", 6.0, 0.0, 36.0);
+    public NumberSetting maximumSelfDamage = new NumberSetting("MaximumSelfDamage", "The maximum damage that can be dealt to you by crystals.", 10.0, 0.0, 36.0);
+    public NumberSetting lethalMultiplier = new NumberSetting("LethalMultiplier", "The amount of crystals that the target has to be killed by in order to ignore minimum damage.", 1.5f, 0.0f, 4.0f);
+    public BooleanSetting antiSuicide = new BooleanSetting("AntiSuicide", "Prevents crystals from accidentally killing you when you're low on health.", true);
+    public BooleanSetting ignoreTerrain = new BooleanSetting("IgnoreTerrain", "Ignores terrain that can be destroyed when calculating damage.", true);
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
-    // executor's queue is unbounded and nothing here ever cancels/drains it -- if a task ever
-    // takes longer than the tick interval (GC pause, toggling off mid-task then back on
-    // immediately resubmits without the old one having finished, etc.) tasks pile up and each
-    // toggle-off/on cycle can leave more of a backlog than the last, showing up later as
-    // AutoCrystal getting progressively slower for no visible reason. Track the in-flight task
-    // and skip resubmitting while one is still running instead of queueing another -- only the
-    // latest calculation is ever useful anyway.
-    private volatile java.util.concurrent.Future<?> pendingCalc = null;
+    private volatile Future<?> pendingCalc = null;
 
     private Runnable attackRunnable = null;
     private Runnable placeRunnable = null;
@@ -146,16 +127,11 @@ public class AutoCrystalModule extends Module {
     private final Timer facePlaceTimer = new Timer();
     private final Timer loopTimer = new Timer();
     private final Timer cpsLogTimer = new Timer();
-    // Raw monotonic counters (never TTL-cleared, unlike attackedCrystals/placedCrystals) --
-    // ping*2 as the map cleanup TTL means TTL=0 whenever ping reads 0 (e.g. before the first
-    // real keepalive round-trip completes early in a session), which empties those maps
-    // instantly and made the state log always show 0 regardless of what was really happening.
     private long totalPlaces = 0;
     private long totalAttacks = 0;
 
     private boolean sequenceAttack = false;
     private boolean sequencePlace = true;
-
     private boolean attackedSequentially = false;
     private boolean placedSequentially = false;
 
@@ -174,44 +150,90 @@ public class AutoCrystalModule extends Module {
 
     private int highestID = -100000;
     private int kickTicks = 0;
-
-    // SwapBack (Switch=Normal only): captured the FIRST time we switch away from a non-crystal item
-    // and left alone on every placement after that -- placeCrystals() reads the CURRENT selected slot
-    // as "previousSlot" each call, which after the first switch would just be the crystal slot itself,
-    // not the real original item. Restored once, when the module is disabled, not after every place.
     private int savedSlot = -1;
 
-    @SubscribeEvent
-    public void onPlayerUpdate(PlayerUpdateEvent event) {
+    public ServerAutoCrystal() {
+        super("AutoCrystal");
+    }
+
+    @Override
+    public void onEnable() {
+        EUClient.EVENT_HANDLER.subscribe(this);
+    }
+
+    @Override
+    public void onDisable() {
+        EUClient.EVENT_HANDLER.unsubscribe(this);
+
+        if (pendingCalc != null) {
+            pendingCalc.cancel(false);
+            pendingCalc = null;
+        }
+
+        EUClient.LOGGER.info("[PB] AutoCrystal proxy-side CPS={} at disable (ping to real server={}ms, calc={})",
+                crystalCounter.getCount(), EUClient.SERVER_MANAGER.getPing(), calculationTime);
+
+        if (savedSlot != -1) {
+            InventoryUtils.switchBackNormal(savedSlot);
+            savedSlot = -1;
+        }
+
+        attackRunnable = null;
+        placeRunnable = null;
+
+        EUClient.RENDER_MANAGER.setRenderPosition(null);
+
+        attackedCrystals.clear();
+        placedCrystals.clear();
+        countedCrystals.clear();
+
+        attackedSequentially = false;
+        placedSequentially = false;
+
+        target = null;
+        placeTarget = null;
+        mineTarget = null;
+
+        calculationTime = "0.00ms";
+        calculationCount = 0;
+        calculationDamage = "0.00";
+
+        crystalCounter.reset();
+        highestID = -100000;
+    }
+
+    @Override
+    public List<Setting> getSettings() {
+        return List.of(attack, attackSpeed, attackRange, attackWallsRange, antiWeakness, instant, inhibit,
+                place, placeSpeed, placeRange, placeWallsRange, placements, blockDestruction, autoSwitch, swapBack,
+                sequential, rotate, swing, yawStep, yawStepThreshold, raytrace, extrapolation, enemyRange,
+                chestBreak, gameLoop, loopDelay, whileEating,
+                godSync, predictions, offset, godSwing, fast, antiKick, kickThreshold,
+                facePlaceMode, facePlaceSpeed, facePlaceDelay, healthPlace, health, armorPlace, percentage,
+                minimumDamage, maximumSelfDamage, lethalMultiplier, antiSuicide, ignoreTerrain);
+    }
+
+    /** Called once per proxy tick (see PbModuleManager.tick(), driven by ProxyServerTickListener). */
+    @Override
+    public void tick() {
         if (mc.player == null || mc.level == null) return;
 
-        // ping*2 alone has no floor -- at low/near-zero ping (e.g. a VPS colocated with the
-        // target server) this drops to a handful of ms, LESS than the ~50ms minimum the real
-        // server needs just to process the action and tick out a response (one server tick,
-        // regardless of network latency). The tracking entry then expires before the server's
-        // own confirmation could ever arrive, making "did I just place/attack this" unreliable
-        // on a per-action basis -- sometimes the timing lines up and it works, sometimes it
-        // doesn't, which is exactly what shows up as CPS randomly fluctuating even with a
-        // perfectly stable, near-zero connection. Floor it at one server tick's worth.
         long minTtl = 50L;
         attackedCrystals.entrySet().removeIf(entry -> System.currentTimeMillis() - entry.getValue() > Math.max(EUClient.SERVER_MANAGER.getPing() * 2L, minTtl));
-        // placedCrystals specifically has to OUTLIVE the round trip it exists to bridge:
-        // place() records the position, and onEntitySpawn/calculateCrystals then require
-        // placedCrystals.containsKey(crystal.blockPosition().below()) to recognise the crystal
-        // the server eventually spawns there as "ours" and instant-attack it. That spawn packet
-        // can't come back faster than (proxy->server + one server tick + server->proxy), which
-        // on any real connection is well past the 50ms floor the other two maps use -- so the
-        // entry was usually already evicted by the time its own crystal arrived. The
-        // instant-attack never matched, the Strong-sequential place->attack->place chain never
-        // started, and the one crystal sitting there unattacked became an "obstruction" in
-        // calculatePlacements after 15 ticks, blocking that position for good: place exactly one
-        // crystal, then stall. Give this map a floor that actually covers a full round trip.
         long placedTtl = Math.max(EUClient.SERVER_MANAGER.getPing() * 2L, 500L)
                 + (long) ((20 - attackSpeed.getValue().floatValue()) * 50L);
         placedCrystals.entrySet().removeIf(entry -> System.currentTimeMillis() - entry.getValue() > placedTtl);
         countedCrystals.entrySet().removeIf(entry -> System.currentTimeMillis() - entry.getValue() > Math.max(EUClient.SERVER_MANAGER.getPing() * 2L, minTtl));
 
         crystalsPerSecond = crystalCounter.getCount();
+
+        if (cpsLogTimer.hasTimeElapsed(2000L)) {
+            cpsLogTimer.reset();
+            EUClient.LOGGER.info("[PB] AutoCrystal proxy-side CPS={} (ping to real server={}ms, calc={})",
+                    crystalsPerSecond, EUClient.SERVER_MANAGER.getPing(), calculationTime);
+            EUClient.LOGGER.info("[PB] AutoCrystal state: totalPlaces={} totalAttacks={} attackTarget={} placeTarget={} sequenceAttack={} sequencePlace={}",
+                    totalPlaces, totalAttacks, attackTarget != null, placeTarget != null, sequenceAttack, sequencePlace);
+        }
 
         Runnable runnable = () -> {
             long startTime = System.nanoTime();
@@ -222,11 +244,15 @@ public class AutoCrystalModule extends Module {
             long calcNanos = System.nanoTime() - startTime;
             calculationTime = new DecimalFormat("0.00").format(calcNanos / 1000000.0) + "ms";
             calculationCount = placeTarget == null ? 0 : placeTarget.getCalculations();
+            if (calcNanos > 20_000_000L) {
+                EUClient.LOGGER.info("[PB] AutoCrystal calc took {}ms ({} candidates scanned)",
+                        new DecimalFormat("0.00").format(calcNanos / 1000000.0), calculationCount);
+            }
             calculationDamage = placeTarget == null ? "0.00" : new DecimalFormat("0.00").format(placeTarget.getDamage());
 
             target = placeTarget == null ? null : placeTarget.getPlayer();
 
-            if (blockDestruction.getValue() && asynchronous.getValue()) {
+            if (blockDestruction.getValue()) {
                 SpeedMineModule module = EUClient.MODULE_MANAGER.getModule(SpeedMineModule.class);
                 BlockPos position = null;
 
@@ -235,32 +261,19 @@ public class AutoCrystalModule extends Module {
             }
         };
 
-        if (asynchronous.getValue()) {
-            if (pendingCalc == null || pendingCalc.isDone()) pendingCalc = executor.submit(runnable);
-        } else {
-            runnable.run();
+        if (pendingCalc == null || pendingCalc.isDone()) pendingCalc = executor.submit(runnable);
+
+        if (gameLoop.getValue()) {
+            if (!loopTimer.hasTimeElapsed(loopDelay.getValue().longValue())) return;
+            loopTimer.reset();
         }
 
-        if (gameLoop.getValue()) return;
-
-        run();
-    }
-
-    @SubscribeEvent
-    public void onGameLoop(GameLoopEvent event) {
-        if (mc.player == null || mc.level == null) return;
-        if (!gameLoop.getValue()) return;
-        if (!loopTimer.hasTimeElapsed(loopDelay.getValue().longValue()))
-            return;
-
-        loopTimer.reset();
         run();
 
         if (attackRunnable != null) {
             attackRunnable.run();
             attackRunnable = null;
         }
-
         if (placeRunnable != null) {
             placeRunnable.run();
             placeRunnable = null;
@@ -293,14 +306,6 @@ public class AutoCrystalModule extends Module {
     }
 
     @SubscribeEvent
-    public void onUpdateMovement$POST(UpdateMovementEvent.Post event) {
-        if (mc.player == null || mc.level == null) return;
-
-        if (attackRunnable != null) attackRunnable.run();
-        if (placeRunnable != null) placeRunnable.run();
-    }
-
-    @SubscribeEvent
     public void onEntitySpawn(EntitySpawnEvent event) {
         if (mc.player == null || mc.level == null) return;
 
@@ -318,7 +323,7 @@ public class AutoCrystalModule extends Module {
             return;
 
         if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
-        if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.rotate(calculateRotations(Vec3.atCenterOf(crystal.blockPosition())), EUClient.ROTATION_MANAGER.getModulePriority(this));
+        if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.rotate(calculateRotations(Vec3.atCenterOf(crystal.blockPosition())), EUClient.ROTATION_MANAGER.getModulePriority(getName()));
 
         attack(crystal);
 
@@ -361,7 +366,7 @@ public class AutoCrystalModule extends Module {
         if (!WorldUtils.canSee(position) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue())))
             return;
 
-        if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.rotate(calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0)), this, EUClient.ROTATION_MANAGER.getModulePriority(this) + 1);
+        if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.rotate(calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0)), EUClient.ROTATION_MANAGER.getModulePriority(getName()) + 1);
         if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(position).add(0, 1, 0)));
 
         for (Entity entity : mc.level.getEntities((Entity) null, new AABB(position.above()), entity -> true).stream().filter(entity -> entity instanceof EndCrystal).toList()) {
@@ -376,7 +381,7 @@ public class AutoCrystalModule extends Module {
         SpeedMineModule module = EUClient.MODULE_MANAGER.getModule(SpeedMineModule.class);
         boolean flag = module.switchReset.getValue() && (module.switchMode.getValue().equalsIgnoreCase("Normal") || module.switchMode.getValue().equalsIgnoreCase("AltSwap") || module.switchMode.getValue().equalsIgnoreCase("AltPickup"));
 
-        if (!autoSwitch.getValue().equalsIgnoreCase("None") &&  mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
+        if (!autoSwitch.getValue().equalsIgnoreCase("None") && mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
             if (!flag && autoSwitch.getValue().equalsIgnoreCase("Normal") && swapBack.getValue() && savedSlot == -1) savedSlot = previousSlot;
             InventoryUtils.switchSlot(flag ? "AltSwap" : autoSwitch.getValue(), slot, previousSlot);
             switched = true;
@@ -418,44 +423,6 @@ public class AutoCrystalModule extends Module {
         highestID = -100000;
     }
 
-    @Override
-    public void onDisable() {
-        if (pendingCalc != null) {
-            pendingCalc.cancel(false);
-            pendingCalc = null;
-        }
-
-        if (savedSlot != -1) {
-            InventoryUtils.switchBackNormal(savedSlot);
-            savedSlot = -1;
-        }
-
-        attackRunnable = null;
-        placeRunnable = null;
-
-        EUClient.RENDER_MANAGER.setRenderPosition(null);
-
-        attackedCrystals.clear();
-        placedCrystals.clear();
-        countedCrystals.clear();
-
-        attackedSequentially = false;
-        placedSequentially = false;
-
-        target = null;
-        placeTarget = null;
-        mineTarget = null;
-
-        calculationTime = "0.00ms";
-        calculationCount = 0;
-        calculationDamage = "0.00";
-
-        crystalCounter.reset();
-
-        highestID = -100000;
-    }
-
-    @Override
     public String getMetaData() {
         return calculationTime + ", " + calculationCount + ", " + calculationDamage + ", " + crystalsPerSecond;
     }
@@ -482,7 +449,7 @@ public class AutoCrystalModule extends Module {
         EndCrystal crystal = overrideCrystal == null ? attackTarget : overrideCrystal;
         if (crystal == null) return;
 
-        if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.rotate(calculateRotations(Vec3.atCenterOf(crystal.blockPosition())), EUClient.ROTATION_MANAGER.getModulePriority(this));
+        if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.rotate(calculateRotations(Vec3.atCenterOf(crystal.blockPosition())), EUClient.ROTATION_MANAGER.getModulePriority(getName()));
 
         if (!attackTimer.hasTimeElapsed(1000.0f - attackSpeed.getValue().floatValue() * 50.0f) || attackedSequentially) {
             if (attackedSequentially) attackedSequentially = false;
@@ -530,7 +497,7 @@ public class AutoCrystalModule extends Module {
         if (!WorldUtils.canSee(position) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue()))) return;
         if (mc.level.getEntities((Entity) null, new AABB(position.offset(0, 1, 0)), entity -> true).stream().anyMatch(entity -> entity.isAlive() && !(entity instanceof ExperienceOrb) && !(entity instanceof EndCrystal))) return;
 
-        if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.rotate(calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0)), EUClient.ROTATION_MANAGER.getModulePriority(this));
+        if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.rotate(calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0)), EUClient.ROTATION_MANAGER.getModulePriority(getName()));
 
         if (!placeTimer.hasTimeElapsed(1000.0f - placeSpeed.getValue().floatValue() * 50.0f)) return;
         if (!sequential && placedSequentially) {
@@ -756,7 +723,7 @@ public class AutoCrystalModule extends Module {
         InteractionHand hand = mc.player.getOffhandItem().getItem() == Items.END_CRYSTAL ? InteractionHand.OFF_HAND : InteractionHand.MAIN_HAND;
         Direction direction = WorldUtils.getClosestDirection(position, true);
 
-        eu.client.utils.minecraft.NetworkUtils.sendSequencedPacket(sequence ->
+        NetworkUtils.sendSequencedPacket(sequence ->
                 new ServerboundUseItemOnPacket(hand, new BlockHitResult(WorldUtils.getHitVector(position, direction), direction, position, false), sequence));
 
         switch (swing.getValue()) {

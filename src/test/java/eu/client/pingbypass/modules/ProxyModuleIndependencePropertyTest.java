@@ -39,13 +39,14 @@ class ProxyModuleIndependencePropertyTest {
         originalModuleManager = EUClient.MODULE_MANAGER;
         mockModuleManager = mock(ModuleManager.class);
 
-        // Create 8 mock modules with independent state
-        Module[] modules = new Module[8];
-        String[] names = {"AutoArmor", "AutoCrystal", "AutoTotem", "AutoTrap",
+        // Create 7 mock modules with independent state.
+        // AutoCrystal migrated to ServerAutoCrystal (EUClient.PB_MODULE_MANAGER), no longer
+        // registered by ProxyModuleManager -- see ProxyModuleManager.PROXY_SAFE_MODULES.
+        Module[] modules = new Module[7];
+        String[] names = {"AutoArmor", "AutoTotem", "AutoTrap",
                 "HoleFill", "SelfFill", "SelfTrap", "Surround"};
         Class<?>[] classes = {
                 eu.client.modules.impl.combat.AutoArmorModule.class,
-                eu.client.modules.impl.combat.AutoCrystalModule.class,
                 eu.client.modules.impl.combat.AutoTotemModule.class,
                 eu.client.modules.impl.combat.AutoTrapModule.class,
                 eu.client.modules.impl.combat.HoleFillModule.class,
@@ -54,7 +55,7 @@ class ProxyModuleIndependencePropertyTest {
                 eu.client.modules.impl.combat.SurroundModule.class
         };
 
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < 7; i++) {
             modules[i] = createMockModule(names[i],
                     new BooleanSetting("Setting1", "", false),
                     new NumberSetting("Setting2", "", 5.0, 0.0, 10.0));
@@ -79,12 +80,12 @@ class ProxyModuleIndependencePropertyTest {
 
     @Provide
     Arbitrary<Integer> moduleIndexA() {
-        return Arbitraries.integers().between(0, 7);
+        return Arbitraries.integers().between(0, 6);
     }
 
     @Provide
     Arbitrary<Integer> moduleIndexB() {
-        return Arbitraries.integers().between(0, 7);
+        return Arbitraries.integers().between(0, 6);
     }
 
     @Property(tries = 100)

@@ -31,8 +31,10 @@ class ProxyModuleManagerTest {
     private ProxyModuleManager manager;
     private ModuleManager mockModuleManager;
 
-    // Mock modules representing the 8 proxy-safe combat modules
-    private Module autoTotem, autoCrystal, surround, autoArmor,
+    // Mock modules representing the 7 proxy-safe combat modules.
+    // AutoCrystal migrated to ServerAutoCrystal (EUClient.PB_MODULE_MANAGER), no longer
+    // registered here -- see ProxyModuleManager.PROXY_SAFE_MODULES.
+    private Module autoTotem, surround, autoArmor,
             holeFill, selfFill, selfTrap, autoTrap;
 
     @BeforeEach
@@ -40,11 +42,6 @@ class ProxyModuleManagerTest {
         mockModuleManager = mock(ModuleManager.class);
 
         autoTotem = createMockModule("AutoTotem", new BooleanSetting("Soft", "", false));
-        autoCrystal = createMockModule("AutoCrystal",
-                new BooleanSetting("Place", "", true),
-                new BooleanSetting("Break", "", true),
-                new NumberSetting("PlaceRange", "", 4.5, 1.0, 6.0),
-                new NumberSetting("BreakRange", "", 4.5, 1.0, 6.0));
         surround = createMockModule("Surround", new BooleanSetting("Center", "", true));
         autoArmor = createMockModule("AutoArmor");
         holeFill = createMockModule("HoleFill");
@@ -55,7 +52,6 @@ class ProxyModuleManagerTest {
         // Wire up the mock ModuleManager to return our mock modules by class
         // Use doReturn().when() to avoid generic type mismatch with when().thenReturn()
         doReturn(autoTotem).when(mockModuleManager).getModule(eu.client.modules.impl.combat.AutoTotemModule.class);
-        doReturn(autoCrystal).when(mockModuleManager).getModule(eu.client.modules.impl.combat.AutoCrystalModule.class);
         doReturn(surround).when(mockModuleManager).getModule(eu.client.modules.impl.combat.SurroundModule.class);
         doReturn(autoArmor).when(mockModuleManager).getModule(eu.client.modules.impl.combat.AutoArmorModule.class);
         doReturn(holeFill).when(mockModuleManager).getModule(eu.client.modules.impl.combat.HoleFillModule.class);
@@ -77,8 +73,8 @@ class ProxyModuleManagerTest {
     @Test
     void init_registersExpectedModules() {
         assertNotNull(manager.getModules());
-        assertEquals(8, manager.getModules().size(),
-                "Should register 8 proxy-safe combat modules");
+        assertEquals(7, manager.getModules().size(),
+                "Should register 7 proxy-safe combat modules");
     }
 
     @Test
@@ -90,9 +86,9 @@ class ProxyModuleManagerTest {
 
     @Test
     void getModule_byName_caseInsensitive() {
-        Module crystal = manager.getModule("autocrystal");
-        assertNotNull(crystal, "Should find module with case-insensitive lookup");
-        assertEquals("AutoCrystal", crystal.getName());
+        Module totem = manager.getModule("autototem");
+        assertNotNull(totem, "Should find module with case-insensitive lookup");
+        assertEquals("AutoTotem", totem.getName());
     }
 
     @Test
@@ -112,11 +108,11 @@ class ProxyModuleManagerTest {
 
     @Test
     void registeredModules_haveSettings() {
-        Module crystal = manager.getModule("AutoCrystal");
-        assertNotNull(crystal);
-        assertFalse(crystal.getSettings().isEmpty(),
-                "AutoCrystal should have settings registered");
-        assertEquals(4, crystal.getSettings().size());
+        Module totem = manager.getModule("AutoTotem");
+        assertNotNull(totem);
+        assertFalse(totem.getSettings().isEmpty(),
+                "AutoTotem should have settings registered");
+        assertEquals(1, totem.getSettings().size());
     }
 
     @Test
@@ -152,14 +148,14 @@ class ProxyModuleManagerTest {
     @Test
     void toggleOneModule_doesNotAffectOthers() {
         Module totem = manager.getModule("AutoTotem");
-        Module crystal = manager.getModule("AutoCrystal");
+        Module surroundModule = manager.getModule("Surround");
         assertNotNull(totem);
-        assertNotNull(crystal);
+        assertNotNull(surroundModule);
 
-        boolean crystalBefore = crystal.isToggled();
+        boolean surroundBefore = surroundModule.isToggled();
         totem.setToggled(true);
-        assertEquals(crystalBefore, crystal.isToggled(),
-                "Enabling AutoTotem should not affect AutoCrystal");
+        assertEquals(surroundBefore, surroundModule.isToggled(),
+                "Enabling AutoTotem should not affect Surround");
         totem.setToggled(false);
     }
 
