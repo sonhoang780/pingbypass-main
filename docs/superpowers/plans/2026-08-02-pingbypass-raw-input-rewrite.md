@@ -649,7 +649,31 @@ if (event.isCancelled()) {
 ```
 
 - [ ] **Step 4:** In `ClientPlayerEntityMixin.swingHand` (attack), add the same client-side guard at the top: if `rawInputForwardingActive && !isServer()`, `info.cancel(); return;` before the existing `SwingModule` logic — local attacks must not swing/send locally; `ATTACK` key transitions go to the proxy instead (Task 3/4 already wire `ATTACK`/`USE` through `mc.options.keyAttack`/`keyUse`).
-- [ ] **Step 5:** Digging (block break) is not in this mixin — `grep -rn "ServerboundPlayerActionPacket\|startDestroyBlock\|MultiPlayerGameMode" src/main/java/eu/client/mixins` to find the exact mixin/class that currently issues client digging packets, and add the identical `rawInputForwardingActive && !isServer()` cancel guard at its injection point. Record the file/method found here before editing (this plan cannot name it without that grep — the codebase may route digging through `ClientDiggingService`-equivalent code that doesn't exist yet per the research notes, in which case block-break already only happens via `mc.gameMode` triggered by `KeyMapping.keyUse`/left-click handling in `Minecraft.tick()`, and no separate cancel is needed since nothing here calls it locally when the attack key mapping itself isn't being pressed by real input — confirm by reading `Minecraft.startAttack()`/`continueAttack()` call sites before deciding whether an extra guard is required).
+- [ ] **Step 5: Digging and entity-attack.** Found via `grep -rln "ServerboundPlayerActionPacket\|startDestroyBlock\|MultiPlayerGameMode" src/main/java/eu/client/mixins`: `src/main/java/eu/client/mixins/ClientPlayerInteractionManagerMixin.java` (`@Mixin(MultiPlayerGameMode.class)`) already has `@Inject(method = "startDestroyBlock", ..., cancellable = true)` (`attackBlock`) and `@Inject(method = "attack", at = @At("HEAD"))` (`attackEntity`, not cancellable). Add the same client-side guard to both:
+
+```java
+@Inject(method = "startDestroyBlock", at = @At("HEAD"), cancellable = true)
+private void attackBlock(BlockPos pos, Direction direction, CallbackInfoReturnable<Boolean> info) {
+    if (eu.client.pingbypass.PingBypassFlags.rawInputForwardingActive
+            && EUClient.PINGBYPASS_CONFIG != null && !EUClient.PINGBYPASS_CONFIG.isServer()) {
+        info.setReturnValue(false);
+        return;
+    }
+    // ...existing AttackBlockEvent logic unchanged...
+}
+
+@Inject(method = "attack", at = @At("HEAD"), cancellable = true)  // add cancellable = true
+private void attackEntity(Player player, Entity target, CallbackInfo ci) {
+    if (eu.client.pingbypass.PingBypassFlags.rawInputForwardingActive
+            && EUClient.PINGBYPASS_CONFIG != null && !EUClient.PINGBYPASS_CONFIG.isServer()) {
+        ci.cancel();
+        return;
+    }
+    // ...existing AttackEntityEvent post unchanged...
+}
+```
+
+  `startDestroyBlock` returning `false` prevents `isDestroying` from ever becoming true locally, so `continueDestroyBlock`'s own internal `if (this.isDestroying)` guard already no-ops the rest of the local mining loop — no separate guard needed there. Also add the same guard to `ClientPlayerEntityMixin.swingHand` (the arm-swing/`ServerboundSwingPacket` send) since it's a separate local action triggered by the same real ATTACK key press.
 - [ ] **Step 6: Build + manual verification (no unit test — mixin/runtime behavior).** `./gradlew build`, then build the jar, copy to `example-addon-master/run/mods/`, run `gradlew.bat runBoze`, connect through the proxy with `rawInputForwardingActive` temporarily forced `true` via a debug toggle, and confirm: local player does not visibly move/attack from real key presses, while the proxy-side character does move/attack in response to those same key presses (watch proxy's own game window).
 - [ ] **Step 7: Commit**
 

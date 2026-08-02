@@ -77,6 +77,13 @@ public abstract class ClientPlayerEntityMixin extends AbstractClientPlayer {
 
     @Inject(method = "move", at = @At("HEAD"), cancellable = true)
     private void move(MoverType movementType, Vec3 movement, CallbackInfo info) {
+        // Under raw-input forwarding, the client never moves locally at all -- the proxy's
+        // own LocalPlayer (driven by ServerInputService) is the sole source of movement.
+        if (eu.client.pingbypass.PingBypassFlags.rawInputForwardingActive
+                && EUClient.PINGBYPASS_CONFIG != null && !EUClient.PINGBYPASS_CONFIG.isServer()) {
+            info.cancel();
+            return;
+        }
         PlayerMoveEvent event = new PlayerMoveEvent(movementType, movement);
         EUClient.EVENT_HANDLER.post(event);
 
@@ -102,8 +109,16 @@ public abstract class ClientPlayerEntityMixin extends AbstractClientPlayer {
             info.cancel();
             return;
         }
-        // On the CLIENT side: do NOT cancel. The client sends movement packets
-        // to the proxy normally, and the proxy forwards them to the real server.
+        // On the CLIENT side: under raw-input forwarding, the client never moves locally
+        // (see `move` above), so there is nothing meaningful to send -- the proxy's own
+        // LocalPlayer sends real movement packets to the backend server itself.
+        if (eu.client.pingbypass.PingBypassFlags.rawInputForwardingActive
+                && EUClient.PINGBYPASS_CONFIG != null && !EUClient.PINGBYPASS_CONFIG.isServer()) {
+            info.cancel();
+            return;
+        }
+        // Otherwise (dumb-pipe mode): the client sends movement packets to the proxy
+        // normally, and the proxy forwards them to the real server.
         SendMovementEvent event = new SendMovementEvent();
         EUClient.EVENT_HANDLER.post(event);
         if (event.isCancelled()) {
@@ -140,6 +155,14 @@ public abstract class ClientPlayerEntityMixin extends AbstractClientPlayer {
 
     @Inject(method = "swing", at = @At("HEAD"), cancellable = true)
     private void swingHand(InteractionHand hand, CallbackInfo info) {
+        // Under raw-input forwarding, the client never attacks locally -- the ATTACK key
+        // is replayed on the proxy instead (see ClientPlayerInteractionManagerMixin.attack),
+        // whose own swing() call is the sole source of the swing packet.
+        if (eu.client.pingbypass.PingBypassFlags.rawInputForwardingActive
+                && EUClient.PINGBYPASS_CONFIG != null && !EUClient.PINGBYPASS_CONFIG.isServer()) {
+            info.cancel();
+            return;
+        }
         if (EUClient.MODULE_MANAGER.getModule(SwingModule.class).isToggled()) {
             if (!EUClient.MODULE_MANAGER.getModule(SwingModule.class).hand.getValue().equals("None")) {
                 switch (EUClient.MODULE_MANAGER.getModule(SwingModule.class).hand.getValue()) {
