@@ -183,6 +183,7 @@ public class AutoCrystalModule extends Module {
 
     @SubscribeEvent
     public void onPlayerUpdate(PlayerUpdateEvent event) {
+        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         if (mc.player == null || mc.level == null) return;
 
         // ping*2 alone has no floor -- at low/near-zero ping (e.g. a VPS colocated with the
@@ -248,6 +249,7 @@ public class AutoCrystalModule extends Module {
 
     @SubscribeEvent
     public void onGameLoop(GameLoopEvent event) {
+        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         if (mc.player == null || mc.level == null) return;
         if (!gameLoop.getValue()) return;
         if (!loopTimer.hasTimeElapsed(loopDelay.getValue().longValue()))
@@ -294,6 +296,7 @@ public class AutoCrystalModule extends Module {
 
     @SubscribeEvent
     public void onUpdateMovement$POST(UpdateMovementEvent.Post event) {
+        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         if (mc.player == null || mc.level == null) return;
 
         if (attackRunnable != null) attackRunnable.run();
@@ -302,6 +305,7 @@ public class AutoCrystalModule extends Module {
 
     @SubscribeEvent
     public void onEntitySpawn(EntitySpawnEvent event) {
+        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         if (mc.player == null || mc.level == null) return;
 
         if (!attack.getValue() || !instant.getValue()) return;
@@ -330,6 +334,7 @@ public class AutoCrystalModule extends Module {
 
     @SubscribeEvent
     public void onDestroyBlock(DestroyBlockEvent event) {
+        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         if (mc.player == null || mc.level == null) return;
 
         kickTicks = 0;
@@ -391,6 +396,7 @@ public class AutoCrystalModule extends Module {
 
     @SubscribeEvent
     public void onPacketReceive(PacketReceiveEvent event) {
+        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         if (mc.player == null || mc.level == null) return;
 
         if (event.getPacket() instanceof ClientboundAddEntityPacket packet) {
@@ -410,11 +416,13 @@ public class AutoCrystalModule extends Module {
 
     @SubscribeEvent
     public void onPlayerDeath(PlayerDeathEvent event) {
+        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         kickTicks = 0;
     }
 
     @SubscribeEvent
     public void onClientConnect(ClientConnectEvent event) {
+        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         highestID = -100000;
     }
 

@@ -139,9 +139,11 @@ public abstract class Module implements IMinecraft {
         this.toggled = toggled;
         EUClient.EVENT_HANDLER.post(new ToggleModuleEvent(this, this.toggled));
 
-        // If this is a proxy-enhanced module and we're connected as a client,
-        // send the toggle to the proxy server
-        if (shouldRunOnProxy() && notify && EUClient.PINGBYPASS_CONFIG != null
+        // If this is a proxy-enhanced module (old ProxyModuleManager mechanism) or a
+        // migrated-to-PbModule one (eu.client.pingbypass.modules.PbModuleManager.MIGRATED_MODULE_NAMES),
+        // and we're connected as a client, send the toggle to the proxy server.
+        if ((shouldRunOnProxy() || eu.client.pingbypass.modules.PbModuleManager.MIGRATED_MODULE_NAMES.contains(name))
+                && notify && EUClient.PINGBYPASS_CONFIG != null
                 && !EUClient.PINGBYPASS_CONFIG.isServer()) {
             sendProxyToggle(this.toggled);
         }

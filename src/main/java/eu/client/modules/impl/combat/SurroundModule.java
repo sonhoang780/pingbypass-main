@@ -73,6 +73,7 @@ public class SurroundModule extends Module {
 
     @Override
     public void onEnable() {
+        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         if (mc.player == null || mc.level == null) return;
         lastPosition = PositionUtils.getFlooredPosition(mc.player);
 
@@ -83,6 +84,7 @@ public class SurroundModule extends Module {
 
     @SubscribeEvent
     public void onPlayerJump(PlayerJumpEvent event) {
+        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         if (jumpDisable.getValue()) {
             setToggled(false);
         }
@@ -90,6 +92,7 @@ public class SurroundModule extends Module {
 
     @SubscribeEvent
     public void onPlayerUpdate(PlayerUpdateEvent event) {
+        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         if (mc.player == null || mc.level == null) return;
         if (jumpDisable.getValue() && (mc.player.fallDistance > 2.0f || ((EUClient.MODULE_MANAGER.getModule(StepModule.class).isToggled() || EUClient.MODULE_MANAGER.getModule(SpeedModule.class).isToggled()) && (lastPosition == null || lastPosition.getY() != PositionUtils.getFlooredPosition(mc.player).getY())))) {
             setToggled(false);
@@ -176,6 +179,7 @@ public class SurroundModule extends Module {
 
     @SubscribeEvent
     public void onPacketReceive(PacketReceiveEvent event) {
+        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         if (mc.player == null || mc.level == null) return;
         if (!timing.getValue().equalsIgnoreCase("Sequential"))
             return;
@@ -215,6 +219,7 @@ public class SurroundModule extends Module {
 
     @SubscribeEvent
     public void onDisable() {
+        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         lastPosition = null;
         targetPositions.clear();
 

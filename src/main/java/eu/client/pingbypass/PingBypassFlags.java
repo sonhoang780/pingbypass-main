@@ -53,4 +53,21 @@ public class PingBypassFlags {
      * Only meaningful on the client side; the proxy always ticks its player normally.
      */
     public static volatile boolean rawInputForwardingActive = false;
+
+    /**
+     * True when this JVM is the real player's own client and a PingBypass proxy is actively
+     * driving gameplay via raw-input replay -- combat/target-tracking modules (AutoCrystal,
+     * AutoTotem, Surround, ...) must skip their own decision logic entirely here, deferring
+     * to the proxy's ServerAutoCrystal/ServerAutoTotem/ServerSurround (which see the same
+     * world state via the dumb-pipe S2C forward and would otherwise act on it independently,
+     * sending duplicate/conflicting packets to the real server -- these modules build and
+     * send packets directly via mc.getConnection(), bypassing the raw-input cancellation in
+     * ClientPlayerEntityMixin/ClientPlayerInteractionManagerMixin, which only covers the real
+     * player's own hardware-triggered move/attack/dig).
+     */
+    public static boolean isClientDeferringToProxy() {
+        return rawInputForwardingActive
+                && eu.client.EUClient.PINGBYPASS_CONFIG != null
+                && !eu.client.EUClient.PINGBYPASS_CONFIG.isServer();
+    }
 }

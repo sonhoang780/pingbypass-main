@@ -133,6 +133,7 @@ public class PingBypassModule extends Module {
         serverName = null;
         proxyConnection = null;
         eu.client.pingbypass.PingBypassFlags.proxyForwardingActive = false;
+        eu.client.pingbypass.PingBypassFlags.rawInputForwardingActive = false;
         if (inputForwarder != null) {
             inputForwarder.stop();
             inputForwarder = null;
@@ -385,6 +386,7 @@ public class PingBypassModule extends Module {
     private void handleServerName(S2CServerNamePacket packet) {
         this.serverName = packet.getServerIp();
         eu.client.pingbypass.PingBypassFlags.proxyForwardingActive = true;
+        eu.client.pingbypass.PingBypassFlags.rawInputForwardingActive = true;
         // Start forwarding mouse/keyboard input to the proxy
         if (inputForwarder == null) {
             inputForwarder = new eu.client.pingbypass.input.ClientInputService();
@@ -408,7 +410,8 @@ public class PingBypassModule extends Module {
 
         int settingCount = 0;
         for (Module module : EUClient.MODULE_MANAGER.getModules()) {
-            if (!module.isProxyEnhanced()) continue;
+            if (!module.isProxyEnhanced()
+                    && !eu.client.pingbypass.modules.PbModuleManager.MIGRATED_MODULE_NAMES.contains(module.getName())) continue;
 
             // Sync toggle state
             connection.send(new net.minecraft.network.protocol.common.ServerboundCustomPayloadPacket(

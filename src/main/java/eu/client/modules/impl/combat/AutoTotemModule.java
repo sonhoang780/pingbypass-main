@@ -39,6 +39,7 @@ public class AutoTotemModule extends Module {
 
     @SubscribeEvent
     public void onPlayerPop(PlayerPopEvent event) {
+        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         if (event.getPlayer() == mc.player && !EUClient.MODULE_MANAGER.getModule(SuicideModule.class).isToggled()) {
             ticks = 0;
         }
@@ -46,6 +47,7 @@ public class AutoTotemModule extends Module {
 
     @SubscribeEvent
     public void onPlayerUpdate(PlayerUpdateEvent event) {
+        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         if (ticks > 0 && tickAbort.getValue()) {
             ticks--;
             return;
@@ -83,6 +85,7 @@ public class AutoTotemModule extends Module {
 
     @SubscribeEvent
     public void onTick(TickEvent event) {
+        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         if (mc.player == null || mc.level == null) return;
         totemCount = mc.player.getInventory().countItem(Items.TOTEM_OF_UNDYING);
     }

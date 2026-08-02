@@ -3,6 +3,7 @@ package eu.client.pingbypass.modules;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Registry of proxy-side PbModule instances. Replaces ProxyModuleManager (deleted --
@@ -10,6 +11,15 @@ import java.util.List;
  * module here is a standalone PbModule implementation (ServerAutoCrystal, ServerAutoTotem, ...).
  */
 public class PbModuleManager {
+    /**
+     * Names of client Module classes that have been migrated to a PbModule submodule here
+     * (ServerAutoCrystal, ServerAutoTotem, ServerSurround, ...). The client-side Module.setToggled
+     * uses this to decide whether to relay a toggle to the proxy even though these modules are
+     * no longer proxyEnhanced (that flag now only gates the not-yet-migrated modules still on
+     * ProxyModuleManager). Update this set as more modules migrate.
+     */
+    public static final Set<String> MIGRATED_MODULE_NAMES = Set.of("AutoCrystal", "AutoTotem", "Surround");
+
     private final List<PbModule> modules = new ArrayList<>();
 
     public void register(PbModule module) {
