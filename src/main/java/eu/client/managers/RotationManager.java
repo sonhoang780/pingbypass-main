@@ -180,33 +180,11 @@ public class RotationManager implements IMinecraft {
 
     public void packetRotate(float yaw, float pitch) {
         if (serverYaw == yaw && serverPitch == pitch) return;
-        // On the proxy, send the rotation directly to the server connection,
-        // bypassing mc.getConnection() so the proxy's local player state
-        // is never touched. The proxy's player entity doesn't visibly rotate
-        // because onUpdateMovement is also skipped when proxy is active.
-        if (eu.client.pingbypass.PingBypassFlags.proxyForwardingActive
-                && EUClient.PINGBYPASS_CONFIG != null && EUClient.PINGBYPASS_CONFIG.isServer()
-                && EUClient.PROXY_SERVER != null) {
-            var serverConn = EUClient.PROXY_SERVER.getServerConnection();
-            if (serverConn != null && serverConn.isConnected()) {
-                // Rot-only (no X/Y/Z) -- the client's own movement packets are already being
-                // forwarded straight through by PbPlayHandler's dumb pipe. Sending a PosRot
-                // here too, built from mc.player's proxy-side mirrored coordinates (which can
-                // be a tick stale relative to whatever the client's own movement packet already
-                // in flight says), races that forward: the real server sees two conflicting
-                // position reports close together and corrects/rubberbands the player. Rotation
-                // alone can't conflict with position at all.
-                // Echo the flags the client itself last reported rather than reading them off
-                // the proxy's ghost player -- see PingBypassFlags.clientOnGround. Contradicting
-                // the client's own forwarded movement packets is what rubberbands the player.
-                var packet = new ServerboundMovePlayerPacket.Rot(
-                        yaw, pitch,
-                        eu.client.pingbypass.PingBypassFlags.clientOnGround,
-                        eu.client.pingbypass.PingBypassFlags.clientHorizontalCollision);
-                eu.client.pingbypass.server.ProxyServerTickListener.allowSend(() -> serverConn.send(packet));
-                return;
-            }
-        }
+        // Under raw-input forwarding, the proxy's own LocalPlayer (driven by ServerInputService)
+        // is the sole source of movement/rotation once connected -- its own mc.getConnection()
+        // is a real connection to the backend server, same as a normal client, so there is no
+        // dumb-pipe-forwarded client packet left to race with (see PbPlayHandler.handleMovePlayer
+        // and ClientPlayerEntityMixin for the corresponding cancellation on the client side).
         mc.getConnection().send(new ServerboundMovePlayerPacket.PosRot(
                 EUClient.POSITION_MANAGER.getServerX(), EUClient.POSITION_MANAGER.getServerY(),
                 EUClient.POSITION_MANAGER.getServerZ(), yaw, pitch,

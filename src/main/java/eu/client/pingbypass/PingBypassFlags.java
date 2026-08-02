@@ -31,22 +31,6 @@ public class PingBypassFlags {
     public static volatile boolean proxyForwardingActive = false;
 
     /**
-     * The onGround / horizontalCollision the REAL client last reported, captured from its
-     * forwarded ServerboundMovePlayerPacket in PbPlayHandler.
-     *
-     * Proxy-side modules that inject their own rotation packets must send these rather than
-     * mc.player.onGround()/horizontalCollision: the proxy's ghost player is teleported with
-     * setPos() straight from the client's packets and never runs real physics or collision, so
-     * its own onGround is stale/meaningless. Sending a rotation packet carrying a ground flag
-     * that contradicts the client's own movement packets (which are being forwarded on the same
-     * connection) makes the real server see the player flip between on-ground and airborne
-     * several times a second -- it "corrects" that, which is the rubberbanding that only happens
-     * while moving and while a module (AutoCrystal/SpeedMine) is actively rotating.
-     */
-    public static volatile boolean clientOnGround = true;
-    public static volatile boolean clientHorizontalCollision = false;
-
-    /**
      * When true, the CLIENT no longer builds/sends its own movement or action packets at all --
      * ClientInputService forwards raw key/mouse input to the proxy instead, and the proxy's own
      * LocalPlayer (via ServerInputService) is the sole source of every gameplay packet.

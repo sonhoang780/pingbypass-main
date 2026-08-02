@@ -170,42 +170,15 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
             }
             mc.player.setOnGround(p.isOnGround());
         }
-        // Record exactly what the client reported so proxy-side modules injecting their own
-        // rotation packets can echo the same flags back instead of inventing their own from the
-        // ghost player. onGround is mirrored onto mc.player above, but horizontalCollision has
-        // no such mirror -- the ghost never runs collision, so mc.player.horizontalCollision is
-        // permanently stale. A rotation packet carrying a horizontalCollision that contradicts
-        // the client's own forwarded movement packets makes the real server correct the player:
-        // the rubberbanding seen only while moving with AutoCrystal/SpeedMine rotating.
-        eu.client.pingbypass.PingBypassFlags.clientOnGround = p.isOnGround();
-        eu.client.pingbypass.PingBypassFlags.clientHorizontalCollision = p.horizontalCollision();
-
-        // Locally (no proxy), a module aiming via rotate=Normal/Packet never sends a SEPARATE
-        // rotation packet: it briefly overwrites mc.player's own yaw/pitch and lets that value
-        // ride along on the client's own next outgoing movement packet -- one packet, one source
-        // of truth, every tick. On the proxy, packetRotate() instead INJECTS an extra .Rot packet
-        // on top of the client's own forwarded movement packets. While standing still that's
-        // harmless (the client isn't sending rotation changes of its own to conflict with), but
-        // while moving the client is independently forwarding its own genuine look direction on
-        // the very same connection at the same rate -- the server ends up seeing two
-        // uncoordinated rotation reports per tick (the client's real look direction, then our
-        // aim-lock value moments later), which is exactly the rubberbanding reported only while
-        // moving with AutoCrystal, in BOTH Normal and Packet rotate modes (both ultimately go
-        // through packetRotate). Fix it the same way local does: piggyback on this packet
-        // instead of injecting a second one, so there's only ever one rotation report per tick.
-        if (p.hasRotation()) {
-            var activeRotation = EUClient.ROTATION_MANAGER.getRotation();
-            if (activeRotation != null) {
-                p = p.hasPosition()
-                        ? new ServerboundMovePlayerPacket.PosRot(
-                                p.getX(0), p.getY(0), p.getZ(0),
-                                activeRotation.getYaw(), activeRotation.getPitch(),
-                                p.isOnGround(), p.horizontalCollision())
-                        : new ServerboundMovePlayerPacket.Rot(
-                                activeRotation.getYaw(), activeRotation.getPitch(),
-                                p.isOnGround(), p.horizontalCollision());
-            }
-        }
+        // The rotation-piggyback patch that used to live here (rewriting the client's forwarded
+        // movement packet with an active RotationManager rotation, plus the clientOnGround/
+        // clientHorizontalCollision flag mirror it depended on) is obsolete now that raw-input
+        // forwarding (see ClientPlayerEntityMixin/ServerInputService) is the sole source of
+        // movement/rotation once connected -- the client no longer sends its own movement
+        // packets at all in that mode, so there is nothing left to piggyback onto. This handler
+        // now only mirrors the client's forwarded packet onto the proxy's ghost player state
+        // above (position/fallDistance/rotation/onGround) for modules that read it, and forwards
+        // the packet unchanged.
         forward(p);
     }
 
