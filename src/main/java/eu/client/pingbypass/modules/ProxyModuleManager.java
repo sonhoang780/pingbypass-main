@@ -26,11 +26,10 @@ public class ProxyModuleManager {
      * These only use mc.player, mc.level, and mc.player.connection —
      * no rendering, no GUI, no client input.
      */
-    // NOTE: AutoCrystalModule migrated to ServerAutoCrystal (eu.client.pingbypass.modules.submodules.crystal),
-    // registered via EUClient.PB_MODULE_MANAGER instead -- removed here to avoid double execution
-    // (this class and ServerAutoCrystal both ticking the "AutoCrystal" logic on the proxy at once).
+    // NOTE: AutoCrystalModule/AutoTotemModule migrated to ServerAutoCrystal/ServerAutoTotem
+    // (eu.client.pingbypass.modules.submodules), registered via EUClient.PB_MODULE_MANAGER
+    // instead -- removed here to avoid double execution.
     private static final Set<Class<? extends Module>> PROXY_SAFE_MODULES = Set.of(
-            AutoTotemModule.class,
             SurroundModule.class,
             AutoArmorModule.class,
             HoleFillModule.class,

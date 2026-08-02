@@ -1,41 +1,66 @@
-package eu.client.modules.impl.combat;
+package eu.client.pingbypass.modules.submodules.totem;
 
 import eu.client.EUClient;
 import eu.client.events.SubscribeEvent;
 import eu.client.events.impl.PlayerPopEvent;
-import eu.client.events.impl.PlayerUpdateEvent;
-import eu.client.events.impl.TickEvent;
-import eu.client.modules.Module;
-import eu.client.modules.RegisterModule;
+import eu.client.modules.impl.combat.SuicideModule;
 import eu.client.modules.impl.player.SpeedMineModule;
+import eu.client.pingbypass.modules.PbModule;
+import eu.client.settings.Setting;
 import eu.client.settings.impl.BooleanSetting;
 import eu.client.settings.impl.ModeSetting;
 import eu.client.settings.impl.NumberSetting;
+import eu.client.utils.IMinecraft;
 import eu.client.utils.minecraft.InventoryUtils;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.gui.screens.inventory.InventoryScreen;
+import net.minecraft.tags.ItemTags;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.item.AxeItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
-import net.minecraft.tags.ItemTags;
-import net.minecraft.util.Mth;
 
-@RegisterModule(name = "AutoTotem", description = "Automatically puts a specified item in your offhand slot.", category = Module.Category.COMBAT)
-public class AutoTotemModule extends Module {
+import java.util.List;
+
+/**
+ * Proxy-only AutoTotem, ported from AutoTotemModule's shouldRunOnProxy()-guarded branches
+ * with the guards removed -- runs only on the proxy's own LocalPlayer.
+ */
+public class ServerAutoTotem extends PbModule implements IMinecraft {
     public ModeSetting item = new ModeSetting("Item", "The item that will be placed in your offhand slot when safety conditions are met.", "Totem", new String[]{"Totem", "Crystal", "Gapple"});
-    public NumberSetting health = new NumberSetting("Health", "The health at which a totem will be prioritized.", new ModeSetting.Visibility(item, "Crystal", "Gapple"), 16, 0, 36);
+    public NumberSetting health = new NumberSetting("Health", "The health at which a totem will be prioritized.", 16, 0, 36);
     public BooleanSetting elytraCheck = new BooleanSetting("ElytraCheck", "Prioritizes a totem whenever you're wearing an elytra.", true);
     public NumberSetting fallDistance = new NumberSetting("FallDistance", "The fall distance at which the module will prioritize a totem.", 20.0f, 0.0f, 80.0f);
     public BooleanSetting useGapple = new BooleanSetting("UseGapple", "Switches to a golden apple in your offhand when holding right click and holding a sword.", true);
-    public BooleanSetting lethalOverride = new BooleanSetting("LethalOverride", "Overrides any necessity for a totem when right-click gappling.", new BooleanSetting.Visibility(useGapple, true), false);
+    public BooleanSetting lethalOverride = new BooleanSetting("LethalOverride", "Overrides any necessity for a totem when right-click gappling.", false);
     public BooleanSetting tickAbort = new BooleanSetting("TickAbort", "Enable the interval between switching item which is determine by player ping", true);
-    public BooleanSetting smartMine = new BooleanSetting("SmartMine", "Switches to a crystal whenever you start mining and a totem when you aren't mining.", new ModeSetting.Visibility(item, "Crystal"), false);
+    public BooleanSetting smartMine = new BooleanSetting("SmartMine", "Switches to a crystal whenever you start mining and a totem when you aren't mining.", false);
     public BooleanSetting antiMace = new BooleanSetting("AntiMace", "Switches to a totem if a player near you is trying to smash attack you with a mace.", false);
-    public NumberSetting maceRange = new NumberSetting("MaceRange", "The distance at which an enemy has to be in with a mace in order to swap to a totem.", new BooleanSetting.Visibility(antiMace, true), 12.0f, 0.0f, 24.0f);
+    public NumberSetting maceRange = new NumberSetting("MaceRange", "The distance at which an enemy has to be in with a mace in order to swap to a totem.", 12.0f, 0.0f, 24.0f);
 
     private int totemCount = 0;
     private int ticks = 0;
+
+    public ServerAutoTotem() {
+        super("AutoTotem");
+    }
+
+    @Override
+    public void onEnable() {
+        EUClient.EVENT_HANDLER.subscribe(this);
+    }
+
+    @Override
+    public void onDisable() {
+        EUClient.EVENT_HANDLER.unsubscribe(this);
+    }
+
+    @Override
+    public List<Setting> getSettings() {
+        return List.of(item, health, elytraCheck, fallDistance, useGapple, lethalOverride,
+                tickAbort, smartMine, antiMace, maceRange);
+    }
 
     @SubscribeEvent
     public void onPlayerPop(PlayerPopEvent event) {
@@ -44,8 +69,11 @@ public class AutoTotemModule extends Module {
         }
     }
 
-    @SubscribeEvent
-    public void onPlayerUpdate(PlayerUpdateEvent event) {
+    @Override
+    public void tick() {
+        if (mc.player == null || mc.level == null) return;
+        totemCount = mc.player.getInventory().countItem(Items.TOTEM_OF_UNDYING);
+
         if (ticks > 0 && tickAbort.getValue()) {
             ticks--;
             return;
@@ -79,12 +107,6 @@ public class AutoTotemModule extends Module {
 
         InventoryUtils.swap("Pickup", slot, 45);
         ticks = 2 + EUClient.SERVER_MANAGER.getPingDelay();
-    }
-
-    @SubscribeEvent
-    public void onTick(TickEvent event) {
-        if (mc.player == null || mc.level == null) return;
-        totemCount = mc.player.getInventory().countItem(Items.TOTEM_OF_UNDYING);
     }
 
     private Item getItem() {
@@ -131,7 +153,6 @@ public class AutoTotemModule extends Module {
         return InventoryUtils.find(item) != -1 || mc.player.getOffhandItem().getItem() == item;
     }
 
-    @Override
     public String getMetaData() {
         return String.valueOf(totemCount);
     }

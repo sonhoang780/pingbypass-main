@@ -130,6 +130,7 @@ public class EUClient implements ModInitializer {
 		if (PROXY_SERVER != null) {
 			PROXY_SERVER.initModules();
 			PB_MODULE_MANAGER.register(new eu.client.pingbypass.modules.submodules.crystal.ServerAutoCrystal());
+			PB_MODULE_MANAGER.register(new eu.client.pingbypass.modules.submodules.totem.ServerAutoTotem());
 		}
 	}
 

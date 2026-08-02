@@ -5,7 +5,6 @@ import eu.client.modules.Module;
 import eu.client.modules.ModuleManager;
 import eu.client.settings.Setting;
 import eu.client.settings.impl.BooleanSetting;
-import eu.client.settings.impl.NumberSetting;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -31,33 +30,29 @@ class ProxyModuleManagerTest {
     private ProxyModuleManager manager;
     private ModuleManager mockModuleManager;
 
-    // Mock modules representing the 7 proxy-safe combat modules.
-    // AutoCrystal migrated to ServerAutoCrystal (EUClient.PB_MODULE_MANAGER), no longer
-    // registered here -- see ProxyModuleManager.PROXY_SAFE_MODULES.
-    private Module autoTotem, surround, autoArmor,
-            holeFill, selfFill, selfTrap, autoTrap;
+    // Mock modules representing the 5 proxy-safe combat modules.
+    // AutoCrystal/AutoTotem migrated to ServerAutoCrystal/ServerAutoTotem
+    // (EUClient.PB_MODULE_MANAGER), no longer registered here -- see
+    // ProxyModuleManager.PROXY_SAFE_MODULES.
+    private Module surround, autoArmor, holeFill, selfFill, selfTrap;
 
     @BeforeEach
     void setUp() throws Exception {
         mockModuleManager = mock(ModuleManager.class);
 
-        autoTotem = createMockModule("AutoTotem", new BooleanSetting("Soft", "", false));
         surround = createMockModule("Surround", new BooleanSetting("Center", "", true));
         autoArmor = createMockModule("AutoArmor");
         holeFill = createMockModule("HoleFill");
         selfFill = createMockModule("SelfFill");
         selfTrap = createMockModule("SelfTrap");
-        autoTrap = createMockModule("AutoTrap");
 
         // Wire up the mock ModuleManager to return our mock modules by class
         // Use doReturn().when() to avoid generic type mismatch with when().thenReturn()
-        doReturn(autoTotem).when(mockModuleManager).getModule(eu.client.modules.impl.combat.AutoTotemModule.class);
         doReturn(surround).when(mockModuleManager).getModule(eu.client.modules.impl.combat.SurroundModule.class);
         doReturn(autoArmor).when(mockModuleManager).getModule(eu.client.modules.impl.combat.AutoArmorModule.class);
         doReturn(holeFill).when(mockModuleManager).getModule(eu.client.modules.impl.combat.HoleFillModule.class);
         doReturn(selfFill).when(mockModuleManager).getModule(eu.client.modules.impl.combat.SelfFillModule.class);
         doReturn(selfTrap).when(mockModuleManager).getModule(eu.client.modules.impl.combat.SelfTrapModule.class);
-        doReturn(autoTrap).when(mockModuleManager).getModule(eu.client.modules.impl.combat.AutoTrapModule.class);
 
         // Inject the mock ModuleManager
         setStaticField(EUClient.class, "MODULE_MANAGER", mockModuleManager);
@@ -73,22 +68,22 @@ class ProxyModuleManagerTest {
     @Test
     void init_registersExpectedModules() {
         assertNotNull(manager.getModules());
-        assertEquals(7, manager.getModules().size(),
-                "Should register 7 proxy-safe combat modules");
+        assertEquals(5, manager.getModules().size(),
+                "Should register 5 proxy-safe combat modules");
     }
 
     @Test
     void getModule_byName_returnsCorrectModule() {
-        Module totem = manager.getModule("AutoTotem");
-        assertNotNull(totem, "Should find AutoTotem by name");
-        assertEquals("AutoTotem", totem.getName());
+        Module s = manager.getModule("Surround");
+        assertNotNull(s, "Should find Surround by name");
+        assertEquals("Surround", s.getName());
     }
 
     @Test
     void getModule_byName_caseInsensitive() {
-        Module totem = manager.getModule("autototem");
-        assertNotNull(totem, "Should find module with case-insensitive lookup");
-        assertEquals("AutoTotem", totem.getName());
+        Module s = manager.getModule("surround");
+        assertNotNull(s, "Should find module with case-insensitive lookup");
+        assertEquals("Surround", s.getName());
     }
 
     @Test
@@ -108,18 +103,18 @@ class ProxyModuleManagerTest {
 
     @Test
     void registeredModules_haveSettings() {
-        Module totem = manager.getModule("AutoTotem");
-        assertNotNull(totem);
-        assertFalse(totem.getSettings().isEmpty(),
-                "AutoTotem should have settings registered");
-        assertEquals(1, totem.getSettings().size());
+        Module s = manager.getModule("Surround");
+        assertNotNull(s);
+        assertFalse(s.getSettings().isEmpty(),
+                "Surround should have settings registered");
+        assertEquals(1, s.getSettings().size());
     }
 
     @Test
     void getSetting_unknownName_returnsNull() {
-        Module totem = manager.getModule("AutoTotem");
-        assertNotNull(totem);
-        assertNull(totem.getSetting("NonExistent"),
+        Module s = manager.getModule("Surround");
+        assertNotNull(s);
+        assertNull(s.getSetting("NonExistent"),
                 "Should return null for unknown setting name");
     }
 
@@ -129,40 +124,40 @@ class ProxyModuleManagerTest {
 
     @Test
     void setToggled_true_enablesModule() {
-        Module totem = manager.getModule("AutoTotem");
-        assertNotNull(totem);
-        totem.setToggled(true);
-        assertTrue(totem.isToggled());
-        totem.setToggled(false);
+        Module s = manager.getModule("Surround");
+        assertNotNull(s);
+        s.setToggled(true);
+        assertTrue(s.isToggled());
+        s.setToggled(false);
     }
 
     @Test
     void setToggled_false_disablesModule() {
-        Module totem = manager.getModule("AutoTotem");
-        assertNotNull(totem);
-        totem.setToggled(true);
-        totem.setToggled(false);
-        assertFalse(totem.isToggled());
+        Module s = manager.getModule("Surround");
+        assertNotNull(s);
+        s.setToggled(true);
+        s.setToggled(false);
+        assertFalse(s.isToggled());
     }
 
     @Test
     void toggleOneModule_doesNotAffectOthers() {
-        Module totem = manager.getModule("AutoTotem");
-        Module surroundModule = manager.getModule("Surround");
-        assertNotNull(totem);
-        assertNotNull(surroundModule);
+        Module s = manager.getModule("Surround");
+        Module armor = manager.getModule("AutoArmor");
+        assertNotNull(s);
+        assertNotNull(armor);
 
-        boolean surroundBefore = surroundModule.isToggled();
-        totem.setToggled(true);
-        assertEquals(surroundBefore, surroundModule.isToggled(),
-                "Enabling AutoTotem should not affect Surround");
-        totem.setToggled(false);
+        boolean armorBefore = armor.isToggled();
+        s.setToggled(true);
+        assertEquals(armorBefore, armor.isToggled(),
+                "Enabling Surround should not affect AutoArmor");
+        s.setToggled(false);
     }
 
     @Test
     void modules_areRealModuleInstances() {
-        Module totem = manager.getModule("AutoTotem");
-        assertSame(autoTotem, totem,
+        Module s = manager.getModule("Surround");
+        assertSame(surround, s,
                 "ProxyModuleManager should reference the same Module instance from ModuleManager");
     }
 

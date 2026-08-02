@@ -39,15 +39,15 @@ class ProxyModuleIndependencePropertyTest {
         originalModuleManager = EUClient.MODULE_MANAGER;
         mockModuleManager = mock(ModuleManager.class);
 
-        // Create 7 mock modules with independent state.
-        // AutoCrystal migrated to ServerAutoCrystal (EUClient.PB_MODULE_MANAGER), no longer
-        // registered by ProxyModuleManager -- see ProxyModuleManager.PROXY_SAFE_MODULES.
-        Module[] modules = new Module[7];
-        String[] names = {"AutoArmor", "AutoTotem", "AutoTrap",
+        // Create 6 mock modules with independent state.
+        // AutoCrystal/AutoTotem migrated to ServerAutoCrystal/ServerAutoTotem
+        // (EUClient.PB_MODULE_MANAGER), no longer registered by ProxyModuleManager --
+        // see ProxyModuleManager.PROXY_SAFE_MODULES.
+        Module[] modules = new Module[6];
+        String[] names = {"AutoArmor", "AutoTrap",
                 "HoleFill", "SelfFill", "SelfTrap", "Surround"};
         Class<?>[] classes = {
                 eu.client.modules.impl.combat.AutoArmorModule.class,
-                eu.client.modules.impl.combat.AutoTotemModule.class,
                 eu.client.modules.impl.combat.AutoTrapModule.class,
                 eu.client.modules.impl.combat.HoleFillModule.class,
                 eu.client.modules.impl.combat.SelfFillModule.class,
@@ -55,7 +55,7 @@ class ProxyModuleIndependencePropertyTest {
                 eu.client.modules.impl.combat.SurroundModule.class
         };
 
-        for (int i = 0; i < 7; i++) {
+        for (int i = 0; i < 6; i++) {
             modules[i] = createMockModule(names[i],
                     new BooleanSetting("Setting1", "", false),
                     new NumberSetting("Setting2", "", 5.0, 0.0, 10.0));
@@ -80,12 +80,12 @@ class ProxyModuleIndependencePropertyTest {
 
     @Provide
     Arbitrary<Integer> moduleIndexA() {
-        return Arbitraries.integers().between(0, 6);
+        return Arbitraries.integers().between(0, 5);
     }
 
     @Provide
     Arbitrary<Integer> moduleIndexB() {
-        return Arbitraries.integers().between(0, 6);
+        return Arbitraries.integers().between(0, 5);
     }
 
     @Property(tries = 100)
