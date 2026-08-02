@@ -22,6 +22,7 @@ public class ProxyServerTickListener {
     @SubscribeEvent
     public void onTick(TickEvent event) {
         EUClient.PB_SERVER_INPUT.tick();
+        EUClient.PB_MODULE_MANAGER.tick();
         if (proxyServer.isAlive()) {
             proxyServer.tick();
         }
