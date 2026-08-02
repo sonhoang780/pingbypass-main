@@ -71,6 +71,10 @@ public class SpeedMineModule extends Module {
     @Getter private Action secondary = null;
 
     private SwitchAction switchAction = null;
+    // Re-entrancy guard: cancel()/start() below send a ServerboundSetCarriedItemPacket themselves,
+    // which re-fires this same PacketSendEvent.Post listener and matches the same condition --
+    // without this guard that recurses forever (StackOverflowError).
+    private boolean handlingSwitchReset = false;
 
     private final Timer instantTimer = new Timer();
     private final Timer mineTimer = new Timer();
@@ -81,11 +85,22 @@ public class SpeedMineModule extends Module {
      * cleared when the client sends RELEASE_USE_ITEM.
      */
     @Getter private volatile boolean interactPaused = false;
+    private volatile long interactPausedAt = 0;
     private boolean needsRestart = false;
+
+    // Only interactions that actually hold down "use" (eating, drinking, blocking,
+    // bow...) send RELEASE_USE_ITEM afterward -- a plain right-click on a chest,
+    // door, entity, etc. never does. If interactPaused was set for one of those,
+    // there's no packet coming to ever clear it, so mining would stay paused
+    // forever. Auto-expire the pause instead of waiting on a release that may
+    // never arrive.
+    private static final long INTERACT_PAUSE_TIMEOUT_MS = 750L;
 
     public void setInteractPaused(boolean paused) {
         this.interactPaused = paused;
-        if (!paused) {
+        if (paused) {
+            this.interactPausedAt = System.currentTimeMillis();
+        } else {
             // When unpausing, flag that mining needs to restart
             // (re-send pickaxe + START_DESTROY to the server)
             this.needsRestart = true;
@@ -97,6 +112,44 @@ public class SpeedMineModule extends Module {
     public volatile float proxyPrimaryProgress = 0;
     public volatile BlockPos proxySecondaryPos = null;
     public volatile float proxySecondaryProgress = 0;
+
+    // Interpolation bookkeeping so proxy-synced progress (updated once per proxy
+    // tick over the network) doesn't render as a hard step every frame.
+    private volatile float prevProxyPrimaryProgress = 0;
+    private volatile long proxyPrimaryUpdateTime = 0;
+    private volatile long proxyPrimaryUpdateInterval = 50;
+    private volatile float prevProxySecondaryProgress = 0;
+    private volatile long proxySecondaryUpdateTime = 0;
+    private volatile long proxySecondaryUpdateInterval = 50;
+
+    /**
+     * Called from the client-side S2C_MINING_STATE packet handler. Shifts the
+     * previous progress value forward so renderProxyState can interpolate
+     * between network updates instead of snapping.
+     */
+    public void updateProxyMiningState(BlockPos primaryPos, float primaryProgress,
+                                       BlockPos secondaryPos, float secondaryProgress) {
+        long now = System.currentTimeMillis();
+
+        boolean primaryPosChanged = primaryPos == null ? proxyPrimaryPos != null : !primaryPos.equals(proxyPrimaryPos);
+        prevProxyPrimaryProgress = primaryPosChanged ? primaryProgress : proxyPrimaryProgress;
+        proxyPrimaryUpdateInterval = Math.max(1L, now - proxyPrimaryUpdateTime);
+        proxyPrimaryUpdateTime = now;
+        proxyPrimaryPos = primaryPos;
+        proxyPrimaryProgress = primaryProgress;
+
+        boolean secondaryPosChanged = secondaryPos == null ? proxySecondaryPos != null : !secondaryPos.equals(proxySecondaryPos);
+        prevProxySecondaryProgress = secondaryPosChanged ? secondaryProgress : proxySecondaryProgress;
+        proxySecondaryUpdateInterval = Math.max(1L, now - proxySecondaryUpdateTime);
+        proxySecondaryUpdateTime = now;
+        proxySecondaryPos = secondaryPos;
+        proxySecondaryProgress = secondaryProgress;
+    }
+
+    private float interpolatedProgress(float prev, float current, long updateTime, long interval) {
+        float t = Mth.clamp((float) (System.currentTimeMillis() - updateTime) / interval, 0f, 1f);
+        return prev + (current - prev) * t;
+    }
 
     @SubscribeEvent
     public void onPlayerUpdate(PlayerUpdateEvent event) {
@@ -219,15 +272,22 @@ public class SpeedMineModule extends Module {
         if (shouldRunOnProxy()) return;
         if (mc.player == null || mc.level == null) return;
 
-        if (event.getPacket() instanceof ServerboundSetCarriedItemPacket && switchReset.getValue() && (switchMode.getValue().equalsIgnoreCase("AltSwap") || switchMode.getValue().equalsIgnoreCase("AltPickup"))) {
-            if (secondary != null) {
-                secondary.cancel();
-                secondary.start();
-            }
+        if (handlingSwitchReset) return;
 
-            if (primary != null) {
-                primary.cancel();
-                primary.start();
+        if (event.getPacket() instanceof ServerboundSetCarriedItemPacket && switchReset.getValue() && (switchMode.getValue().equalsIgnoreCase("AltSwap") || switchMode.getValue().equalsIgnoreCase("AltPickup"))) {
+            handlingSwitchReset = true;
+            try {
+                if (secondary != null) {
+                    secondary.cancel();
+                    secondary.start();
+                }
+
+                if (primary != null) {
+                    primary.cancel();
+                    primary.start();
+                }
+            } finally {
+                handlingSwitchReset = false;
             }
         }
     }
@@ -240,6 +300,33 @@ public class SpeedMineModule extends Module {
         if (handle(event.getPosition(), 1)) {
             event.setCancelled(true);
         }
+    }
+
+    @Override
+    public void onDisable() {
+        if (shouldRunOnProxy()) return;
+        if (mc.player == null || mc.level == null) {
+            primary = null;
+            secondary = null;
+            return;
+        }
+
+        // There was no onDisable at all before. Toggling the module off mid-mine just dropped
+        // the in-flight Actions on the floor -- and since start() intentionally leaves the REAL
+        // SERVER holding the pickaxe until process() switches back, killing the module before
+        // that point stranded the server on the pickaxe permanently. Everything that placed
+        // blocks afterwards (AutoCrystal especially) then silently placed nothing while the
+        // proxy kept predicting the item was used. Cancel properly so the slot gets restored.
+        if (secondary != null) {
+            secondary.cancel();
+            secondary = null;
+        }
+        if (primary != null) {
+            primary.cancel();
+            primary = null;
+        }
+
+        setInteractPaused(false);
     }
 
     @Override
@@ -433,8 +520,14 @@ public class SpeedMineModule extends Module {
      * Renders mining progress on the client using proxy-synced state.
      */
     private void renderProxyState(PoseStack matrices) {
-        if (proxyPrimaryPos != null) renderProxyBlock(matrices, proxyPrimaryPos, proxyPrimaryProgress);
-        if (proxySecondaryPos != null && doubleMine.getValue()) renderProxyBlock(matrices, proxySecondaryPos, proxySecondaryProgress);
+        if (proxyPrimaryPos != null) {
+            float progress = interpolatedProgress(prevProxyPrimaryProgress, proxyPrimaryProgress, proxyPrimaryUpdateTime, proxyPrimaryUpdateInterval);
+            renderProxyBlock(matrices, proxyPrimaryPos, progress);
+        }
+        if (proxySecondaryPos != null && doubleMine.getValue()) {
+            float progress = interpolatedProgress(prevProxySecondaryProgress, proxySecondaryProgress, proxySecondaryUpdateTime, proxySecondaryUpdateInterval);
+            renderProxyBlock(matrices, proxySecondaryPos, progress);
+        }
     }
 
     private void renderProxyBlock(PoseStack matrices, BlockPos pos, float progress) {
@@ -503,6 +596,7 @@ public class SpeedMineModule extends Module {
         private float prevProgress;
         private int attempts;
         private boolean mining;
+        private long stallTime;
 
         private boolean instantMine;
         private int startSlot = -1; // slot we switched FROM at start
@@ -522,9 +616,19 @@ public class SpeedMineModule extends Module {
             }
 
             // If the client is eating/interacting, pause mining — don't send
-            // any packets that would change the server's slot state.
+            // any packets that would change the server's slot state. Auto-expire
+            // the pause if no RELEASE_USE_ITEM ever arrives (see interactPausedAt) --
+            // but only once the client isn't actually mid-use anymore. A real eat
+            // (golden apple etc) takes ~1.6s, well past the timeout; resuming on a
+            // fixed clock switches the held item back to the pickaxe WHILE the eat
+            // animation is still playing and cancels it outright.
             if (interactPaused) {
-                return false;
+                boolean stillUsing = mc.player != null && mc.player.isUsingItem();
+                if (!stillUsing && System.currentTimeMillis() - interactPausedAt >= INTERACT_PAUSE_TIMEOUT_MS) {
+                    setInteractPaused(false);
+                } else {
+                    return false;
+                }
             }
 
             // After unpausing (client finished eating), restart mining from
@@ -570,9 +674,14 @@ public class SpeedMineModule extends Module {
                 if (rotate.getValue().equalsIgnoreCase("Normal") && progress + (delta * 2) >= getSpeed()) {
                     if (isProxyActive()) {
                         float[] rots = RotationUtils.getRotations(WorldUtils.getHitVector(position, direction));
-                        serverSend(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.PosRot(
-                                mc.player.getX(), mc.player.getY(), mc.player.getZ(),
-                                rots[0], rots[1], mc.player.onGround(), mc.player.horizontalCollision));
+                        // Rot-only (no X/Y/Z) -- see RotationManager.packetRotate's comment.
+                        // Sending position built from mc.player's proxy-mirrored coordinates
+                        // races the client's own movement packets already being forwarded,
+                        // causing rubberbanding on the real server.
+                        serverSend(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.Rot(
+                                rots[0], rots[1],
+                                eu.client.pingbypass.PingBypassFlags.clientOnGround,
+                                eu.client.pingbypass.PingBypassFlags.clientHorizontalCollision));
                     } else {
                         EUClient.ROTATION_MANAGER.rotate(RotationUtils.getRotations(WorldUtils.getHitVector(position, direction)), EUClient.ROTATION_MANAGER.getModulePriority(EUClient.MODULE_MANAGER.getModule(SpeedMineModule.class)));
                     }
@@ -585,9 +694,12 @@ public class SpeedMineModule extends Module {
                         if (rotate.getValue().equalsIgnoreCase("Packet")) {
                             if (isProxyActive()) {
                                 float[] rots = RotationUtils.getRotations(WorldUtils.getHitVector(position, direction));
-                                serverSend(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.PosRot(
-                                        mc.player.getX(), mc.player.getY(), mc.player.getZ(),
-                                        rots[0], rots[1], mc.player.onGround(), mc.player.horizontalCollision));
+                                // Rot-only, same reason as the "Normal" branch above -- PosRot's
+                                // X/Y/Z here raced the client's own forwarded movement packets.
+                                serverSend(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.Rot(
+                                        rots[0], rots[1],
+                                eu.client.pingbypass.PingBypassFlags.clientOnGround,
+                                eu.client.pingbypass.PingBypassFlags.clientHorizontalCollision));
                             } else {
                                 EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(WorldUtils.getHitVector(position, direction)));
                             }
@@ -596,16 +708,45 @@ public class SpeedMineModule extends Module {
                         int previousSlot = mc.player.getInventory().getSelectedSlot();
 
                         if (isProxyActive()) {
+                            // Use startSlot (captured in start(), before anything switched)
+                            // as the real "previous" slot to restore -- previousSlot above was
+                            // just read live, which by now is the pickaxe slot start() already
+                            // switched to, not what the player actually had selected.
+                            int realPreviousSlot = startSlot != -1 ? startSlot : previousSlot;
                             int mineSlot = switchMode.getValue().equalsIgnoreCase("None") ? -1 : slot;
-                            boolean needSwitch = mineSlot != -1 && mineSlot != previousSlot;
 
-                            if (needSwitch) serverSend(new ServerboundSetCarriedItemPacket(mineSlot));
+                            // EUClient.EVENT_HANDLER.post(new DestroyBlockEvent(...)) above runs its
+                            // listeners SYNCHRONOUSLY -- AutoCrystalModule.onDestroyBlock is one of
+                            // them, and with Switch=Normal it selects the crystal slot and (by
+                            // design, see InventoryUtils' comment on switchBack's Normal no-op)
+                            // leaves it selected afterward. That happens BEFORE this code runs.
+                            // needSwitch used to be "mineSlot != realPreviousSlot" -- comparing the
+                            // slot config wanted against the slot the player originally had, with
+                            // no idea AutoCrystal had already reselected mid-event. Whenever those
+                            // two happened to already match (pickaxe == the player's normal
+                            // hotbar slot, a common setup), needSwitch came out false and NEITHER
+                            // re-assert-pickaxe nor restore-original ran at all -- leaving the
+                            // real server (and the mirror) stuck on the crystal slot forever. The
+                            // next mining tick then computed mining speed off a crystal instead of
+                            // a pickaxe, mining effectively never finished, DestroyBlockEvent never
+                            // fired again, and AutoCrystal never got triggered again either: place
+                            // exactly one crystal, then stall for good. Always re-assert the mining
+                            // slot here regardless of what it "should" already be -- it costs one
+                            // extra packet on the (rare) already-correct case, but is the only way
+                            // to be right after another module reselected mid-event.
+                            if (mineSlot != -1) {
+                                serverSend(new ServerboundSetCarriedItemPacket(mineSlot));
+                                mc.player.getInventory().setSelectedSlot(mineSlot);
+                            }
 
                             serverSendSequenced(seq -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, position, direction, seq));
                             if (grim.getValue()) serverSend(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, position.above(500), direction));
                             serverSend(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
 
-                            if (needSwitch) serverSend(new ServerboundSetCarriedItemPacket(previousSlot));
+                            if (mineSlot != -1) {
+                                serverSend(new ServerboundSetCarriedItemPacket(realPreviousSlot));
+                                mc.player.getInventory().setSelectedSlot(realPreviousSlot);
+                            }
                         } else {
                             InventoryUtils.switchSlot(switchMode.getValue(), slot, previousSlot);
 
@@ -627,6 +768,7 @@ public class SpeedMineModule extends Module {
                             // the break (block becomes air). The process() loop will detect
                             // the block is replaceable and return true on the next tick.
                             this.mining = false;
+                            this.stallTime = System.currentTimeMillis();
                         } else {
                             this.instantMine = true;
                             instantTimer.reset();
@@ -636,8 +778,13 @@ public class SpeedMineModule extends Module {
                     return doubleMine.getValue() && secondary;
                 }
             } else {
-                // Only restart if the block is still there and we haven't just sent STOP
-                if (!mc.level.getBlockState(position).canBeReplaced() && attempts == 0) {
+                // Only restart if the block is still there and we haven't just sent STOP -- OR
+                // the block still hasn't broken 1s after we did (attempts > 0 forever blocked the
+                // retry here otherwise: once mining stalls out, attempts is never reset back to 0
+                // except by start() itself, so a block the server refuses to break -- packet loss,
+                // desync, anticheat rejection -- got stuck at full progress forever with no way
+                // to recover on its own).
+                if (!mc.level.getBlockState(position).canBeReplaced() && (attempts == 0 || System.currentTimeMillis() - stallTime >= 1000L)) {
                     start();
                 }
             }
@@ -679,12 +826,22 @@ public class SpeedMineModule extends Module {
             Direction direction = WorldUtils.getClosestDirection(position, true);
 
             if (isProxyActive()) {
-                // Proxy: atomic switch→mine→switchback. Packets go directly
-                // to the server connection so the proxy's local state is untouched.
-                int slot = switchMode.getValue().equalsIgnoreCase("None") ? -1 : InventoryUtils.findFastestItem(state, InventoryUtils.HOTBAR_START, switchMode.getValue().equalsIgnoreCase("AltSwap") || switchMode.getValue().equalsIgnoreCase("AltPickup") ? InventoryUtils.INVENTORY_END : InventoryUtils.HOTBAR_END);
-                boolean needSwitch = slot != -1 && slot != mc.player.getInventory().getSelectedSlot();
-
-                if (needSwitch) serverSend(new ServerboundSetCarriedItemPacket(slot));
+                // Matches the local (non-proxy) branch below: no slot switch here at all.
+                // Holding the pickaxe on the real server for the ENTIRE mining duration (from
+                // start() through to STOP_DESTROY in process()) used to be deliberate here, to
+                // make the server compute progress off the pickaxe every tick -- but it meant
+                // any OTHER proxy-side module that reselects the slot mid-mine (AutoCrystal's
+                // Normal switch, triggered synchronously off DestroyBlockEvent) permanently wins
+                // the fight over the real server's held item, since nothing here expected the
+                // slot to move out from under it. That produced "server stuck on crystal/
+                // pickaxe forever, SpeedMine mining speed wrong, or crystals silently rejected
+                // while the proxy still predicted they were consumed" bugs. The vanilla trick
+                // this whole module is built on doesn't actually need the fast tool held while
+                // mining -- only briefly, right when STOP_DESTROY_BLOCK is sent, so the server's
+                // destroy-progress calculation at that exact tick uses it. Switching only for
+                // that instant (like local mode already does) removes the multi-tick window
+                // other modules could steal the slot during.
+                startSlot = mc.player.getInventory().getSelectedSlot();
 
                 if (doubleMine.getValue()) {
                     serverSendSequenced(seq -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, position, direction, seq));
@@ -695,9 +852,6 @@ public class SpeedMineModule extends Module {
                 }
 
                 serverSend(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
-                // Do NOT switch back here — keep pickaxe held on the server
-                // so continueMining() calculates with pickaxe speed every tick.
-                // The switch-back happens in process() after STOP_DESTROY.
             } else {
                 // Local: no slot switch in start(), only at STOP_DESTROY moment
                 if (doubleMine.getValue()) {
@@ -722,12 +876,29 @@ public class SpeedMineModule extends Module {
                 if (isProxyActive()) {
                     serverSendSequenced(seq -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, position, WorldUtils.getClosestDirection(position, true), seq));
                     serverSend(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
-                    // Switch server back to client's actual slot
-                    serverSend(new ServerboundSetCarriedItemPacket(mc.player.getInventory().getSelectedSlot()));
                 } else {
                     NetworkUtils.sendSequencedPacket(seq -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, position, WorldUtils.getClosestDirection(position, true), seq));
                     mc.getConnection().send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
                 }
+            }
+
+            // start() deliberately leaves the REAL SERVER holding the pickaxe ("Do NOT switch
+            // back here") and relies on process() to restore it after STOP_DESTROY. Any path
+            // that ends the action early therefore has to do that restore itself, or the server
+            // keeps thinking a pickaxe is in hand indefinitely -- at which point AutoCrystal's
+            // ServerboundUseItemOnPacket places nothing (server sees a pickaxe), while the
+            // proxy's local model still predicts the crystal was consumed: crystals vanish into
+            // nothing until clicking the hotbar slot forces a resync and the server hands the
+            // whole stack back.
+            //
+            // Restore to startSlot, NOT getSelectedSlot(): start() already mirrored the pickaxe
+            // slot into mc.player, so reading it live here would "restore" the pickaxe onto
+            // itself and leave the desync in place. Runs regardless of doubleMine -- the switch
+            // in start() isn't conditional on it either.
+            if (isProxyActive() && startSlot != -1) {
+                serverSend(new ServerboundSetCarriedItemPacket(startSlot));
+                mc.player.getInventory().setSelectedSlot(startSlot);
+                startSlot = -1;
             }
 
             this.progress = 0.0f;

@@ -58,9 +58,13 @@ public class RotationManager implements IMinecraft {
         if (rotation == null) return;
         // On the proxy, don't modify mc.player's yaw/pitch — the client sends
         // its own movement packets and we don't want the proxy's player entity
-        // to visibly rotate. Packet rotations are sent directly to the server.
+        // to visibly rotate. "Normal" mode relies on that temporary yaw/pitch
+        // change riding along on the next movement packet, which never happens
+        // here, so it was a silent no-op -- send an equivalent rotation packet
+        // directly instead, same as "Packet" mode does.
         if (eu.client.pingbypass.PingBypassFlags.proxyForwardingActive
                 && EUClient.PINGBYPASS_CONFIG != null && EUClient.PINGBYPASS_CONFIG.isServer()) {
+            packetRotate(rotation.getYaw(), rotation.getPitch());
             return;
         }
 
@@ -185,9 +189,20 @@ public class RotationManager implements IMinecraft {
                 && EUClient.PROXY_SERVER != null) {
             var serverConn = EUClient.PROXY_SERVER.getServerConnection();
             if (serverConn != null && serverConn.isConnected()) {
-                var packet = new ServerboundMovePlayerPacket.PosRot(
-                        mc.player.getX(), mc.player.getY(), mc.player.getZ(),
-                        yaw, pitch, mc.player.onGround(), mc.player.horizontalCollision);
+                // Rot-only (no X/Y/Z) -- the client's own movement packets are already being
+                // forwarded straight through by PbPlayHandler's dumb pipe. Sending a PosRot
+                // here too, built from mc.player's proxy-side mirrored coordinates (which can
+                // be a tick stale relative to whatever the client's own movement packet already
+                // in flight says), races that forward: the real server sees two conflicting
+                // position reports close together and corrects/rubberbands the player. Rotation
+                // alone can't conflict with position at all.
+                // Echo the flags the client itself last reported rather than reading them off
+                // the proxy's ghost player -- see PingBypassFlags.clientOnGround. Contradicting
+                // the client's own forwarded movement packets is what rubberbands the player.
+                var packet = new ServerboundMovePlayerPacket.Rot(
+                        yaw, pitch,
+                        eu.client.pingbypass.PingBypassFlags.clientOnGround,
+                        eu.client.pingbypass.PingBypassFlags.clientHorizontalCollision);
                 eu.client.pingbypass.server.ProxyServerTickListener.allowSend(() -> serverConn.send(packet));
                 return;
             }

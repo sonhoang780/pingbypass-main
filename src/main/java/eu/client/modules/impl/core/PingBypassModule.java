@@ -235,6 +235,7 @@ public class PingBypassModule extends Module {
                 case S2CRenderPositionPacket.ID -> handleRenderPosition(new S2CRenderPositionPacket(buf));
                 case S2CBlockRenderPacket.ID -> handleBlockRender(new S2CBlockRenderPacket(buf));
                 case S2CMiningStatePacket.ID -> handleMiningState(new S2CMiningStatePacket(buf));
+                case S2CSlotSyncPacket.ID -> handleSlotSync(new S2CSlotSyncPacket(buf));
             }
         } catch (Exception e) {
             EUClient.LOGGER.warn("[PingBypass] Failed to handle S2C packet", e);
@@ -426,6 +427,24 @@ public class PingBypassModule extends Module {
             }
         }
         EUClient.LOGGER.info("[PingBypass] Synced {} settings to proxy", settingCount);
+        syncFriendsToProxy();
+    }
+
+    /**
+     * Sends the full friends list to the proxy so its own target-scanning (AutoCrystal.getPlayers(),
+     * KillAura) actually excludes them. FriendManager has no other sync path at all -- it's loaded
+     * from a local config file the proxy's VPS process never has.
+     */
+    public void syncFriendsToProxy() {
+        net.minecraft.network.Connection connection = this.proxyConnection;
+        if (connection == null && mc.getConnection() != null) {
+            connection = mc.getConnection().getConnection();
+        }
+        if (connection == null || !connection.isConnected()) return;
+
+        connection.send(new net.minecraft.network.protocol.common.ServerboundCustomPayloadPacket(
+                PbCustomPayload.fromPacket(new eu.client.pingbypass.protocol.packets.C2SFriendSyncPacket(
+                        new java.util.ArrayList<>(EUClient.FRIEND_MANAGER.getFriends())))));
     }
 
     private eu.client.pingbypass.input.ClientInputForwarder inputForwarder;
@@ -454,10 +473,19 @@ public class PingBypassModule extends Module {
         eu.client.modules.impl.player.SpeedMineModule speedMine =
                 EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.player.SpeedMineModule.class);
         if (speedMine != null) {
-            speedMine.proxyPrimaryPos = packet.getPrimaryPos();
-            speedMine.proxyPrimaryProgress = packet.getPrimaryProgress();
-            speedMine.proxySecondaryPos = packet.getSecondaryPos();
-            speedMine.proxySecondaryProgress = packet.getSecondaryProgress();
+            speedMine.updateProxyMiningState(packet.getPrimaryPos(), packet.getPrimaryProgress(),
+                    packet.getSecondaryPos(), packet.getSecondaryProgress());
+        }
+    }
+
+    /**
+     * Handles S2C_SLOT_SYNC — mirrors a proxy-side "Normal" hotbar switch onto
+     * the real client's own hotbar. Cosmetic only; the proxy already sent the
+     * real ServerboundSetCarriedItemPacket to the actual server itself.
+     */
+    private void handleSlotSync(S2CSlotSyncPacket packet) {
+        if (mc.player != null) {
+            mc.player.getInventory().setSelectedSlot(packet.getSlot());
         }
     }
 

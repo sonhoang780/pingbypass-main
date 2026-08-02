@@ -73,6 +73,7 @@ public class SurroundModule extends Module {
 
     @Override
     public void onEnable() {
+        if (shouldRunOnProxy()) return;
         if (mc.player == null || mc.level == null) return;
         lastPosition = PositionUtils.getFlooredPosition(mc.player);
 
@@ -218,6 +219,7 @@ public class SurroundModule extends Module {
 
     @SubscribeEvent
     public void onDisable() {
+        if (shouldRunOnProxy()) return;
         lastPosition = null;
         targetPositions.clear();
 

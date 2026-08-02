@@ -59,7 +59,7 @@ public class WorldStateReplay {
      * Replays the full world state. Returns the initialTeleportId that the
      * client will send back in a TeleportConfirmC2SPacket.
      */
-    public static int replay(Connection toClient) {
+    public static int replay(Connection toClient, net.minecraft.core.RegistryAccess registryAccess) {
         Minecraft mc = Minecraft.getInstance();
         LocalPlayer player = mc.player;
         ClientLevel world = mc.level;
@@ -84,7 +84,7 @@ public class WorldStateReplay {
 
         // 1. GameJoin
         Set<ResourceKey<Level>> dimensionIds = handler.levels();
-        CommonPlayerSpawnInfo spawnInfo = createSpawnInfo(world, gameMode, prevGameMode, player);
+        CommonPlayerSpawnInfo spawnInfo = createSpawnInfo(world, gameMode, prevGameMode, player, registryAccess);
 
         send(toClient, new ClientboundLoginPacket(
                 player.getId(), world.getLevelData().isHardcore(), dimensionIds,
@@ -192,9 +192,23 @@ public class WorldStateReplay {
     }
 
     private static CommonPlayerSpawnInfo createSpawnInfo(ClientLevel world, GameType gameMode,
-                                                         GameType prevGameMode, LocalPlayer player) {
+                                                         GameType prevGameMode, LocalPlayer player,
+                                                         net.minecraft.core.RegistryAccess registryAccess) {
+        // Don't trust world.dimensionTypeRegistration() -- that Holder was baked into this
+        // ClientLevel object back when it was constructed and never changes afterward
+        // (Level.registryAccess is a final field). If the real server pushed a live
+        // dimension_type/registry reload since then, the encoder gets re-bound to a NEWER
+        // registryAccess (see PbWaitingHandler) whose IdMap doesn't contain that older
+        // Holder object -> "Can't find id for 'Reference{...dimension_type/overworld}'".
+        // Re-resolve the holder fresh from the exact registryAccess instance the encoder
+        // was just bound to, by key, so identity always matches.
+        net.minecraft.resources.ResourceKey<net.minecraft.world.level.dimension.DimensionType> dimensionTypeKey =
+                world.dimensionTypeRegistration().unwrapKey().orElseThrow();
+        net.minecraft.core.Holder<net.minecraft.world.level.dimension.DimensionType> dimensionType =
+                registryAccess.lookupOrThrow(net.minecraft.core.registries.Registries.DIMENSION_TYPE)
+                        .getOrThrow(dimensionTypeKey);
         return new CommonPlayerSpawnInfo(
-                world.dimensionTypeRegistration(),
+                dimensionType,
                 world.dimension(),
                 0L,
                 gameMode, prevGameMode,

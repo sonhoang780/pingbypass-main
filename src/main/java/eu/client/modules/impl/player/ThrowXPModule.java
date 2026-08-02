@@ -19,7 +19,7 @@ import net.minecraft.network.protocol.game.ServerboundUseItemPacket;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.EquipmentSlot;
 
-@RegisterModule(name = "ThrowXP", description = "Automatically switches to experience bottles and throws them.", category = Module.Category.PLAYER)
+@RegisterModule(name = "ThrowXP", description = "Automatically switches to experience bottles and throws them.", category = Module.Category.PLAYER, proxyEnhanced = true)
 public class ThrowXPModule extends Module {
     public ModeSetting autoSwitch = new ModeSetting("Switch", "The mode that will be used for automatically switching to necessary items.", "Silent", InventoryUtils.SWITCH_MODES);
     public NumberSetting delay = new NumberSetting("Delay", "The delay in ticks between throwing experience bottles.", 1, 0, 20);
@@ -32,6 +32,12 @@ public class ThrowXPModule extends Module {
 
     @SubscribeEvent
     public void onPlayerUpdate(PlayerUpdateEvent event) {
+        // On the client, defer to the proxy instead of running here too -- routing every
+        // switch+throw+switchback through the dumb pipe (client -> proxy -> real server, one
+        // round trip per packet) is exactly the extra latency this module exists to avoid.
+        // The proxy runs the whole burst directly against the real server connection instead.
+        if (shouldRunOnProxy()) return;
+
         if (autoSwitch.getValue().equalsIgnoreCase("None") && !(mc.player.getMainHandItem().getItem() instanceof BlockItem)) {
             EUClient.CHAT_MANAGER.tagged("You are currently not holding any experience bottles.", getName());
             setToggled(false);
@@ -59,8 +65,9 @@ public class ThrowXPModule extends Module {
 
         InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
 
-        for (int i = 0; i < repeat.getValue().intValue(); i++) NetworkUtils.sendSequencedPacket(sequence -> new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, sequence, mc.player.getYRot(), mc.player.getXRot()));
-        mc.getConnection().send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
+        for (int i = 0; i < repeat.getValue().intValue(); i++)
+            NetworkUtils.sendSequencedPacket(sequence -> new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, sequence, mc.player.getYRot(), mc.player.getXRot()), this::serverSend);
+        serverSend(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
 
         InventoryUtils.switchBack(autoSwitch.getValue(), slot, previousSlot);
 
@@ -70,6 +77,22 @@ public class ThrowXPModule extends Module {
     @Override
     public void onEnable() {
         if (mc.player == null || mc.level == null) setToggled(false);
+    }
+
+    /**
+     * Sends directly to the real server connection when running on the proxy (skipping the
+     * extra client<->proxy hop the dumb pipe would otherwise add); falls back to the normal
+     * connection everywhere else.
+     */
+    private void serverSend(net.minecraft.network.protocol.Packet<?> packet) {
+        if (isRunningOnProxy() && EUClient.PROXY_SERVER != null) {
+            var serverConn = EUClient.PROXY_SERVER.getServerConnection();
+            if (serverConn != null && serverConn.isConnected()) {
+                eu.client.pingbypass.server.ProxyServerTickListener.allowSend(() -> serverConn.send(packet));
+                return;
+            }
+        }
+        mc.getConnection().send(packet);
     }
 
     private boolean needsExperience() {

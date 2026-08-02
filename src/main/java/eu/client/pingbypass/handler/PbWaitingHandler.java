@@ -119,12 +119,14 @@ public class PbWaitingHandler implements ServerGamePacketListener, TickablePacke
                 } else if (connectionAttemptTicks % 40 == 0) {
                     sendChat("§7[PingBypass] Loading terrain...");
                 }
-            } else if (mc.screen instanceof net.minecraft.client.gui.screens.DisconnectedScreen) {
+            } else if (mc.screen instanceof net.minecraft.client.gui.screens.DisconnectedScreen disconnectedScreen) {
                 // Connection failed
                 connectingToServer = false;
-                LOGGER.warn("Connection to {}:{} failed for {}", pendingServerIp, pendingServerPort, profile.name());
-                sendError("Failed to connect to " + pendingServerIp + ":" + pendingServerPort);
-                sendChat("§c[PingBypass] Failed to connect to " + pendingServerIp + ":" + pendingServerPort);
+                String reason = ((eu.client.mixins.accessors.DisconnectedScreenAccessor) disconnectedScreen)
+                        .euclient$getDetails().reason().getString();
+                LOGGER.warn("Connection to {}:{} failed for {}: {}", pendingServerIp, pendingServerPort, profile.name(), reason);
+                sendError("Failed to connect to " + pendingServerIp + ":" + pendingServerPort + ": " + reason);
+                sendChat("§c[PingBypass] Failed to connect to " + pendingServerIp + ":" + pendingServerPort + " (" + reason + ")");
             } else if (connectionAttemptTicks > 600) {
                 // Timeout after ~30 seconds
                 connectingToServer = false;
@@ -186,6 +188,9 @@ public class PbWaitingHandler implements ServerGamePacketListener, TickablePacke
 
         sendChat("§d[PingBypass] §fConnecting to §a" + serverIp + ":" + serverPort + "§f...");
 
+        // DNS resolution itself is now handled by ServerNameResolverMixin (java.net-based
+        // fallback), which keeps the real hostname intact for the handshake -- no need to
+        // pre-resolve or substitute an IP here anymore.
         String address = serverIp + ":" + serverPort;
         ServerAddress serverAddress = ServerAddress.parseString(address);
         ServerData serverInfo = new ServerData("PingBypass Target", address, ServerData.Type.OTHER);
@@ -234,15 +239,17 @@ public class PbWaitingHandler implements ServerGamePacketListener, TickablePacke
             Connection serverConnection = mc.getConnection().getConnection();
             proxyServer.setServerConnection(serverConnection);
 
-            // Get the server's registry manager — may be null briefly during connection setup
-            net.minecraft.core.RegistryAccess serverRegistry = mc.getConnection().registryAccess();
-            if (serverRegistry == null) {
-                // Fall back to the proxy's cached registry
-                LOGGER.warn("Server registry manager is null, using cached registry for {}", profile.name());
-                serverRegistry = proxyServer.getRegistryCache().isLoaded()
-                        ? proxyServer.getRegistryCache().getRegistryManager()
-                        : net.minecraft.core.RegistryAccess.EMPTY;
-            }
+            // Pull the registry straight off mc.level rather than mc.getConnection() --
+            // WorldStateReplay builds packets (e.g. CommonPlayerSpawnInfo's dimension-type
+            // Holder) directly from mc.level, so the encoder MUST use that exact same
+            // RegistryAccess instance. Re-fetching mc.getConnection().registryAccess()
+            // separately raced a live mid-session CONFIGURATION reload (server pushing
+            // registry_data updates) on this fast-reconnect path: it could return null or
+            // a newer/different instance than the one mc.level's holders were built from,
+            // and encoding fell back to RegistryAccess.EMPTY -- crashing with
+            // "Can't find id for 'Reference{...dimension_type/overworld}' in map" while
+            // encoding ClientboundLoginPacket.
+            net.minecraft.core.RegistryAccess serverRegistry = mc.level.registryAccess();
 
             // Re-transition the outbound encoder to use the REAL server's registry.
             connection.setupOutboundProtocol(
@@ -265,7 +272,7 @@ public class PbWaitingHandler implements ServerGamePacketListener, TickablePacke
             s2cForwarder.start();
 
             // Replay the full world state to the client
-            int initialTeleportId = WorldStateReplay.replay(connection);
+            int initialTeleportId = WorldStateReplay.replay(connection, serverRegistry);
 
             // Unlock immediately (no-op since we didn't lock, but keeps the API consistent)
             // The client will process the replay and start sending packets right away.

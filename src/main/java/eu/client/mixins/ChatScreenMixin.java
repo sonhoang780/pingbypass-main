@@ -28,13 +28,15 @@ import java.util.List;
 public class ChatScreenMixin extends Screen {
     @Shadow protected EditBox input;
 
-    // Tab-cycle state for euclient$handleTab. The candidate list and its base text are captured
-    // ONCE when a cycle starts and reused on every subsequent press -- recomputing suggestions from
-    // the just-completed text would filter the list down to that single exact match (e.g. after
-    // ".fr" -> Tab -> ".freecam", asking CommandManager for suggestions on ".freecam" only returns
-    // "freecam" itself, so "friends" could never be cycled to). Reset only when the user actually
-    // types something new (raw input differs from what our own last completion produced).
-    private int euclient$tabIndex = 0;
+    // Selection-cycle state shared by Tab and Up/Down. The candidate list and its base text are
+    // captured ONCE when a cycle starts and reused on every subsequent press -- recomputing
+    // suggestions from the just-completed text would filter the list down to that single exact
+    // match (e.g. after ".fr" -> Tab -> ".freecam", asking CommandManager for suggestions on
+    // ".freecam" only returns "freecam" itself, so "friends" could never be reached again). Reset
+    // only when the user actually types something new (raw input differs from what our own last
+    // completion produced). euclient$tabIndex is -1 while nothing is selected yet, so the first
+    // Tab/Down press lands on index 0 instead of skipping it.
+    private int euclient$tabIndex = -1;
     private String euclient$cycleBase = null;
     private List<String> euclient$cycleCandidates = List.of();
     private String euclient$lastCompleted = null;
@@ -62,7 +64,7 @@ public class ChatScreenMixin extends Screen {
         int selected;
         if (raw.equals(euclient$lastCompleted) && !euclient$cycleCandidates.isEmpty()) {
             suggestions = euclient$cycleCandidates;
-            selected = (euclient$tabIndex - 1 + suggestions.size()) % suggestions.size();
+            selected = euclient$tabIndex;
         } else {
             suggestions = EUClient.COMMAND_MANAGER.getSuggestions(raw);
             selected = 0;
@@ -121,13 +123,17 @@ public class ChatScreenMixin extends Screen {
         return raw.startsWith(prefix) && !raw.substring(prefix.length()).contains(" ");
     }
 
-    // Tab cycles through the current suggestion list, completing the token being typed. Claimed at
-    // HEAD (cancellable) so it wins over CommandSuggestions/Screen's own Tab handling (focus-cycling
-    // between widgets) whenever we actually have something to suggest -- otherwise Tab just does
-    // whatever vanilla normally does with it (e.g. nothing useful in a chat screen with one widget).
+    // Tab / Down / Up move the selection through the current suggestion list and complete the token
+    // being typed. Claimed at HEAD (cancellable) so this wins over CommandSuggestions/Screen's own
+    // handling (focus-cycling for Tab, chat history recall for Up/Down) whenever we actually have
+    // something to suggest -- if there are no suggestions, the key falls through to whatever vanilla
+    // normally does with it (chat history navigation still works as usual when not autocompleting).
     @Inject(method = "keyPressed", at = @At("HEAD"), cancellable = true)
-    private void euclient$handleTab(KeyEvent event, CallbackInfoReturnable<Boolean> info) {
-        if (event.key() != GLFW.GLFW_KEY_TAB) return;
+    private void euclient$handleSuggestionKeys(KeyEvent event, CallbackInfoReturnable<Boolean> info) {
+        int delta;
+        if (event.key() == GLFW.GLFW_KEY_TAB || event.key() == GLFW.GLFW_KEY_DOWN) delta = 1;
+        else if (event.key() == GLFW.GLFW_KEY_UP) delta = -1;
+        else return;
 
         String raw = input.getValue();
 
@@ -135,19 +141,20 @@ public class ChatScreenMixin extends Screen {
         if (!continuingCycle) {
             euclient$cycleBase = raw;
             euclient$cycleCandidates = EUClient.COMMAND_MANAGER.getSuggestions(raw);
-            euclient$tabIndex = 0;
+            euclient$tabIndex = -1;
         }
 
         if (euclient$cycleCandidates.isEmpty()) return;
 
-        String chosen = euclient$cycleCandidates.get(euclient$tabIndex % euclient$cycleCandidates.size());
-        euclient$tabIndex++;
+        int size = euclient$cycleCandidates.size();
+        euclient$tabIndex = ((euclient$tabIndex + delta) % size + size) % size;
+        String chosen = euclient$cycleCandidates.get(euclient$tabIndex);
 
         // No trailing space -- appending one would immediately flip ".fr" -> ".friend " out of
         // top-level mode (CommandManager.getSuggestions would then treat "friend" as the resolved
-        // command and start suggesting ITS args), so a second Tab press could never cycle to
-        // "freecam" instead. Leaving the cursor right after the completed word keeps repeated Tab
-        // cycling through every match; the user presses space themselves to move on to args.
+        // command and start suggesting ITS args), so a second press could never cycle to "freecam"
+        // instead. Leaving the cursor right after the completed word keeps repeated presses cycling
+        // through every match; the user presses space themselves to move on to args.
         String prefix = EUClient.COMMAND_MANAGER.getPrefix();
         String body = euclient$cycleBase.substring(prefix.length());
         int lastSpace = body.lastIndexOf(' ');

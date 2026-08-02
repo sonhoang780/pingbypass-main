@@ -10,6 +10,8 @@ import eu.client.modules.Module;
 import eu.client.modules.impl.core.ClickGuiModule;
 import eu.client.gui.api.Button;
 import eu.client.gui.api.Frame;
+import eu.client.utils.animations.Animation;
+import eu.client.utils.animations.Easing;
 import eu.client.utils.color.ColorUtils;
 import eu.client.utils.graphics.Renderer2D;
 import eu.client.utils.system.Timer;
@@ -39,6 +41,25 @@ public class ClickGuiScreen extends Screen {
     private boolean showLine = false;
     private Color colorClipboard = null;
 
+    // Whole-GUI open/close slide. EUClient.CLICK_GUI is a single persistent instance (reused via
+    // mc.setScreen(EUClient.CLICK_GUI) every open, never reconstructed), so the animation can't just
+    // be "start fresh in the constructor" -- it's driven by this open/closing flag instead, and
+    // Animation.get() smoothly re-targets on its own if the user re-opens mid-close.
+    private static final int SLIDE_DURATION_MS = 220;
+    private static final float SLIDE_DISTANCE = 40f;
+    private final Animation slideAnim = new Animation(SLIDE_DURATION_MS, Easing.Method.EASE_OUT_CUBIC);
+    private boolean closing = false;
+
+    // Deferred close: instead of removing the screen immediately, play the slide-up first and only
+    // actually call mc.setScreen(null) once it's finished (checked each frame in extractRenderState).
+    public void requestClose() {
+        closing = true;
+    }
+
+    public void cancelClose() {
+        closing = false;
+    }
+
     public ClickGuiScreen() {
         super(Component.literal(EUClient.MOD_ID + "-click-gui"));
 
@@ -61,13 +82,29 @@ public class ClickGuiScreen extends Screen {
             lineTimer.reset();
         }
 
+        float progress = slideAnim.get(closing ? 0f : 1f);
+
+        if (closing && progress <= 0.001f) {
+            // Slide-up finished -- actually remove the screen now. This triggers onClose() on us,
+            // which resets the search box and toggles ClickGuiModule off (a no-op if that's already
+            // what closed us, e.g. the keybind path -- Module.setToggled() guards same-state calls).
+            Minecraft.getInstance().setScreen(null);
+            return;
+        }
+
         descriptionFrame.setDescription("");
         String query = searchFrame.getQuery();
+
+        context.pose().pushMatrix();
+        context.pose().translate(0, (1f - progress) * -SLIDE_DISTANCE);
+
         for(Frame frame : frames) frame.render(context, mouseX, mouseY, delta, query);
         pingBypassFrame.render(context, mouseX, mouseY, delta, query);
 
         descriptionFrame.render(context, mouseX, mouseY, delta);
         searchFrame.render(context, mouseX, mouseY, delta);
+
+        context.pose().popMatrix();
     }
 
     @Override
@@ -124,6 +161,28 @@ public class ClickGuiScreen extends Screen {
     @Override
     public boolean keyPressed(KeyEvent event) {
         int keyCode = event.key(), scanCode = event.scancode(), modifiers = event.modifiers();
+
+        // Claim ESC ourselves instead of letting Screen's default handling close us instantly --
+        // request the slide-up and let extractRenderState() finish the actual close once it's done.
+        if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+            requestClose();
+            return true;
+        }
+
+        // While the slide-up close animation is playing, mc.screen is still this screen (not
+        // null yet), so KeyboardMixin's `minecraft.screen == null` gate silently drops the bind
+        // keypress meant to reopen -- the user has to press it a second time after the animation
+        // finishes. Only handle the cancel-close case here (reopen mid-animation); don't also
+        // treat the bind as an in-screen close toggle -- the opening press itself never reaches
+        // this method (screen was still null when it fired, so it went through KeyboardMixin
+        // instead), so there's no way to tell a genuine re-press here from the OS's key-repeat
+        // for that same opening press, and treating repeats as new presses closes the GUI the
+        // instant it opens.
+        if (keyCode == EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.core.ClickGuiModule.class).getBind()) {
+            if (closing) cancelClose();
+            return true;
+        }
+
         // Check for Ctrl+F to toggle search
         boolean ctrl = InputConstants.isKeyDown(this.minecraft.getWindow(), Util.getPlatform() == Util.OS.OSX ? GLFW.GLFW_KEY_LEFT_SUPER : GLFW.GLFW_KEY_LEFT_CONTROL);
 
@@ -162,13 +221,19 @@ public class ClickGuiScreen extends Screen {
         Renderer2D.renderQuad(context, 0, 0, this.width, this.height, new Color(10, 8, 18, 120));
     }
 
+    // removed() (not onClose()) is the actual lifecycle hook Minecraft.setScreen() calls on the
+    // outgoing screen no matter how it's being replaced -- onClose() is the opposite: a method
+    // Screen subclasses call THEMSELVES to request a close, whose default impl just calls
+    // setScreen(null). We never call onClose() (ESC and the bind key both drive requestClose()'s
+    // deferred setScreen(null) directly, to play the slide-up first), so putting the toggle-off
+    // here instead of onClose() is what actually runs when the screen goes away.
     @Override
-    public void onClose() {
+    public void removed() {
         searchFrame.setQuery("");
         searchFrame.setCursorIndex(0);
         searchFrame.setFocused(false);
         searchFrame.setVisible(false);
-        super.onClose();
+        super.removed();
         EUClient.MODULE_MANAGER.getModule(ClickGuiModule.class).setToggled(false);
     }
 

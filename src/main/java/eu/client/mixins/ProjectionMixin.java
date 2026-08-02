@@ -21,13 +21,17 @@ public class ProjectionMixin {
     // getMatrix() caches the built matrix behind isMatrixDirty and short-circuits (never reaching
     // setPerspective(), where the aspect-ratio override below hooks in) whenever FOV/size haven't
     // changed since the last call -- e.g. while standing still. That's why toggling this module only
-    // took effect once something else (sprint FOV, resize) marked the matrix dirty on its own. Force
-    // a dirty matrix every call while the module is on so the override always actually applies.
+    // took effect once something else (sprint FOV, resize) marked the matrix dirty on its own.
+    //
+    // Gating this on isToggled() (only force-dirty while the module is ON) fixed toggling it ON while
+    // idle, but broke the opposite direction: turning it OFF while idle left the cache stuck holding
+    // the overridden aspect ratio forever, since nothing forced one more recompute to restore the
+    // real one. Force a dirty matrix unconditionally, every call -- recomputing a 4x4 perspective
+    // matrix is cheap, and this way both directions self-correct on the very next frame regardless
+    // of module state.
     @Inject(method = "getMatrix", at = @At("HEAD"))
     private void getMatrix$forceDirty(Matrix4f dest, CallbackInfoReturnable<Matrix4f> info) {
-        if (EUClient.MODULE_MANAGER.getModule(AspectRatioModule.class).isToggled()) {
-            isMatrixDirty = true;
-        }
+        isMatrixDirty = true;
     }
 
     @ModifyArgs(method = "getMatrix", at = @At(value = "INVOKE", target = "Lorg/joml/Matrix4f;setPerspective(FFFFZ)Lorg/joml/Matrix4f;"))

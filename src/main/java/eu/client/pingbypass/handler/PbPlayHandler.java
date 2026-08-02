@@ -47,6 +47,7 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
     private final Connection clientConnection;
     private final GameProfile profile;
     private final S2CForwarder s2cForwarder;
+    private boolean wasOnGround = true;
     private long lastKeepAliveSent;
 
     public PbPlayHandler(ProxyServer proxyServer, Connection clientConnection,
@@ -56,6 +57,10 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
         this.profile = profile;
         this.s2cForwarder = s2cForwarder;
         LOGGER.info("Play handler initialized for {} — dumb pipe mode", profile.name());
+    }
+
+    public GameProfile getProfile() {
+        return profile;
     }
 
     @Override
@@ -147,12 +152,59 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
                 } else if (p.isOnGround()) {
                     mc.player.fallDistance = 0;
                 }
+
+                // The ghost player's position is teleported straight from the client's own
+                // packets rather than driven by real physics, so LivingEntity.jumpFromGround()
+                // (which is what normally fires PlayerJumpEvent) never runs here -- modules like
+                // Surround's JumpDisable that rely on that event never see a proxy-side jump.
+                // Detect the same thing directly from the movement data: leaving the ground
+                // while ascending.
+                if (newY > prevY && !p.isOnGround() && wasOnGround) {
+                    EUClient.EVENT_HANDLER.post(new eu.client.events.impl.PlayerJumpEvent());
+                }
+                wasOnGround = p.isOnGround();
             }
             if (p.hasRotation()) {
                 mc.player.setYRot(p.getYRot(mc.player.getYRot()));
                 mc.player.setXRot(p.getXRot(mc.player.getXRot()));
             }
             mc.player.setOnGround(p.isOnGround());
+        }
+        // Record exactly what the client reported so proxy-side modules injecting their own
+        // rotation packets can echo the same flags back instead of inventing their own from the
+        // ghost player. onGround is mirrored onto mc.player above, but horizontalCollision has
+        // no such mirror -- the ghost never runs collision, so mc.player.horizontalCollision is
+        // permanently stale. A rotation packet carrying a horizontalCollision that contradicts
+        // the client's own forwarded movement packets makes the real server correct the player:
+        // the rubberbanding seen only while moving with AutoCrystal/SpeedMine rotating.
+        eu.client.pingbypass.PingBypassFlags.clientOnGround = p.isOnGround();
+        eu.client.pingbypass.PingBypassFlags.clientHorizontalCollision = p.horizontalCollision();
+
+        // Locally (no proxy), a module aiming via rotate=Normal/Packet never sends a SEPARATE
+        // rotation packet: it briefly overwrites mc.player's own yaw/pitch and lets that value
+        // ride along on the client's own next outgoing movement packet -- one packet, one source
+        // of truth, every tick. On the proxy, packetRotate() instead INJECTS an extra .Rot packet
+        // on top of the client's own forwarded movement packets. While standing still that's
+        // harmless (the client isn't sending rotation changes of its own to conflict with), but
+        // while moving the client is independently forwarding its own genuine look direction on
+        // the very same connection at the same rate -- the server ends up seeing two
+        // uncoordinated rotation reports per tick (the client's real look direction, then our
+        // aim-lock value moments later), which is exactly the rubberbanding reported only while
+        // moving with AutoCrystal, in BOTH Normal and Packet rotate modes (both ultimately go
+        // through packetRotate). Fix it the same way local does: piggyback on this packet
+        // instead of injecting a second one, so there's only ever one rotation report per tick.
+        if (p.hasRotation()) {
+            var activeRotation = EUClient.ROTATION_MANAGER.getRotation();
+            if (activeRotation != null) {
+                p = p.hasPosition()
+                        ? new ServerboundMovePlayerPacket.PosRot(
+                                p.getX(0), p.getY(0), p.getZ(0),
+                                activeRotation.getYaw(), activeRotation.getPitch(),
+                                p.isOnGround(), p.horizontalCollision())
+                        : new ServerboundMovePlayerPacket.Rot(
+                                activeRotation.getYaw(), activeRotation.getPitch(),
+                                p.isOnGround(), p.horizontalCollision());
+            }
         }
         forward(p);
     }
@@ -163,16 +215,47 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
 
     @Override public void handleUseItemOn(ServerboundUseItemOnPacket p) {
         syncSlotForInteract();
+        mirrorStartUsingItem(p.getHand());
         forward(p);
     }
     @Override public void handleUseItem(ServerboundUseItemPacket p) {
         syncSlotForInteract();
+        mirrorStartUsingItem(p.getHand());
         forward(p);
+    }
+
+    /**
+     * mc.player.isUsingItem() is what SpeedMine's eat-pause (interactPaused's stillUsing check)
+     * and AutoCrystal's WhileEating gate both read to decide "is the real player still eating
+     * right now". On the proxy nothing ever called startUsingItem()/stopUsingItem() on the
+     * ghost, so isUsingItem() was permanently false regardless of what the real client was
+     * actually doing -- two different, opposite-looking bugs from the same root cause:
+     *   - SpeedMine's stillUsing check always read false, so its 750ms interactPaused timeout
+     *     always fired as if eating had already finished, switching back to the pickaxe mid-eat
+     *     and cancelling a real ~1.6s golden apple eat before it completed.
+     *   - AutoCrystal's WhileEating gate (shouldPause: eatingFlag && isUsingItem()) always read
+     *     false too, so it never actually paused for eating at all -- if it still visually
+     *     looked like nothing happened, that's most likely a Switch mode that doesn't touch the
+     *     client's own displayed hotbar (Silent/AltSwap), not this.
+     * Only start it for items that actually have a use animation/duration (food, potions, bows,
+     * shields...) -- calling this unconditionally for every right-click, including placing a
+     * block, would incorrectly mark ordinary block placement as "eating" too.
+     */
+    private void mirrorStartUsingItem(net.minecraft.world.InteractionHand hand) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null) return;
+        net.minecraft.world.item.ItemStack stack = mc.player.getItemInHand(hand);
+        if (stack.getUseDuration(mc.player) > 0) {
+            mc.player.startUsingItem(hand);
+        }
     }
     @Override public void handleInteract(ServerboundInteractPacket p) { forward(p); }
     @Override public void handlePlayerAction(ServerboundPlayerActionPacket p) {
         // When the client releases item use (finishes eating), unpause SpeedMine
         if (p.getAction() == ServerboundPlayerActionPacket.Action.RELEASE_USE_ITEM) {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc.player != null) mc.player.stopUsingItem();
+
             var speedMine = EUClient.MODULE_MANAGER.getModule(
                     eu.client.modules.impl.player.SpeedMineModule.class);
             if (speedMine != null && speedMine.isInteractPaused()) {
@@ -183,17 +266,25 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
         }
         // When the client starts mining a block, fire AttackBlockEvent on the
         // proxy so proxy-sided modules (like SpeedMine) can pick it up.
+        // Only defer to the main thread (costs up to 1 tick of latency) when
+        // SpeedMine is actually active and could cancel this — otherwise
+        // AttackBlockEvent has no listener and the mc.execute round-trip is
+        // pure added delay on every single block break.
         if (p.getAction() == ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK) {
-            Minecraft mc = Minecraft.getInstance();
-            if (mc.player != null) {
-                mc.execute(() -> {
-                    var event = new eu.client.events.impl.AttackBlockEvent(p.getPos(), p.getDirection());
-                    EUClient.EVENT_HANDLER.post(event);
-                    if (!event.isCancelled()) {
-                        forward(p);
-                    }
-                });
-                return;
+            var speedMine = EUClient.MODULE_MANAGER.getModule(
+                    eu.client.modules.impl.player.SpeedMineModule.class);
+            if (speedMine != null && speedMine.isToggled()) {
+                Minecraft mc = Minecraft.getInstance();
+                if (mc.player != null) {
+                    mc.execute(() -> {
+                        var event = new eu.client.events.impl.AttackBlockEvent(p.getPos(), p.getDirection());
+                        EUClient.EVENT_HANDLER.post(event);
+                        if (!event.isCancelled()) {
+                            forward(p);
+                        }
+                    });
+                    return;
+                }
             }
         }
         forward(p);
@@ -218,21 +309,29 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
     }
     @Override public void handleContainerClose(ServerboundContainerClosePacket p) { forward(p); }
     @Override public void handleSetCarriedItem(ServerboundSetCarriedItemPacket p) {
-        // Sync proxy's local slot (so modules can read the client's real slot).
         Minecraft mc = Minecraft.getInstance();
-        if (mc.player != null) {
-            mc.player.getInventory().setSelectedSlot(p.getSlot());
-        }
-        // If SpeedMine is actively mining on the proxy, DON'T forward the
-        // client's slot change to the real server — SpeedMine controls the
-        // server's slot state directly via serverSend(). Forwarding would
-        // override the pickaxe with food and break mining.
+
+        // If SpeedMine is actively mining on the proxy, it (and whatever it triggers mid-mine,
+        // e.g. AutoCrystal's onDestroyBlock switch-to-crystal-then-place-then-switchback
+        // sequence) owns the proxy's slot state right now via serverSend(). This handler runs
+        // on the Netty IO thread while that sequence runs on the render thread -- previously
+        // ONLY the forward-to-real-server was suppressed here, but mc.player.getInventory()
+        // (the LOCAL mirror) still got overwritten unconditionally below. A stray/queued
+        // SetCarriedItem from the client landing in that exact window still corrupted the
+        // local mirror mid-sequence (AutoCrystal reads mc.player.getMainHandItem()/selected
+        // slot live to decide what it's holding), even though the real server never saw it --
+        // showing up as "block breaks fine but crystal doesn't place/attack". Skip touching
+        // the mirror too while SpeedMine owns it, not just the forward.
         var speedMine = EUClient.MODULE_MANAGER.getModule(
                 eu.client.modules.impl.player.SpeedMineModule.class);
         if (speedMine != null && speedMine.isToggled() && speedMine.isRunningOnProxy()
                 && (speedMine.getPrimary() != null || speedMine.getSecondary() != null)) {
-            // Don't forward — SpeedMine owns the server's slot state
             return;
+        }
+
+        // Sync proxy's local slot (so modules can read the client's real slot).
+        if (mc.player != null) {
+            mc.player.getInventory().setSelectedSlot(p.getSlot());
         }
         forward(p);
     }
@@ -348,6 +447,14 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
                 case eu.client.pingbypass.protocol.packets.C2SSettingChangePacket.ID -> {
                     var pkt = new eu.client.pingbypass.protocol.packets.C2SSettingChangePacket(buf);
                     handleSettingChange(pkt);
+                }
+                case eu.client.pingbypass.protocol.packets.C2SFriendSyncPacket.ID -> {
+                    var pkt = new eu.client.pingbypass.protocol.packets.C2SFriendSyncPacket(buf);
+                    Minecraft.getInstance().execute(() -> {
+                        EUClient.FRIEND_MANAGER.clear();
+                        for (String friend : pkt.getFriends()) EUClient.FRIEND_MANAGER.add(friend);
+                        LOGGER.info("[PB] Synced {} friend(s) from client", pkt.getFriends().size());
+                    });
                 }
                 default -> LOGGER.debug("[PB] Unknown packet ID: {}", packetId);
             }

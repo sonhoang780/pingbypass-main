@@ -21,8 +21,10 @@ import org.slf4j.LoggerFactory;
 public class PbHandshakeHandler implements ServerHandshakePacketListener {
     private static final Logger LOGGER = LoggerFactory.getLogger(PbHandshakeHandler.class);
 
-    /** Protocol version for Minecraft 1.21.4 */
-    private static final int PROTOCOL_VERSION = 769;
+    // PORT: this was still 769 (1.21.4's protocol number) after the 26.1.2 port -- rejected every
+    // real 26.1.2 client with "Incompatible client! Please use 1.21.4" since the handshake compared
+    // against the wrong version. 775 is 26.1.2's actual RELEASE_NETWORK_PROTOCOL_VERSION.
+    private static final int PROTOCOL_VERSION = 775;
 
     private final ProxyServer proxyServer;
     private final Connection connection;
@@ -49,10 +51,10 @@ public class PbHandshakeHandler implements ServerHandshakePacketListener {
             Component message;
             if (packet.protocolVersion() < PROTOCOL_VERSION) {
                 message = Component.translatable(
-                        "multiplayer.disconnect.outdated_client", "1.21.4");
+                        "multiplayer.disconnect.outdated_client", "26.1.2");
             } else {
                 message = Component.translatable(
-                        "multiplayer.disconnect.incompatible", "1.21.4");
+                        "multiplayer.disconnect.incompatible", "26.1.2");
             }
 
             this.connection.send(new ClientboundLoginDisconnectPacket(message));

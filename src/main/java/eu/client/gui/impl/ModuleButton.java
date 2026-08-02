@@ -9,6 +9,8 @@ import eu.client.gui.api.Button;
 import eu.client.gui.api.Frame;
 import eu.client.settings.Setting;
 import eu.client.settings.impl.*;
+import eu.client.utils.animations.Animation;
+import eu.client.utils.animations.Easing;
 import eu.client.utils.graphics.Renderer2D;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.ChatFormatting;
@@ -22,6 +24,15 @@ public class ModuleButton extends Button {
     private boolean open = false;
     private final ArrayList<Button> buttons = new ArrayList<>();
     private String searchQuery = "";
+
+    // Drives the settings-panel reveal: Frame scales each setting row's contribution to the
+    // panel's total height by this (0..1), so the panel visibly unfolds/slides open instead of
+    // instantly snapping to full height.
+    private final Animation openAnim = new Animation(180, Easing.Method.EASE_OUT_QUAD);
+
+    public float getOpenAmount() {
+        return openAnim.get(open ? 1f : 0f);
+    }
 
     public ModuleButton(Module module, Frame parent, int height) {
         super(parent, height, module.getDescription());
@@ -109,7 +120,7 @@ public class ModuleButton extends Button {
             EUClient.FONT_MANAGER.drawTextWithShadow(context, (module.isToggled() ? "" : ChatFormatting.GRAY) + moduleName, textX, textY, Color.WHITE);
         }
 
-        if(open) {
+        if(getOpenAmount() > 0.001f) {
             for(Button button : buttons) {
                 if(!button.isVisible()) continue;
                 button.render(context, mouseX, mouseY, delta);

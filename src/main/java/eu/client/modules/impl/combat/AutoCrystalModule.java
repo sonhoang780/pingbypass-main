@@ -125,6 +125,14 @@ public class AutoCrystalModule extends Module {
     public ColorSetting iconColor = new ColorSetting("IconColor", "The color that will be used for the crystal icon rendering.", new BooleanSetting.Visibility(icon, true), ColorUtils.getDefaultColor());
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    // executor's queue is unbounded and nothing here ever cancels/drains it -- if a task ever
+    // takes longer than the tick interval (GC pause, toggling off mid-task then back on
+    // immediately resubmits without the old one having finished, etc.) tasks pile up and each
+    // toggle-off/on cycle can leave more of a backlog than the last, showing up later as
+    // AutoCrystal getting progressively slower for no visible reason. Track the in-flight task
+    // and skip resubmitting while one is still running instead of queueing another -- only the
+    // latest calculation is ever useful anyway.
+    private volatile java.util.concurrent.Future<?> pendingCalc = null;
 
     private Runnable attackRunnable = null;
     private Runnable placeRunnable = null;
@@ -137,6 +145,13 @@ public class AutoCrystalModule extends Module {
     private final Timer placeTimer = new Timer();
     private final Timer facePlaceTimer = new Timer();
     private final Timer loopTimer = new Timer();
+    private final Timer cpsLogTimer = new Timer();
+    // Raw monotonic counters (never TTL-cleared, unlike attackedCrystals/placedCrystals) --
+    // ping*2 as the map cleanup TTL means TTL=0 whenever ping reads 0 (e.g. before the first
+    // real keepalive round-trip completes early in a session), which empties those maps
+    // instantly and made the state log always show 0 regardless of what was really happening.
+    private long totalPlaces = 0;
+    private long totalAttacks = 0;
 
     private boolean sequenceAttack = false;
     private boolean sequencePlace = true;
@@ -171,11 +186,49 @@ public class AutoCrystalModule extends Module {
         if (shouldRunOnProxy()) return;
         if (mc.player == null || mc.level == null) return;
 
-        attackedCrystals.entrySet().removeIf(entry -> System.currentTimeMillis() - entry.getValue() > EUClient.SERVER_MANAGER.getPing() * 2L);
-        placedCrystals.entrySet().removeIf(entry -> System.currentTimeMillis() - entry.getValue() > EUClient.SERVER_MANAGER.getPing() * 2L + (20 - attackSpeed.getValue().floatValue()) * 50L);
-        countedCrystals.entrySet().removeIf(entry -> System.currentTimeMillis() - entry.getValue() > EUClient.SERVER_MANAGER.getPing() * 2L);
+        // ping*2 alone has no floor -- at low/near-zero ping (e.g. a VPS colocated with the
+        // target server) this drops to a handful of ms, LESS than the ~50ms minimum the real
+        // server needs just to process the action and tick out a response (one server tick,
+        // regardless of network latency). The tracking entry then expires before the server's
+        // own confirmation could ever arrive, making "did I just place/attack this" unreliable
+        // on a per-action basis -- sometimes the timing lines up and it works, sometimes it
+        // doesn't, which is exactly what shows up as CPS randomly fluctuating even with a
+        // perfectly stable, near-zero connection. Floor it at one server tick's worth.
+        long minTtl = 50L;
+        attackedCrystals.entrySet().removeIf(entry -> System.currentTimeMillis() - entry.getValue() > Math.max(EUClient.SERVER_MANAGER.getPing() * 2L, minTtl));
+        // placedCrystals specifically has to OUTLIVE the round trip it exists to bridge:
+        // place() records the position, and onEntitySpawn/calculateCrystals then require
+        // placedCrystals.containsKey(crystal.blockPosition().below()) to recognise the crystal
+        // the server eventually spawns there as "ours" and instant-attack it. That spawn packet
+        // can't come back faster than (proxy->server + one server tick + server->proxy), which
+        // on any real connection is well past the 50ms floor the other two maps use -- so the
+        // entry was usually already evicted by the time its own crystal arrived. The
+        // instant-attack never matched, the Strong-sequential place->attack->place chain never
+        // started, and the one crystal sitting there unattacked became an "obstruction" in
+        // calculatePlacements after 15 ticks, blocking that position for good: place exactly one
+        // crystal, then stall. Give this map a floor that actually covers a full round trip.
+        long placedTtl = Math.max(EUClient.SERVER_MANAGER.getPing() * 2L, 500L)
+                + (long) ((20 - attackSpeed.getValue().floatValue()) * 50L);
+        placedCrystals.entrySet().removeIf(entry -> System.currentTimeMillis() - entry.getValue() > placedTtl);
+        countedCrystals.entrySet().removeIf(entry -> System.currentTimeMillis() - entry.getValue() > Math.max(EUClient.SERVER_MANAGER.getPing() * 2L, minTtl));
 
         crystalsPerSecond = crystalCounter.getCount();
+
+        // Diagnostic: the HUD's CPS number is the CLIENT's own counter, which never
+        // increments while proxying (every handler here returns early on the client).
+        // This logs what the PROXY actually achieved, so proxy-side throughput can be
+        // compared against what the player sees -- the two are gated by different links
+        // (proxy<->server vs client<->proxy).
+        if (isRunningOnProxy() && cpsLogTimer.hasTimeElapsed(2000L)) {
+            cpsLogTimer.reset();
+            EUClient.LOGGER.info("[PB] AutoCrystal proxy-side CPS={} (ping to real server={}ms, calc={})",
+                    crystalsPerSecond, EUClient.SERVER_MANAGER.getPing(), calculationTime);
+            // Diagnostic: if AutoCrystal gets stuck and only a toggle-off/on (which clears
+            // these) unsticks it, one of these maps/fields is the culprit -- log them so a
+            // stuck episode shows exactly which one stopped shrinking/changing.
+            EUClient.LOGGER.info("[PB] AutoCrystal state: totalPlaces={} totalAttacks={} attackTarget={} placeTarget={} sequenceAttack={} sequencePlace={}",
+                    totalPlaces, totalAttacks, attackTarget != null, placeTarget != null, sequenceAttack, sequencePlace);
+        }
 
         Runnable runnable = () -> {
             long startTime = System.nanoTime();
@@ -183,8 +236,18 @@ public class AutoCrystalModule extends Module {
             attackTarget = calculateCrystals();
             placeTarget = calculatePlacements(null);
 
-            calculationTime = new DecimalFormat("0.00").format((System.nanoTime() - startTime) / 1000000.0) + "ms";
+            long calcNanos = System.nanoTime() - startTime;
+            calculationTime = new DecimalFormat("0.00").format(calcNanos / 1000000.0) + "ms";
             calculationCount = placeTarget == null ? 0 : placeTarget.getCalculations();
+            // Diagnostic: this Runnable runs on the single-thread executor (see `executor`
+            // field) -- if it regularly takes anywhere near the tick interval (50ms), that
+            // single thread (not CPU count -- e2-standard-8 has more cores but the SAME
+            // per-core clock as e2-medium) caps how often placeTarget/attackTarget can
+            // refresh, which caps CPS regardless of network latency or proxy TPS.
+            if (isRunningOnProxy() && calcNanos > 20_000_000L) {
+                EUClient.LOGGER.info("[PB] AutoCrystal calc took {}ms ({} candidates scanned)",
+                        new DecimalFormat("0.00").format(calcNanos / 1000000.0), calculationCount);
+            }
             calculationDamage = placeTarget == null ? "0.00" : new DecimalFormat("0.00").format(placeTarget.getDamage());
 
             target = placeTarget == null ? null : placeTarget.getPlayer();
@@ -198,8 +261,11 @@ public class AutoCrystalModule extends Module {
             }
         };
 
-        if (asynchronous.getValue()) executor.submit(runnable);
-        else runnable.run();
+        if (asynchronous.getValue()) {
+            if (pendingCalc == null || pendingCalc.isDone()) pendingCalc = executor.submit(runnable);
+        } else {
+            runnable.run();
+        }
 
         if (gameLoop.getValue()) return;
 
@@ -387,6 +453,16 @@ public class AutoCrystalModule extends Module {
 
     @Override
     public void onDisable() {
+        if (pendingCalc != null) {
+            pendingCalc.cancel(false);
+            pendingCalc = null;
+        }
+
+        if (isRunningOnProxy()) {
+            EUClient.LOGGER.info("[PB] AutoCrystal proxy-side CPS={} at disable (ping to real server={}ms, calc={})",
+                    crystalCounter.getCount(), EUClient.SERVER_MANAGER.getPing(), calculationTime);
+        }
+
         if (savedSlot != -1) {
             InventoryUtils.switchBackNormal(savedSlot);
             savedSlot = -1;
@@ -627,6 +703,7 @@ public class AutoCrystalModule extends Module {
             if (!mc.level.getBlockState(position.offset(0, 1, 0)).isAir() || (placements.getValue().equalsIgnoreCase("Protocol") && !mc.level.getBlockState(position.offset(0, 2, 0)).isAir())) continue;
 
             if (!WorldUtils.canSee(position) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue()))) continue;
+
             if (mc.level.getEntities((Entity) null, new AABB(position.offset(0, 1, 0)), entity -> true).stream().anyMatch(entity -> entity.isAlive() && !(entity instanceof ExperienceOrb) && !(entity instanceof EndCrystal))) continue;
 
             List<Entity> obstructingCrystals = mc.level.getEntities((Entity) null, new AABB(position.offset(0, 1, 0)), entity -> true).stream().filter(entity -> entity instanceof EndCrystal crystal && crystal.tickCount >= (20 - attackSpeed.getValue().intValue()) + 15).toList();
@@ -710,6 +787,7 @@ public class AutoCrystalModule extends Module {
 
         attackedCrystals.put(crystal.getId(), System.currentTimeMillis());
         attackTimer.reset();
+        totalAttacks++;
     }
 
     private void place(BlockPos position) {
@@ -733,6 +811,7 @@ public class AutoCrystalModule extends Module {
         placedCrystals.put(position, System.currentTimeMillis());
         countedCrystals.put(position, System.currentTimeMillis());
         placeTimer.reset();
+        totalPlaces++;
     }
 
     private List<Player> getPlayers() {

@@ -2,6 +2,7 @@ package eu.client.modules.impl.miscellaneous;
 
 import com.mojang.authlib.GameProfile;
 import lombok.Getter;
+import eu.client.EUClient;
 import eu.client.events.SubscribeEvent;
 import eu.client.events.impl.PlayerUpdateEvent;
 import eu.client.modules.Module;
@@ -12,14 +13,28 @@ import eu.client.utils.rotations.RotationUtils;
 import eu.client.utils.system.MathUtils;
 import eu.client.utils.system.Timer;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.GameType;
 import net.minecraft.client.player.RemotePlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.network.Connection;
+import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
+import net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket;
+import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
+import net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket;
 
+import java.util.Collections;
+import java.util.EnumSet;
 import java.util.UUID;
 
+// proxyEnhanced so the toggle reaches the proxy: combat modules like AutoCrystal
+// run their real logic on the proxy's own mc.level (the actual connection to the
+// real server) and scan mc.level.players() there -- a dummy spawned only on this
+// client's own (mostly unused, pre-real-connection) level is invisible to them.
+// shouldRunOnProxy() below skips the client-side spawn while proxying so there's
+// only ever one copy, spawned on whichever side is actually driving gameplay.
 @RegisterModule(name = "FakePlayer", description = "Spawns in a fake player entity that you can use to test modules on.", category = Module.Category.MISCELLANEOUS, proxyEnhanced = true)
 public class FakePlayerModule extends Module {
     public StringSetting name = new StringSetting("Name", "The name that will be assigned to the fake player.", "Dummy");
@@ -86,10 +101,24 @@ public class FakePlayerModule extends Module {
         player.setXRot(0.0f);
 
         player.setPos(player.getX() + direction[0], player.getY() + fixAxisY(player), player.getZ() + direction[1]);
+
+        broadcastPosition();
+    }
+
+    /** Mirrors the fake player's current position/rotation to the connected client. */
+    private void broadcastPosition() {
+        if (!isRunningOnProxy() || EUClient.PROXY_SERVER == null) return;
+
+        var teleportPacket = ClientboundTeleportEntityPacket.teleport(
+                player.getId(), net.minecraft.world.entity.PositionMoveRotation.of(player), java.util.Set.of(), player.onGround());
+        for (Connection conn : EUClient.PROXY_SERVER.getConnections()) {
+            if (conn.isConnected()) conn.send(teleportPacket);
+        }
     }
 
     @Override
     public void onEnable() {
+        if (shouldRunOnProxy()) return;
         if (mc.level == null) {
             setToggled(false);
             return;
@@ -110,12 +139,65 @@ public class FakePlayerModule extends Module {
 
         player.tick();
         timer.reset();
+
+        broadcastSpawn();
     }
 
     @Override
     public void onDisable() {
+        if (shouldRunOnProxy()) return;
         if (mc.level == null || player == null) return;
+
+        broadcastDespawn();
         mc.level.removeEntity(player.getId(), Entity.RemovalReason.DISCARDED);
+    }
+
+    /**
+     * The fake player is spawned via mc.level.addEntity() directly -- a purely
+     * local operation that never produces a real ClientboundAddEntityPacket, so
+     * S2CForwarder (which only relays packets actually received from the real
+     * server) has nothing to forward. When running on the proxy, synthesize and
+     * send the same packets a real spawn would produce so the connected client
+     * actually sees the model.
+     */
+    private void broadcastSpawn() {
+        if (!isRunningOnProxy() || EUClient.PROXY_SERVER == null) return;
+
+        var entries = java.util.List.of(new ClientboundPlayerInfoUpdatePacket.Entry(
+                player.getUUID(), player.getGameProfile(), false, 0,
+                GameType.SURVIVAL, null, false, 0, null));
+        var infoPacket = new ClientboundPlayerInfoUpdatePacket(
+                EnumSet.of(ClientboundPlayerInfoUpdatePacket.Action.ADD_PLAYER), Collections.emptyList());
+        ((eu.client.mixins.accessors.PlayerListS2CPacketAccessor) infoPacket)
+                .setActions(EnumSet.of(ClientboundPlayerInfoUpdatePacket.Action.ADD_PLAYER));
+        ((eu.client.mixins.accessors.PlayerListS2CPacketAccessor) infoPacket).setEntries(entries);
+
+        var spawnPacket = new ClientboundAddEntityPacket(
+                player.getId(), player.getUUID(),
+                player.getX(), player.getY(), player.getZ(),
+                player.getXRot(), player.getYRot(),
+                player.getType(), 0,
+                player.getDeltaMovement(), player.getYHeadRot());
+
+        for (Connection conn : EUClient.PROXY_SERVER.getConnections()) {
+            if (!conn.isConnected()) continue;
+            conn.send(infoPacket);
+            conn.send(spawnPacket);
+        }
+    }
+
+    private void broadcastDespawn() {
+        if (!isRunningOnProxy() || EUClient.PROXY_SERVER == null) return;
+
+        var removePacket = new ClientboundRemoveEntitiesPacket(player.getId());
+        var infoRemovePacket = new net.minecraft.network.protocol.game.ClientboundPlayerInfoRemovePacket(
+                java.util.List.of(player.getUUID()));
+
+        for (Connection conn : EUClient.PROXY_SERVER.getConnections()) {
+            if (!conn.isConnected()) continue;
+            conn.send(removePacket);
+            conn.send(infoRemovePacket);
+        }
     }
 
     public boolean hasObstruction(BlockPos position) {

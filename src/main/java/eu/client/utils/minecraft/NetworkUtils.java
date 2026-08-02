@@ -16,9 +16,17 @@ public class NetworkUtils implements IMinecraft {
     }
 
     public static void sendSequencedPacket(SequencedPacketCreator packetCreator) {
+        sendSequencedPacket(packetCreator, packet -> mc.getConnection().send(packet));
+    }
+
+    // Lets proxy-enhanced modules route the sequenced packet through their own serverSend()
+    // (straight to the real server connection) instead of mc.getConnection() (which on the
+    // proxy is the dumb-pipe path through the connected client -- an extra network hop this
+    // is meant to skip).
+    public static void sendSequencedPacket(SequencedPacketCreator packetCreator, java.util.function.Consumer<Packet<ServerGamePacketListener>> sender) {
         try (BlockStatePredictionHandler prediction = ((ClientWorldAccessor) mc.level).invokeGetPendingUpdateManager().startPredicting()) {
             Packet<ServerGamePacketListener> packet = packetCreator.predict(prediction.currentSequence());
-            mc.getConnection().send(packet);
+            sender.accept(packet);
         }
     }
 }

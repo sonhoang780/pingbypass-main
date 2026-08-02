@@ -35,7 +35,7 @@ public class WorldStateSender {
                 return;
             }
             // Delegate to WorldStateReplay which has the complete implementation
-            WorldStateReplay.replay(toClient);
+            WorldStateReplay.replay(toClient, world.registryAccess());
             LOGGER.info("World state sent successfully.");
         } catch (Exception e) {
             LOGGER.error("Error sending world state to client", e);

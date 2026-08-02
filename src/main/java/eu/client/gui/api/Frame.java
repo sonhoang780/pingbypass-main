@@ -68,15 +68,22 @@ public class Frame {
                 button.setY(y + totalHeight);
                 totalHeight += button.getHeight();
 
-                if(button instanceof ModuleButton moduleButton && moduleButton.isOpen()) {
-                    for(Button b : moduleButton.getButtons()) {
-                        b.getSetting().getVisibility().update();
-                        b.setVisible(b.getSetting().getVisibility().isVisible());
-                        if(!b.isVisible()) continue;
+                if(button instanceof ModuleButton moduleButton) {
+                    // Scale each setting row's height contribution by the panel's open animation
+                    // (0..1) instead of gating on the instant open/closed boolean -- packs the rows
+                    // tighter while opening/closing so the whole panel visibly unfolds/collapses
+                    // rather than the total height just snapping between two values.
+                    float openAmount = moduleButton.getOpenAmount();
+                    if (openAmount > 0.001f) {
+                        for (Button b : moduleButton.getButtons()) {
+                            b.getSetting().getVisibility().update();
+                            b.setVisible(b.getSetting().getVisibility().isVisible());
+                            if (!b.isVisible()) continue;
 
-                        b.setX(x);
-                        b.setY(y + totalHeight);
-                        totalHeight += b.getHeight();
+                            b.setX(x);
+                            b.setY(y + totalHeight);
+                            totalHeight += Math.round(b.getHeight() * openAmount);
+                        }
                     }
                 }
             }

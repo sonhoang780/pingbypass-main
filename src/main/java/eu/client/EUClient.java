@@ -94,6 +94,7 @@ public class EUClient implements ModInitializer {
 						InetAddress.getByName(PINGBYPASS_CONFIG.getIp()),
 						PINGBYPASS_CONFIG.getPort());
 				EVENT_HANDLER.subscribe(new ProxyServerTickListener(PROXY_SERVER));
+				new eu.client.pingbypass.server.TransferRehook();
 				Runtime.getRuntime().addShutdownHook(new Thread(() -> {
 					if (PROXY_SERVER != null) {
 						PROXY_SERVER.shutdown();

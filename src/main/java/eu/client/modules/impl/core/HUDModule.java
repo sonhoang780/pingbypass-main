@@ -375,12 +375,20 @@ public class HUDModule extends Module {
                 int y = mc.getWindow().getGuiScaledHeight() - 55 - wateroffset;
 
                 event.getContext().item(stack, x, y);
-                event.getContext().itemDecorations(mc.font, stack, x, y);
+                // itemDecorations() draws vanilla's own durability bar (plus stack count/cooldown,
+                // irrelevant for armor) -- it used to run unconditionally regardless of this mode,
+                // so "Percentage" always showed the bar too instead of just the percentage text.
+                if (armorDurability.getValue().equalsIgnoreCase("Bar") || armorDurability.getValue().equalsIgnoreCase("Both")) {
+                    event.getContext().itemDecorations(mc.font, stack, x, y);
+                }
 
                 int damage = stack.getDamageValue();
                 int maxDamage = stack.getMaxDamage();
 
-                if (armorDurability.getValue().equalsIgnoreCase("Percentage") || armorDurability.getValue().equalsIgnoreCase("Both") && maxDamage > 0) {
+                // PORT: && binds tighter than || -- this used to parse as
+                // `Percentage || (Both && maxDamage > 0)`, so plain "Percentage" mode skipped the
+                // maxDamage>0 guard entirely and divided by zero on any unbreakable armor piece.
+                if ((armorDurability.getValue().equalsIgnoreCase("Percentage") || armorDurability.getValue().equalsIgnoreCase("Both")) && maxDamage > 0) {
                     matrices.pushMatrix();
                     matrices.scale(0.625f, 0.625f);
                     drawText(event.getContext(), (((maxDamage - damage) * 100) / maxDamage) + "%", (int) (((mc.getWindow().getGuiScaledWidth() >> 1) + 70 - (18 * offset)) * 1.6F), (int) ((mc.getWindow().getGuiScaledHeight() - 58 - wateroffset) * 1.6F - 5), false, new Color(1.0f - ((maxDamage - damage) / (float) maxDamage), (maxDamage - damage) / (float) maxDamage, 0));

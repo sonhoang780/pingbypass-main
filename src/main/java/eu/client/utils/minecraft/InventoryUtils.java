@@ -34,6 +34,7 @@ public class InventoryUtils implements IMinecraft {
             case "Normal" -> {
                 mc.player.getInventory().setSelectedSlot(slot);
                 ((ClientPlayerInteractionManagerAccessor) mc.gameMode).invokeSyncSelectedSlot();
+                syncSlotToClientIfProxy(slot);
             }
             case "Silent" -> mc.getConnection().send(new ServerboundSetCarriedItemPacket(slot));
             case "AltPickup" -> swap("Pickup", slot, previousSlot);
@@ -50,6 +51,25 @@ public class InventoryUtils implements IMinecraft {
 
         mc.player.getInventory().setSelectedSlot(previousSlot);
         ((ClientPlayerInteractionManagerAccessor) mc.gameMode).invokeSyncSelectedSlot();
+        syncSlotToClientIfProxy(previousSlot);
+    }
+
+    /**
+     * "Normal" mode switches only change the proxy ghost player's own selected
+     * slot -- the real client's hotbar is drawn from its own local selection
+     * and is never told about it otherwise, so visually nothing switches.
+     * Mirror it to the connected client when running on the proxy.
+     */
+    private static void syncSlotToClientIfProxy(int slot) {
+        if (EUClient.PINGBYPASS_CONFIG == null || !EUClient.PINGBYPASS_CONFIG.isServer()) return;
+        if (!eu.client.pingbypass.PingBypassFlags.proxyForwardingActive || EUClient.PROXY_SERVER == null) return;
+
+        var packet = new net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket(
+                eu.client.pingbypass.protocol.PbCustomPayload.fromPacket(
+                        new eu.client.pingbypass.protocol.packets.S2CSlotSyncPacket(slot)));
+        for (net.minecraft.network.Connection conn : EUClient.PROXY_SERVER.getConnections()) {
+            if (conn.isConnected()) conn.send(packet);
+        }
     }
 
     public static void switchBack(String mode, int slot, int previousSlot) {
@@ -76,6 +96,32 @@ public class InventoryUtils implements IMinecraft {
             case "Swap" -> {
                 mc.gameMode.handleContainerInput(mc.player.containerMenu.containerId, indexToSlot(slot), targetSlot, ContainerInput.SWAP, mc.player);
             }
+        }
+
+        // Unlike "Normal" mode's setSelectedSlot (mirrored to the client instantly via
+        // syncSlotToClientIfProxy), handleContainerInput above only applies the swap to the
+        // PROXY's own local menu prediction. The real client's own inventory only learns about
+        // it once the real server's ClientboundContainerSetContentPacket/SetSlotPacket confirms
+        // and gets forwarded back -- a full real-network round trip. If another module (e.g.
+        // AutoCrystal's Normal switch) reselects a slot on the client's side inside that window,
+        // the client is acting on stale slot contents and desyncs from what the real server
+        // actually has, showing up as "can't crystal" / "block doesn't break" / rubberband when
+        // combined with other proxy-side inventory switches. Broadcast the proxy's own
+        // just-applied prediction to the client immediately instead of waiting on that RTT.
+        syncInventoryToClientIfProxy();
+    }
+
+    private static void syncInventoryToClientIfProxy() {
+        if (EUClient.PINGBYPASS_CONFIG == null || !EUClient.PINGBYPASS_CONFIG.isServer()) return;
+        if (!eu.client.pingbypass.PingBypassFlags.proxyForwardingActive || EUClient.PROXY_SERVER == null) return;
+
+        var packet = new net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket(
+                mc.player.containerMenu.containerId,
+                mc.player.containerMenu.incrementStateId(),
+                mc.player.containerMenu.getItems(),
+                mc.player.containerMenu.getCarried());
+        for (net.minecraft.network.Connection conn : EUClient.PROXY_SERVER.getConnections()) {
+            if (conn.isConnected()) conn.send(packet);
         }
     }
 
