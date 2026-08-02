@@ -472,7 +472,11 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
                 }
                 case eu.client.pingbypass.protocol.packets.C2SInputKeyPacket.ID -> {
                     var pkt = new eu.client.pingbypass.protocol.packets.C2SInputKeyPacket(buf);
-                    Minecraft.getInstance().execute(() -> EUClient.PB_SERVER_INPUT.onKeyTransition(pkt.getKey(), pkt.getAction()));
+                    Minecraft.getInstance().execute(() -> EUClient.PB_SERVER_INPUT.onKeyTransition(pkt.getKey(), pkt.getScancode(), pkt.getModifiers(), pkt.isPressed()));
+                }
+                case eu.client.pingbypass.protocol.packets.C2SInputMousePacket.ID -> {
+                    var pkt = new eu.client.pingbypass.protocol.packets.C2SInputMousePacket(buf);
+                    Minecraft.getInstance().execute(() -> EUClient.PB_SERVER_INPUT.onMouseTransition(pkt.getButton(), pkt.getModifiers(), pkt.isPressed()));
                 }
                 case eu.client.pingbypass.protocol.packets.C2SInputLookPacket.ID -> {
                     var pkt = new eu.client.pingbypass.protocol.packets.C2SInputLookPacket(buf);

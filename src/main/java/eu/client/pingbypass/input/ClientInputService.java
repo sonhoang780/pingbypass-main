@@ -10,16 +10,16 @@ import eu.client.pingbypass.PingBypassFlags;
 import eu.client.pingbypass.protocol.PbCustomPayload;
 import eu.client.pingbypass.protocol.packets.C2SInputKeyPacket;
 import eu.client.pingbypass.protocol.packets.C2SInputLookPacket;
+import eu.client.pingbypass.protocol.packets.C2SInputMousePacket;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.protocol.common.ServerboundCustomPayloadPacket;
 
 /**
- * Client-side raw input capture. When PingBypassFlags.rawInputForwardingActive is true,
- * every semantic key transition and accumulated mouse-look delta is forwarded to the proxy
- * instead of letting the local LocalPlayer act on it directly (see ClientPlayerEntityMixin
- * for the corresponding local-action cancellation). Reuses the existing
- * UnfilteredKeyInputEvent/UnfilteredMouseInputEvent pipeline (KeyboardMixin/MouseMixin)
- * rather than adding new accessor mixins.
+ * Client-side raw input capture. Forwards EVERY key/mouse transition to the proxy while
+ * PingBypassFlags.rawInputForwardingActive is true -- matches the real 3arthh4ck
+ * ClientInputService, which forwards all KeyboardEvent/MouseEvent unconditionally (not a
+ * fixed semantic set), so the proxy's generic KeyMapping.set(...) resolves whichever binding
+ * the key/button is actually mapped to (movement, hotbar slots, inventory, drop, chat, ...).
  */
 public class ClientInputService {
     private final Minecraft mc = Minecraft.getInstance();
@@ -29,23 +29,16 @@ public class ClientInputService {
     @SubscribeEvent
     public void onKey(UnfilteredKeyInputEvent event) {
         if (!active()) return;
-        C2SInputKeyPacket.Key key = mapKey(event.getKey(), event.getScancode(), event.getModifiers());
-        if (key == null) return;
         // GLFW: 1 = PRESS, 0 = RELEASE, 2 = REPEAT (ignore repeats, no new state)
         if (event.getAction() == 2) return;
-        send(new C2SInputKeyPacket(key, event.getAction() == 1 ? C2SInputKeyPacket.Action.PRESS : C2SInputKeyPacket.Action.RELEASE));
+        send(new C2SInputKeyPacket(event.getKey(), event.getScancode(), event.getModifiers(), event.getAction() == 1));
     }
 
     @SubscribeEvent
     public void onMouseButton(UnfilteredMouseInputEvent event) {
         if (!active()) return;
-        C2SInputKeyPacket.Key key = switch (event.getButton()) {
-            case 0 -> C2SInputKeyPacket.Key.ATTACK;
-            case 1 -> C2SInputKeyPacket.Key.USE;
-            default -> null;
-        };
-        if (key == null || event.getAction() == 2) return;
-        send(new C2SInputKeyPacket(key, event.getAction() == 1 ? C2SInputKeyPacket.Action.PRESS : C2SInputKeyPacket.Action.RELEASE));
+        if (event.getAction() == 2) return;
+        send(new C2SInputMousePacket(event.getButton(), event.getMods(), event.getAction() == 1));
     }
 
     @SubscribeEvent
@@ -71,19 +64,6 @@ public class ClientInputService {
     private boolean active() {
         return PingBypassFlags.rawInputForwardingActive
                 && (EUClient.PINGBYPASS_CONFIG == null || !EUClient.PINGBYPASS_CONFIG.isServer());
-    }
-
-    private C2SInputKeyPacket.Key mapKey(int key, int scancode, int modifiers) {
-        var options = mc.options;
-        var event = new net.minecraft.client.input.KeyEvent(key, scancode, modifiers);
-        if (options.keyUp.matches(event)) return C2SInputKeyPacket.Key.FORWARD;
-        if (options.keyDown.matches(event)) return C2SInputKeyPacket.Key.BACK;
-        if (options.keyLeft.matches(event)) return C2SInputKeyPacket.Key.LEFT;
-        if (options.keyRight.matches(event)) return C2SInputKeyPacket.Key.RIGHT;
-        if (options.keyJump.matches(event)) return C2SInputKeyPacket.Key.JUMP;
-        if (options.keyShift.matches(event)) return C2SInputKeyPacket.Key.SNEAK;
-        if (options.keySprint.matches(event)) return C2SInputKeyPacket.Key.SPRINT;
-        return null;
     }
 
     private void send(eu.client.pingbypass.protocol.PbPacket packet) {

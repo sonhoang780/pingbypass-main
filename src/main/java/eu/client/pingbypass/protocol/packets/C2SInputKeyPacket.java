@@ -4,37 +4,47 @@ import eu.client.pingbypass.protocol.PbPacket;
 import net.minecraft.network.FriendlyByteBuf;
 
 /**
- * Client -> Proxy: a single raw key/mouse-button transition (not a continuous state poll).
- * Packet ID: 15 (10=S2CRenderPosition, 11=S2CBlockRender, 12=S2CMiningState,
- * 13=S2CSlotSync, 14=C2SFriendSync are already taken).
+ * Client -> Proxy: a single raw keyboard key transition (any key, not a fixed semantic set --
+ * matches the real 3arthh4ck ClientInputService, which forwards every KeyboardEvent
+ * unconditionally). The proxy resolves this to whichever KeyMapping(s) are actually bound to
+ * it via InputConstants.getKey(...) + KeyMapping.set(...), so hotbar slots, inventory, drop,
+ * chat, sprint-toggle etc. all work generically without a hardcoded enum.
+ * Packet ID: 15.
  */
 public class C2SInputKeyPacket extends PbPacket {
     public static final int ID = 15;
 
-    public enum Key { FORWARD, BACK, LEFT, RIGHT, JUMP, SNEAK, SPRINT, ATTACK, USE }
-    public enum Action { PRESS, RELEASE }
+    private final int key;
+    private final int scancode;
+    private final int modifiers;
+    private final boolean pressed;
 
-    private final Key key;
-    private final Action action;
-
-    public C2SInputKeyPacket(Key key, Action action) {
+    public C2SInputKeyPacket(int key, int scancode, int modifiers, boolean pressed) {
         this.key = key;
-        this.action = action;
+        this.scancode = scancode;
+        this.modifiers = modifiers;
+        this.pressed = pressed;
     }
 
     public C2SInputKeyPacket(FriendlyByteBuf buf) {
-        this.key = buf.readEnum(Key.class);
-        this.action = buf.readEnum(Action.class);
+        this.key = buf.readVarInt();
+        this.scancode = buf.readVarInt();
+        this.modifiers = buf.readVarInt();
+        this.pressed = buf.readBoolean();
     }
 
     @Override public int getPacketId() { return ID; }
 
     @Override
     public void write(FriendlyByteBuf buf) {
-        buf.writeEnum(key);
-        buf.writeEnum(action);
+        buf.writeVarInt(key);
+        buf.writeVarInt(scancode);
+        buf.writeVarInt(modifiers);
+        buf.writeBoolean(pressed);
     }
 
-    public Key getKey() { return key; }
-    public Action getAction() { return action; }
+    public int getKey() { return key; }
+    public int getScancode() { return scancode; }
+    public int getModifiers() { return modifiers; }
+    public boolean isPressed() { return pressed; }
 }
