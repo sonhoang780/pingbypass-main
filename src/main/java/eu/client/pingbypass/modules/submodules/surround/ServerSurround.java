@@ -1,38 +1,33 @@
-package eu.client.modules.impl.combat;
+package eu.client.pingbypass.modules.submodules.surround;
 
 import eu.client.EUClient;
 import eu.client.events.SubscribeEvent;
 import eu.client.events.impl.PacketReceiveEvent;
 import eu.client.events.impl.PlayerJumpEvent;
-import eu.client.events.impl.PlayerUpdateEvent;
-import eu.client.modules.Module;
-import eu.client.modules.RegisterModule;
 import eu.client.modules.impl.movement.HitboxDesyncModule;
 import eu.client.modules.impl.movement.SpeedModule;
 import eu.client.modules.impl.movement.StepModule;
+import eu.client.pingbypass.modules.PbModule;
+import eu.client.settings.Setting;
 import eu.client.settings.impl.BooleanSetting;
 import eu.client.settings.impl.ModeSetting;
 import eu.client.settings.impl.NumberSetting;
+import eu.client.utils.IMinecraft;
 import eu.client.utils.minecraft.HoleUtils;
 import eu.client.utils.minecraft.InventoryUtils;
 import eu.client.utils.minecraft.PositionUtils;
 import eu.client.utils.minecraft.WorldUtils;
-import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
+import net.minecraft.network.protocol.game.ServerboundAttackPacket;
+import net.minecraft.network.protocol.game.ServerboundSwingPacket;
+import net.minecraft.util.Mth;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.boss.enderdragon.EndCrystal;
 import net.minecraft.world.item.BlockItem;
-import net.minecraft.network.protocol.game.ServerboundSwingPacket;
-import net.minecraft.network.protocol.game.ServerboundAttackPacket;
-import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
-import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
-import net.minecraft.network.protocol.game.ClientboundSoundPacket;
-import net.minecraft.sounds.SoundSource;
-import net.minecraft.sounds.SoundEvents;
-import net.minecraft.world.InteractionHand;
-import net.minecraft.core.BlockPos;
 import net.minecraft.world.phys.AABB;
-import net.minecraft.core.Direction;
-import net.minecraft.util.Mth;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
@@ -40,8 +35,11 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-@RegisterModule(name = "Surround", description = "Automatically places blocks at your feet to prevent crystal damage.", category = Module.Category.COMBAT)
-public class SurroundModule extends Module {
+/**
+ * Proxy-only Surround, ported from SurroundModule's shouldRunOnProxy()-guarded branches
+ * with the guards removed -- runs only on the proxy's own LocalPlayer.
+ */
+public class ServerSurround extends PbModule implements IMinecraft {
     public ModeSetting autoSwitch = new ModeSetting("Switch", "The mode that will be used for automatically switching to necessary items.", "Silent", InventoryUtils.SWITCH_MODES);
     public ModeSetting timing = new ModeSetting("Timing", "The timing that will be used in replacing broken surround blocks.", "Sequential", new String[]{"Vanilla", "Sequential"});
     public NumberSetting limit = new NumberSetting("Limit", "The maximum number of blocks that can be placed each group.", 4, 1, 20);
@@ -71,14 +69,38 @@ public class SurroundModule extends Module {
     private int ticks = 0;
     private int blocksPlaced = 0;
 
+    public ServerSurround() {
+        super("Surround");
+    }
+
     @Override
     public void onEnable() {
+        EUClient.EVENT_HANDLER.subscribe(this);
+
         if (mc.player == null || mc.level == null) return;
         lastPosition = PositionUtils.getFlooredPosition(mc.player);
 
-        if(stepToggle.getValue() && EUClient.MODULE_MANAGER.getModule(StepModule.class).isToggled()) EUClient.MODULE_MANAGER.getModule(StepModule.class).setToggled(false);
-        if(speedToggle.getValue() && EUClient.MODULE_MANAGER.getModule(SpeedModule.class).isToggled()) EUClient.MODULE_MANAGER.getModule(SpeedModule.class).setToggled(false);
-        if(center.getValue()) mc.player.setPos(lastPosition.getX() + 0.5, lastPosition.getY(), lastPosition.getZ() + 0.5);
+        if (stepToggle.getValue() && EUClient.MODULE_MANAGER.getModule(StepModule.class).isToggled()) EUClient.MODULE_MANAGER.getModule(StepModule.class).setToggled(false);
+        if (speedToggle.getValue() && EUClient.MODULE_MANAGER.getModule(SpeedModule.class).isToggled()) EUClient.MODULE_MANAGER.getModule(SpeedModule.class).setToggled(false);
+        if (center.getValue()) mc.player.setPos(lastPosition.getX() + 0.5, lastPosition.getY(), lastPosition.getZ() + 0.5);
+    }
+
+    @Override
+    public void onDisable() {
+        EUClient.EVENT_HANDLER.unsubscribe(this);
+
+        lastPosition = null;
+        targetPositions.clear();
+
+        ticks = 0;
+        blocksPlaced = 0;
+    }
+
+    @Override
+    public List<Setting> getSettings() {
+        return List.of(autoSwitch, timing, limit, delay, range, await, rotate, strictDirection,
+                crystalDestruction, center, floor, extension, whileEating,
+                selfDisable, jumpDisable, itemDisable, stepToggle, speedToggle, render);
     }
 
     @SubscribeEvent
@@ -88,8 +110,8 @@ public class SurroundModule extends Module {
         }
     }
 
-    @SubscribeEvent
-    public void onPlayerUpdate(PlayerUpdateEvent event) {
+    @Override
+    public void tick() {
         if (mc.player == null || mc.level == null) return;
         if (jumpDisable.getValue() && (mc.player.fallDistance > 2.0f || ((EUClient.MODULE_MANAGER.getModule(StepModule.class).isToggled() || EUClient.MODULE_MANAGER.getModule(SpeedModule.class).isToggled()) && (lastPosition == null || lastPosition.getY() != PositionUtils.getFlooredPosition(mc.player).getY())))) {
             setToggled(false);
@@ -106,7 +128,7 @@ public class SurroundModule extends Module {
 
         if (autoSwitch.getValue().equalsIgnoreCase("None") && !(mc.player.getMainHandItem().getItem() instanceof BlockItem)) {
             if (itemDisable.getValue()) {
-                EUClient.CHAT_MANAGER.tagged("You are currently not holding any blocks.", getName());
+                EUClient.LOGGER.info("[PB] Surround: not holding any blocks");
                 setToggled(false);
             }
 
@@ -119,7 +141,7 @@ public class SurroundModule extends Module {
 
         if (slot == -1) {
             if (itemDisable.getValue()) {
-                EUClient.CHAT_MANAGER.tagged("No blocks could be found in your hotbar.", getName());
+                EUClient.LOGGER.info("[PB] Surround: no blocks found in hotbar");
                 setToggled(false);
             }
 
@@ -213,16 +235,6 @@ public class SurroundModule extends Module {
         }
     }
 
-    @SubscribeEvent
-    public void onDisable() {
-        lastPosition = null;
-        targetPositions.clear();
-
-        ticks = 0;
-        blocksPlaced = 0;
-    }
-
-    @Override
     public String getMetaData() {
         return String.valueOf(targetPositions.size());
     }

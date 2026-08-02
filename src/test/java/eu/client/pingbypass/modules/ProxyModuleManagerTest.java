@@ -30,25 +30,23 @@ class ProxyModuleManagerTest {
     private ProxyModuleManager manager;
     private ModuleManager mockModuleManager;
 
-    // Mock modules representing the 5 proxy-safe combat modules.
-    // AutoCrystal/AutoTotem migrated to ServerAutoCrystal/ServerAutoTotem
-    // (EUClient.PB_MODULE_MANAGER), no longer registered here -- see
+    // Mock modules representing the 4 proxy-safe combat modules.
+    // AutoCrystal/AutoTotem/Surround migrated to ServerAutoCrystal/ServerAutoTotem/
+    // ServerSurround (EUClient.PB_MODULE_MANAGER), no longer registered here -- see
     // ProxyModuleManager.PROXY_SAFE_MODULES.
-    private Module surround, autoArmor, holeFill, selfFill, selfTrap;
+    private Module autoArmor, holeFill, selfFill, selfTrap;
 
     @BeforeEach
     void setUp() throws Exception {
         mockModuleManager = mock(ModuleManager.class);
 
-        surround = createMockModule("Surround", new BooleanSetting("Center", "", true));
-        autoArmor = createMockModule("AutoArmor");
+        autoArmor = createMockModule("AutoArmor", new BooleanSetting("Preferred", "", true));
         holeFill = createMockModule("HoleFill");
         selfFill = createMockModule("SelfFill");
         selfTrap = createMockModule("SelfTrap");
 
         // Wire up the mock ModuleManager to return our mock modules by class
         // Use doReturn().when() to avoid generic type mismatch with when().thenReturn()
-        doReturn(surround).when(mockModuleManager).getModule(eu.client.modules.impl.combat.SurroundModule.class);
         doReturn(autoArmor).when(mockModuleManager).getModule(eu.client.modules.impl.combat.AutoArmorModule.class);
         doReturn(holeFill).when(mockModuleManager).getModule(eu.client.modules.impl.combat.HoleFillModule.class);
         doReturn(selfFill).when(mockModuleManager).getModule(eu.client.modules.impl.combat.SelfFillModule.class);
@@ -68,22 +66,22 @@ class ProxyModuleManagerTest {
     @Test
     void init_registersExpectedModules() {
         assertNotNull(manager.getModules());
-        assertEquals(5, manager.getModules().size(),
-                "Should register 5 proxy-safe combat modules");
+        assertEquals(4, manager.getModules().size(),
+                "Should register 4 proxy-safe combat modules");
     }
 
     @Test
     void getModule_byName_returnsCorrectModule() {
-        Module s = manager.getModule("Surround");
-        assertNotNull(s, "Should find Surround by name");
-        assertEquals("Surround", s.getName());
+        Module armor = manager.getModule("AutoArmor");
+        assertNotNull(armor, "Should find AutoArmor by name");
+        assertEquals("AutoArmor", armor.getName());
     }
 
     @Test
     void getModule_byName_caseInsensitive() {
-        Module s = manager.getModule("surround");
-        assertNotNull(s, "Should find module with case-insensitive lookup");
-        assertEquals("Surround", s.getName());
+        Module armor = manager.getModule("autoarmor");
+        assertNotNull(armor, "Should find module with case-insensitive lookup");
+        assertEquals("AutoArmor", armor.getName());
     }
 
     @Test
@@ -103,18 +101,18 @@ class ProxyModuleManagerTest {
 
     @Test
     void registeredModules_haveSettings() {
-        Module s = manager.getModule("Surround");
-        assertNotNull(s);
-        assertFalse(s.getSettings().isEmpty(),
-                "Surround should have settings registered");
-        assertEquals(1, s.getSettings().size());
+        Module armor = manager.getModule("AutoArmor");
+        assertNotNull(armor);
+        assertFalse(armor.getSettings().isEmpty(),
+                "AutoArmor should have settings registered");
+        assertEquals(1, armor.getSettings().size());
     }
 
     @Test
     void getSetting_unknownName_returnsNull() {
-        Module s = manager.getModule("Surround");
-        assertNotNull(s);
-        assertNull(s.getSetting("NonExistent"),
+        Module armor = manager.getModule("AutoArmor");
+        assertNotNull(armor);
+        assertNull(armor.getSetting("NonExistent"),
                 "Should return null for unknown setting name");
     }
 
@@ -124,40 +122,40 @@ class ProxyModuleManagerTest {
 
     @Test
     void setToggled_true_enablesModule() {
-        Module s = manager.getModule("Surround");
-        assertNotNull(s);
-        s.setToggled(true);
-        assertTrue(s.isToggled());
-        s.setToggled(false);
+        Module armor = manager.getModule("AutoArmor");
+        assertNotNull(armor);
+        armor.setToggled(true);
+        assertTrue(armor.isToggled());
+        armor.setToggled(false);
     }
 
     @Test
     void setToggled_false_disablesModule() {
-        Module s = manager.getModule("Surround");
-        assertNotNull(s);
-        s.setToggled(true);
-        s.setToggled(false);
-        assertFalse(s.isToggled());
+        Module armor = manager.getModule("AutoArmor");
+        assertNotNull(armor);
+        armor.setToggled(true);
+        armor.setToggled(false);
+        assertFalse(armor.isToggled());
     }
 
     @Test
     void toggleOneModule_doesNotAffectOthers() {
-        Module s = manager.getModule("Surround");
         Module armor = manager.getModule("AutoArmor");
-        assertNotNull(s);
+        Module holeFillModule = manager.getModule("HoleFill");
         assertNotNull(armor);
+        assertNotNull(holeFillModule);
 
-        boolean armorBefore = armor.isToggled();
-        s.setToggled(true);
-        assertEquals(armorBefore, armor.isToggled(),
-                "Enabling Surround should not affect AutoArmor");
-        s.setToggled(false);
+        boolean holeFillBefore = holeFillModule.isToggled();
+        armor.setToggled(true);
+        assertEquals(holeFillBefore, holeFillModule.isToggled(),
+                "Enabling AutoArmor should not affect HoleFill");
+        armor.setToggled(false);
     }
 
     @Test
     void modules_areRealModuleInstances() {
-        Module s = manager.getModule("Surround");
-        assertSame(surround, s,
+        Module armor = manager.getModule("AutoArmor");
+        assertSame(autoArmor, armor,
                 "ProxyModuleManager should reference the same Module instance from ModuleManager");
     }
 
