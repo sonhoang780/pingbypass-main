@@ -65,6 +65,8 @@ public class EUClient implements ModInitializer {
 
 	public static PingBypassConfig PINGBYPASS_CONFIG;
 	public static ProxyServer PROXY_SERVER;
+	public static final eu.client.pingbypass.input.ClientInputService PB_CLIENT_INPUT = new eu.client.pingbypass.input.ClientInputService();
+	public static final eu.client.pingbypass.input.ServerInputService PB_SERVER_INPUT = new eu.client.pingbypass.input.ServerInputService();
 
 	@Override
 	public void onInitialize() {

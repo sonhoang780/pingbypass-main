@@ -45,4 +45,12 @@ public class PingBypassFlags {
      */
     public static volatile boolean clientOnGround = true;
     public static volatile boolean clientHorizontalCollision = false;
+
+    /**
+     * When true, the CLIENT no longer builds/sends its own movement or action packets at all --
+     * ClientInputService forwards raw key/mouse input to the proxy instead, and the proxy's own
+     * LocalPlayer (via ServerInputService) is the sole source of every gameplay packet.
+     * Only meaningful on the client side; the proxy always ticks its player normally.
+     */
+    public static volatile boolean rawInputForwardingActive = false;
 }

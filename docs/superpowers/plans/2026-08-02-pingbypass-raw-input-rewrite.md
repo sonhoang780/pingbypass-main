@@ -66,17 +66,23 @@ MODIFY:
 **Files:**
 - Delete: `src/main/java/eu/client/pingbypass/input/ClientInputForwarder.java`
 - Delete: `src/main/java/eu/client/pingbypass/protocol/packets/C2SInputPacket.java`
+- Modify: `src/main/java/eu/client/modules/impl/core/PingBypassModule.java` (lines 136-138, 389-391, 450 — has a real `inputForwarder` field + lifecycle calls; this was missed on first pass of this plan, confirmed live during execution)
 
-**Interfaces:** none — nothing else references `C2SInputPacket` (confirmed: grep `handlePbPayload`/`PbPlayHandler` shows no case for ID 10, so the proxy side never consumed it; `ClientInputForwarder` is only self-registered, no external caller).
+**Interfaces:** `PingBypassModule` currently owns the field `private eu.client.pingbypass.input.ClientInputForwarder inputForwarder;` (line 450) and calls `inputForwarder.start()`/`.stop()` on connect/disconnect (lines 136-138, 389-391). Task 3's `ClientInputService` must expose the same `start()`/`stop()` shape so this call site can be swapped 1:1 without restructuring `PingBypassModule`'s connection lifecycle.
 
-- [ ] **Step 1:** `grep -rn "ClientInputForwarder\|C2SInputPacket" src/main/java` — confirm zero remaining references outside the two files being deleted.
-- [ ] **Step 2:** Delete both files.
-- [ ] **Step 3:** `./gradlew compileJava` — confirm the build still compiles (proves nothing depended on them).
-- [ ] **Step 4:** Commit.
+- [ ] **Step 1:** `grep -rn "ClientInputForwarder\|C2SInputPacket" src/main/java` — list every reference (this will include the 5 lines in `PingBypassModule.java`, not just the 2 files being deleted).
+- [ ] **Step 2:** In `PingBypassModule.java`, replace the field type and both constructor-site instantiations: `private eu.client.pingbypass.input.ClientInputForwarder inputForwarder;` -> `private eu.client.pingbypass.input.ClientInputService inputForwarder;` (keep the field name — Task 3 doesn't exist yet at this point in the plan, so this step just repoints the type; `ClientInputService` isn't created until Task 3, so do this step *as part of* Task 3 instead — see Task 3 Step 6, which now owns this edit. Skip this step here.)
+- [ ] **Step 3:** Delete `ClientInputForwarder.java` and `C2SInputPacket.java`.
+- [ ] **Step 4:** `./gradlew compileJava` — this **will fail** right now because `PingBypassModule.java` still references the deleted class; that's expected and resolved by Task 3 Step 6, not this task. Do not attempt to make the build green at the end of Task 1 in isolation — Tasks 1 and 3 are a matched pair for this reason. Proceed directly to Task 2/3 before re-running the build.
+- [ ] **Step 5:** Commit (the deletion only; `PingBypassModule.java` is untouched here, so this commit is intentionally not build-clean on its own — note that in the message).
 
 ```bash
 git add -A -- src/main/java/eu/client/pingbypass/input/ClientInputForwarder.java src/main/java/eu/client/pingbypass/protocol/packets/C2SInputPacket.java
-git commit -m "pingbypass: remove dead raw-input scaffolding (2-button only, no proxy consumer)"
+git commit -m "pingbypass: remove dead raw-input scaffolding (2-button only, no proxy consumer)
+
+Not build-clean in isolation -- PingBypassModule.java still references
+ClientInputForwarder; fixed in the next commit (Task 3) which adds its
+replacement, ClientInputService."
 ```
 
 ---
@@ -103,10 +109,12 @@ import net.minecraft.network.FriendlyByteBuf;
 
 /**
  * Client -> Proxy: a single raw key/mouse-button transition (not a continuous state poll).
- * Packet ID: 11 (10 is retired, was C2SInputPacket).
+ * Packet ID: 15 (IDs 0-14 are taken: 10=S2CRenderPosition, 11=S2CBlockRender,
+ * 12=S2CMiningState, 13=S2CSlotSync, 14=C2SFriendSync -- confirmed by grepping every
+ * `public static final int ID = ` in protocol/packets/ before picking a number).
  */
 public class C2SInputKeyPacket extends PbPacket {
-    public static final int ID = 11;
+    public static final int ID = 15;
 
     public enum Key { FORWARD, BACK, LEFT, RIGHT, JUMP, SNEAK, SPRINT, ATTACK, USE }
     public enum Action { PRESS, RELEASE }
@@ -147,10 +155,10 @@ import net.minecraft.network.FriendlyByteBuf;
 
 /**
  * Client -> Proxy: accumulated mouse-look delta since the last tick.
- * Packet ID: 12.
+ * Packet ID: 16.
  */
 public class C2SInputLookPacket extends PbPacket {
-    public static final int ID = 12;
+    public static final int ID = 16;
 
     private final float deltaX;
     private final float deltaY;
@@ -178,7 +186,7 @@ public class C2SInputLookPacket extends PbPacket {
 }
 ```
 
-- [ ] **Step 3: Register both packet IDs.** Open `src/main/java/eu/client/pingbypass/protocol/PbPacketHandler.java` (or wherever `PbPacket` subclasses are dispatched by ID — check `PbProtocolHandler.java` for the existing ID->constructor switch used by `C2SFriendSyncPacket`/ID 9-ish) and add `case 11 -> new C2SInputKeyPacket(buf);` / `case 12 -> new C2SInputLookPacket(buf);` following the exact existing pattern for the other `C2S*` packets in that switch.
+- [ ] **Step 3: Registration happens in Task 5, not here.** The real dispatch point is `PbPlayHandler.handlePbPayload(PbCustomPayload)` (`src/main/java/eu/client/pingbypass/handler/PbPlayHandler.java:432`) — a `switch (packetId)` with cases like `case eu.client.pingbypass.protocol.packets.C2SFriendSyncPacket.ID -> { ... }` (confirmed by reading the file directly: there is no separate `PbPacketHandler`/`PbProtocolHandler` registry, `PbPacketHandler` is just an unrelated functional interface). Task 5 adds the two new cases there. Skip registration in this task.
 
 - [ ] **Step 4: Round-trip tests**
 
@@ -201,7 +209,7 @@ class C2SInputKeyPacketTest {
 
         assertEquals(C2SInputKeyPacket.Key.FORWARD, decoded.getKey());
         assertEquals(C2SInputKeyPacket.Action.PRESS, decoded.getAction());
-        assertEquals(11, decoded.getPacketId());
+        assertEquals(15, decoded.getPacketId());
     }
 }
 ```
@@ -243,22 +251,34 @@ git commit -m "pingbypass: add raw key/look packets to replace dead C2SInputPack
 
 **Files:**
 - Create: `src/main/java/eu/client/pingbypass/input/ClientInputService.java`
+- Modify: `src/main/java/eu/client/modules/impl/core/PingBypassModule.java` (repoint the `inputForwarder` field from the deleted `ClientInputForwarder` to this new class)
 
 **Interfaces:**
-- Consumes: `eu.client.mixins.accessors.KeyboardHandlerAccessor.invokeKeyPress` and `eu.client.mixins.accessors.MouseAccessor.invokeOnButton` (both already exist, currently unused by anything except `EURoboticsModule` for the mouse one — confirm no conflict, both are `@Invoker` mixins so multiple callers are fine) as the raw signal source; `Minecraft.getInstance().options.keyUp/keyDown/keyJump/keySprint/keyAttack/keyUse` (`KeyMapping` instances) to map GLFW key codes to the semantic `C2SInputKeyPacket.Key`.
+- Consumes: the codebase **already has** a raw, unfiltered input event pipeline — do not add new `@Invoker` accessor mixins for keys/buttons, reuse what's there:
+  - `eu.client.events.impl.UnfilteredKeyInputEvent` (`key`, `scancode`, `action`, `modifiers`) — posted from `src/main/java/eu/client/mixins/KeyboardMixin.java:22` on every raw GLFW key transition, press *and* release, regardless of menu focus. This is exactly what `ClientInputForwarder` (the file Task 1 deletes) *should* have used instead of only handling 2 mouse buttons via the filtered `MouseInputEvent`.
+  - `eu.client.events.impl.UnfilteredMouseInputEvent` (`button`, `action`, `mods`) — posted from `src/main/java/eu/client/mixins/MouseMixin.java:24`, same press/release fidelity.
+  - Subscribe via `@SubscribeEvent` methods on `ClientInputService` itself, exactly like `ClientInputForwarder.onMouseInput` already did — `EUClient.EVENT_HANDLER.subscribe(this)`/`.unsubscribe(this)` in `start()`/`stop()`.
+  - Map GLFW key codes to `C2SInputKeyPacket.Key` via `Minecraft.getInstance().options.keyUp/keyDown/keyLeft/keyRight/keyJump/keyShift/keySprint` (`KeyMapping.matches(key, scancode)` — check `KeyMapping`'s actual match method signature in this Mojmap version before using it) rather than hardcoding GLFW constants, so the mapping respects the user's real keybinds.
+  - Mouse-look delta has no existing event — this part still needs a new mixin injection into `MouseHandler`'s cursor-move callback. **Confirm the exact Mojmap 26.1.2 method name before writing it** (it was `onMove` in older mappings; verify against the Loom-mapped `MouseHandler` class, e.g. via your IDE's decompiled sources or `javap` on the mapped jar, not by guessing) — add a new mixin `src/main/java/eu/client/mixins/MouseMoveMixin.java` (or extend the existing `MouseMixin.java`) posting a new `UnfilteredMouseMoveEvent(double dx, double dy)` the same way `MouseMixin` posts `UnfilteredMouseInputEvent`.
 - Produces: calls `mc.getConnection().getConnection().send(new ServerboundCustomPayloadPacket(PbCustomPayload.fromPacket(...)))` exactly like `Module.sendProxyToggle` does (line 211-222 of `Module.java` — copy that pattern, it's the established way to send a `PbPacket` from client code).
-- Gated by: `eu.client.pingbypass.PingBypassFlags.rawInputForwardingActive` (new flag, added in Task 8) — when false, this service must do nothing (so it's inert until the whole rewrite is wired up and flipped on).
+- Gated by: `eu.client.pingbypass.PingBypassFlags.rawInputForwardingActive` (new flag, added in Task 6) — when false, this service must do nothing (so it's inert until the whole rewrite is wired up and flipped on).
 
-- [ ] **Step 1: Write the service**
+- [ ] **Step 1: Write the service** — an `@SubscribeEvent`-based listener, same shape as the deleted `ClientInputForwarder`, but consuming the Unfiltered events (press + release) instead of the filtered one, and covering movement keys too, not just 2 mouse buttons:
 
 ```java
 package eu.client.pingbypass.input;
 
 import eu.client.EUClient;
+import eu.client.events.SubscribeEvent;
+import eu.client.events.impl.UnfilteredKeyInputEvent;
+import eu.client.events.impl.UnfilteredMouseInputEvent;
+import eu.client.events.impl.UnfilteredMouseMoveEvent;
 import eu.client.pingbypass.PingBypassFlags;
+import eu.client.pingbypass.PingBypassConfig;
 import eu.client.pingbypass.protocol.PbCustomPayload;
 import eu.client.pingbypass.protocol.packets.C2SInputKeyPacket;
 import eu.client.pingbypass.protocol.packets.C2SInputLookPacket;
+import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.protocol.common.ServerboundCustomPayloadPacket;
 
@@ -266,32 +286,69 @@ import net.minecraft.network.protocol.common.ServerboundCustomPayloadPacket;
  * Client-side raw input capture. When PingBypassFlags.rawInputForwardingActive is true,
  * every semantic key transition and accumulated mouse-look delta is forwarded to the proxy
  * instead of letting the local LocalPlayer act on it directly (see ClientPlayerEntityMixin,
- * Task 8, for the corresponding local-action cancellation).
+ * Task 6, for the corresponding local-action cancellation). Reuses the existing
+ * UnfilteredKeyInputEvent/UnfilteredMouseInputEvent pipeline (KeyboardMixin/MouseMixin)
+ * rather than adding new accessor mixins.
  */
 public class ClientInputService {
     private final Minecraft mc = Minecraft.getInstance();
     private float accumulatedDeltaX = 0f;
     private float accumulatedDeltaY = 0f;
 
-    public void onKeyTransition(C2SInputKeyPacket.Key key, C2SInputKeyPacket.Action action) {
-        if (!PingBypassFlags.rawInputForwardingActive) return;
-        send(new C2SInputKeyPacket(key, action));
+    @SubscribeEvent
+    public void onKey(UnfilteredKeyInputEvent event) {
+        if (!active()) return;
+        C2SInputKeyPacket.Key key = mapKey(event.getKey(), event.getScancode());
+        if (key == null) return;
+        // GLFW: 1 = PRESS, 0 = RELEASE, 2 = REPEAT (ignore repeats, they carry no new state)
+        if (event.getAction() == 2) return;
+        send(new C2SInputKeyPacket(key, event.getAction() == 1 ? C2SInputKeyPacket.Action.PRESS : C2SInputKeyPacket.Action.RELEASE));
     }
 
-    /** Called from the mouse-move mixin hook with the raw, unscaled cursor delta for this event. */
-    public void onMouseMove(double dx, double dy) {
-        if (!PingBypassFlags.rawInputForwardingActive) return;
-        accumulatedDeltaX += (float) dx;
-        accumulatedDeltaY += (float) dy;
+    @SubscribeEvent
+    public void onMouseButton(UnfilteredMouseInputEvent event) {
+        if (!active()) return;
+        C2SInputKeyPacket.Key key = switch (event.getButton()) {
+            case 0 -> C2SInputKeyPacket.Key.ATTACK;
+            case 1 -> C2SInputKeyPacket.Key.USE;
+            default -> null;
+        };
+        if (key == null || event.getAction() == 2) return;
+        send(new C2SInputKeyPacket(key, event.getAction() == 1 ? C2SInputKeyPacket.Action.PRESS : C2SInputKeyPacket.Action.RELEASE));
     }
 
-    /** Called once per client tick to flush the accumulated look delta as a single packet. */
+    @SubscribeEvent
+    public void onMouseMove(UnfilteredMouseMoveEvent event) {
+        if (!active()) return;
+        accumulatedDeltaX += (float) event.getDeltaX();
+        accumulatedDeltaY += (float) event.getDeltaY();
+    }
+
+    /** Call once per client tick to flush the accumulated look delta as a single packet. */
     public void flushLookDelta() {
-        if (!PingBypassFlags.rawInputForwardingActive) return;
+        if (!active()) return;
         if (accumulatedDeltaX == 0f && accumulatedDeltaY == 0f) return;
         send(new C2SInputLookPacket(accumulatedDeltaX, accumulatedDeltaY));
         accumulatedDeltaX = 0f;
         accumulatedDeltaY = 0f;
+    }
+
+    private boolean active() {
+        return PingBypassFlags.rawInputForwardingActive
+                && (EUClient.PINGBYPASS_CONFIG == null || !EUClient.PINGBYPASS_CONFIG.isServer());
+    }
+
+    private C2SInputKeyPacket.Key mapKey(int key, int scancode, int modifiers) {
+        var options = mc.options;
+        var event = new net.minecraft.client.input.KeyEvent(key, scancode, modifiers);
+        if (options.keyUp.matches(event)) return C2SInputKeyPacket.Key.FORWARD;
+        if (options.keyDown.matches(event)) return C2SInputKeyPacket.Key.BACK;
+        if (options.keyLeft.matches(event)) return C2SInputKeyPacket.Key.LEFT;
+        if (options.keyRight.matches(event)) return C2SInputKeyPacket.Key.RIGHT;
+        if (options.keyJump.matches(event)) return C2SInputKeyPacket.Key.JUMP;
+        if (options.keyShift.matches(event)) return C2SInputKeyPacket.Key.SNEAK;
+        if (options.keySprint.matches(event)) return C2SInputKeyPacket.Key.SPRINT;
+        return null;
     }
 
     private void send(eu.client.pingbypass.protocol.PbPacket packet) {
@@ -303,19 +360,55 @@ public class ClientInputService {
             EUClient.LOGGER.warn("[PingBypass] Failed to forward raw input", e);
         }
     }
+
+    public void start() {
+        EUClient.EVENT_HANDLER.subscribe(this);
+        EUClient.LOGGER.info("[PingBypass] Client input service started");
+    }
+
+    public void stop() {
+        EUClient.EVENT_HANDLER.unsubscribe(this);
+    }
 }
 ```
 
-- [ ] **Step 2: Wire key capture.** In `KeyboardHandlerAccessor`'s consumer — add a `@Inject` mixin (new file `src/main/java/eu/client/mixins/KeyboardHandlerMixin.java`, or extend an existing one if the codebase already has a `KeyboardHandler` mixin — `grep -rn "@Mixin(KeyboardHandler.class)" src/main/java` first) at `head` of `keyPress` that maps `(key, scancode, action, mods)` via `mc.options.keyUp.matches(...)` etc. to the semantic `Key` enum and calls `EUClient.PB_CLIENT_INPUT.onKeyTransition(...)`. Add `attack`/`use` from the existing mouse-button mixin similarly (`MouseAccessor`/its mixin consumer).
-- [ ] **Step 3: Wire mouse-look capture.** `grep -rn "@Mixin(MouseHandler.class)" src/main/java` — find or add the injection at `MouseHandler#onMove` (or `turnPlayer`) HEAD, forwarding the raw unscaled `xOffset`/`yOffset` to `onMouseMove`.
-- [ ] **Step 4: Wire the per-tick flush.** In the existing client tick event path (`EUClient.EVENT_HANDLER` subscriber list — follow the pattern of any existing `@SubscribeEvent` on `PlayerUpdateEvent`), call `flushLookDelta()` once per tick.
-- [ ] **Step 5: Register a singleton.** Add `public static final ClientInputService PB_CLIENT_INPUT = new ClientInputService();` to `EUClient.java` next to the other `public static final` proxy singletons (follow existing convention — check how `EUClient.PROXY_SERVER` is declared).
-- [ ] **Step 6: Build check.** `./gradlew compileJava` — must compile. No unit test here: this task is 100% mixin wiring against live GLFW/Minecraft input, which this codebase has no test harness for (see Global Constraints). Verification is build success now; live feel-check happens after Task 8 wires the whole pipeline end-to-end.
+  **Confirmed via `javap` against the actual mapped jar** (`.gradle/loom-cache/minecraftMaven/net/minecraft/minecraft-merged-*-26.1.2/*.jar`): `KeyMapping.matches` takes a `net.minecraft.client.input.KeyEvent` record (`int key, int scancode, int modifiers`), not raw ints — `mapKey` must build `new KeyEvent(key, scancode, modifiers)` and call `options.keyUp.matches(event)` etc. `UnfilteredKeyInputEvent` already carries `modifiers` (its 4th field), so `onKey` must pass `event.getModifiers()` through to `mapKey`.
+
+- [ ] **Step 2: Add the missing raw mouse-move event.** Create `src/main/java/eu/client/events/impl/UnfilteredMouseMoveEvent.java`:
+
+```java
+package eu.client.events.impl;
+
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import eu.client.events.Event;
+
+@Getter @AllArgsConstructor
+public class UnfilteredMouseMoveEvent extends Event {
+    private final double deltaX;
+    private final double deltaY;
+}
+```
+
+  Then extend `src/main/java/eu/client/mixins/MouseMixin.java` with an `@Inject` on the cursor-move callback. **First confirm the exact Mojmap method name** for `MouseHandler`'s raw GLFW cursor-position callback (do not guess — check the decompiled/mapped source, e.g. via the IDE's "go to definition" on `MouseHandler`, or `javap` against the Loom-mapped jar under `.gradle`/Loom's cache). Once confirmed, add:
+
+```java
+@Inject(method = "<confirmed-method-name>", at = @At("HEAD"))
+private void onMouseMoveRaw(long window, double x, double y, CallbackInfo info) {
+    // compute delta from the handler's own last-known cursor position (shadow field,
+    // check MouseHandler's actual field name for it) and post UnfilteredMouseMoveEvent
+}
+```
+
+- [ ] **Step 3: Wire the per-tick flush.** Find the existing client-tick `@SubscribeEvent` pattern (e.g. `PlayerUpdateEvent` subscribers elsewhere in the codebase) and add a subscriber — either on `ClientInputService` itself or a small dedicated listener — that calls `EUClient.PB_CLIENT_INPUT.flushLookDelta()` once per tick.
+- [ ] **Step 4: Register a singleton.** Add `public static final ClientInputService PB_CLIENT_INPUT = new ClientInputService();` to `EUClient.java` next to the other `public static final` proxy singletons (follow existing convention — check how `EUClient.PROXY_SERVER` is declared).
+- [ ] **Step 5: Repoint `PingBypassModule.java`'s `inputForwarder` field** (this is the other half of Task 1's deletion): change `private eu.client.pingbypass.input.ClientInputForwarder inputForwarder;` (line 450) to `private eu.client.pingbypass.input.ClientInputService inputForwarder;`, and update `inputForwarder = new eu.client.pingbypass.input.ClientInputForwarder();` (line 390) to `new eu.client.pingbypass.input.ClientInputService()`. The `.start()`/`.stop()` call sites (lines 136-138, 389-391) need no change — same method names.
+- [ ] **Step 6: Build check.** `./gradlew compileJava` — must compile now (this closes out Task 1's dangling reference). No unit test here: this task is mixin wiring against live GLFW/Minecraft input, which this codebase has no test harness for (see Global Constraints). Verification is build success now; live feel-check happens after Task 6 wires the whole pipeline end-to-end.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/main/java/eu/client/pingbypass/input/ClientInputService.java src/main/java/eu/client/mixins/ src/main/java/eu/client/EUClient.java
-git commit -m "pingbypass: add ClientInputService, wire raw key/mouse capture"
+git add src/main/java/eu/client/pingbypass/input/ClientInputService.java src/main/java/eu/client/events/impl/UnfilteredMouseMoveEvent.java src/main/java/eu/client/mixins/MouseMixin.java src/main/java/eu/client/EUClient.java src/main/java/eu/client/modules/impl/core/PingBypassModule.java
+git commit -m "pingbypass: add ClientInputService, wire raw key/mouse capture, repoint PingBypassModule (closes Task 1 dangling ref)"
 ```
 
 ---
@@ -327,7 +420,7 @@ git commit -m "pingbypass: add ClientInputService, wire raw key/mouse capture"
 - Test: `src/test/java/eu/client/pingbypass/input/ServerInputServiceTest.java`
 
 **Interfaces:**
-- Consumes: `C2SInputKeyPacket`, `C2SInputLookPacket` routed from `PbPlayHandler` (Task 5). Drives `Minecraft.getInstance().player` (the proxy's own `LocalPlayer` — same `mc` instance the existing `Module` code already reads via `IMinecraft.mc`) via `KeyMapping.set(net.minecraft.client.KeyMapping, boolean)` (public static method — vanilla lets you flip a mapping's `isDown`/pressed count directly, this is how the class already tracks held-state without a live keyboard) and `LivingEntity#turn(float yaw, float pitch)` (protected on `Entity`, package-visible enough for a mixin accessor if needed — if `turn` isn't accessible, add a 1-line `@Invoker` accessor mixin for it, same pattern as `KeyboardHandlerAccessor`).
+- Consumes: `C2SInputKeyPacket`, `C2SInputLookPacket` routed from `PbPlayHandler` (Task 5). Drives `Minecraft.getInstance().player` (the proxy's own `LocalPlayer` — same `mc` instance the existing `Module` code already reads via `IMinecraft.mc`). **Confirmed via `javap` against the actual 26.1.2 mapped jar:** `KeyMapping.setDown(boolean)` is a public instance method — call it directly on the mapping (`mc.options.keyUp.setDown(true)` etc.), no `InputConstants.Key` needed. `Entity.turn(double, double)` is public on `Entity` (which `LocalPlayer` extends) — call `player.turn(yawDelta, pitchDelta)` directly, no accessor mixin needed.
 - Produces: nothing external — this *is* the terminal consumer; the proxy's normal tick loop (unmodified) reacts to the `KeyMapping` state and turned rotation exactly as it would to real hardware input, and emits the real `Serverbound*` packets itself.
 
 - [ ] **Step 1: Write the key-state part first, test it in isolation.** The mapping from `Key` enum to which `KeyMapping` to toggle is pure logic — extract it as a small pure function so it's testable without booting Minecraft:
@@ -438,20 +531,24 @@ public class ServerInputService {
 
     private void applyToMapping(C2SInputKeyPacket.Key key) {
         boolean down = keyState.isHeld(key);
+        var options = mc.options;
         KeyMapping mapping = switch (key) {
-            case FORWARD, BACK, LEFT, RIGHT -> null; // movement keys read via a MovementInput accessor, see Step 5
-            case JUMP -> mc.options.keyJump;
-            case SNEAK -> mc.options.keyShift;
-            case SPRINT -> mc.options.keySprint;
-            case ATTACK -> mc.options.keyAttack;
-            case USE -> mc.options.keyUse;
+            case FORWARD -> options.keyUp;
+            case BACK -> options.keyDown;
+            case LEFT -> options.keyLeft;
+            case RIGHT -> options.keyRight;
+            case JUMP -> options.keyJump;
+            case SNEAK -> options.keyShift;
+            case SPRINT -> options.keySprint;
+            case ATTACK -> options.keyAttack;
+            case USE -> options.keyUse;
         };
-        if (mapping != null) KeyMapping.set(mapping.getKey(), down);
+        mapping.setDown(down);
     }
 }
 ```
 
-- [ ] **Step 5: Movement keys need `KeyboardInput`, not just `KeyMapping.set`.** `LocalPlayer`'s forward/strafe movement is read from `Minecraft.getInstance().player.input` (a `KeyboardInput`/`Input` object), which itself reads `options.keyUp/keyDown/keyLeft/keyRight.isDown()` each tick — so `KeyMapping.set(mc.options.keyUp.getKey(), down)` for `FORWARD`/`BACK`/`LEFT`/`RIGHT` **is** sufficient (same mechanism as jump/sneak/sprint). Fix the `switch` above to also map `FORWARD -> mc.options.keyUp`, `BACK -> mc.options.keyDown`, `LEFT -> mc.options.keyLeft`, `RIGHT -> mc.options.keyRight`, and drop the `null` case.
+  **Confirmed via `javap`:** `KeyMapping.setDown(boolean)` is public, no `InputConstants.Key` plumbing needed — this replaces the originally-sketched `KeyMapping.set(mapping.getKey(), down)` (which doesn't compile: `KeyMapping` has no `getKey()` accessor). `LocalPlayer`'s forward/strafe movement is read from `options.keyUp/keyDown/keyLeft/keyRight.isDown()` each tick via its `KeyboardInput`, so driving these same four mappings covers movement too — no separate `MovementInput`/accessor plumbing needed.
 - [ ] **Step 6: Register a singleton and hook the tick.** Add `public static final ServerInputService PB_SERVER_INPUT = new ServerInputService();` to `EUClient.java`. Find the proxy's own tick listener (`src/main/java/eu/client/pingbypass/server/ProxyServerTickListener.java`) and call `EUClient.PB_SERVER_INPUT.tick()` from it, before the existing per-tick logic.
 - [ ] **Step 7: Build check.** `./gradlew compileJava`.
 - [ ] **Step 8: Commit**

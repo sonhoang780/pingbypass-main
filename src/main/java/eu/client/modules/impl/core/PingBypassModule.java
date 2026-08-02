@@ -387,7 +387,7 @@ public class PingBypassModule extends Module {
         eu.client.pingbypass.PingBypassFlags.proxyForwardingActive = true;
         // Start forwarding mouse/keyboard input to the proxy
         if (inputForwarder == null) {
-            inputForwarder = new eu.client.pingbypass.input.ClientInputForwarder();
+            inputForwarder = new eu.client.pingbypass.input.ClientInputService();
             inputForwarder.start();
         }
         // Bulk-sync all proxy-enhanced module settings and toggle states to the proxy
@@ -447,7 +447,7 @@ public class PingBypassModule extends Module {
                         new java.util.ArrayList<>(EUClient.FRIEND_MANAGER.getFriends())))));
     }
 
-    private eu.client.pingbypass.input.ClientInputForwarder inputForwarder;
+    private eu.client.pingbypass.input.ClientInputService inputForwarder;
 
     /**
      * Handles S2C_RENDER_POSITION — syncs the AutoCrystal render position from proxy.
