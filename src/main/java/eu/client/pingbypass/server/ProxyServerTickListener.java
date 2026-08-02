@@ -1,5 +1,6 @@
 package eu.client.pingbypass.server;
 
+import eu.client.EUClient;
 import eu.client.events.SubscribeEvent;
 import eu.client.events.impl.PacketSendEvent;
 import eu.client.events.impl.TickEvent;
@@ -20,6 +21,7 @@ public class ProxyServerTickListener {
 
     @SubscribeEvent
     public void onTick(TickEvent event) {
+        EUClient.PB_SERVER_INPUT.tick();
         if (proxyServer.isAlive()) {
             proxyServer.tick();
         }

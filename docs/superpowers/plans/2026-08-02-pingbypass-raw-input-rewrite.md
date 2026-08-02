@@ -570,17 +570,20 @@ git commit -m "pingbypass: add ServerInputService, replay raw input into proxy's
 - Consumes: `C2SInputKeyPacket`, `C2SInputLookPacket` (Task 2), `EUClient.PB_SERVER_INPUT` (Task 4).
 - Produces: nothing new — this task only adds a `case` to the existing payload dispatch and a call into `ServerInputService`.
 
-- [ ] **Step 1:** Find the exact dispatch method (`PbPlayHandler.handlePbPayload` or similar — confirm name by reading the file's custom-payload handling section) and add:
+- [ ] **Step 1:** The real dispatch method is `PbPlayHandler.handlePbPayload(PbCustomPayload)` (line 432) — a `switch (packetId)` on `PbPacket.ID` constants (not an `instanceof` chain). Add, alongside the existing `case ... C2SFriendSyncPacket.ID` arm:
 
 ```java
-} else if (packet instanceof C2SInputKeyPacket keyPacket) {
-    EUClient.PB_SERVER_INPUT.onKeyTransition(keyPacket.getKey(), keyPacket.getAction());
-} else if (packet instanceof C2SInputLookPacket lookPacket) {
-    EUClient.PB_SERVER_INPUT.onLookDelta(lookPacket.getDeltaX(), lookPacket.getDeltaY());
+case eu.client.pingbypass.protocol.packets.C2SInputKeyPacket.ID -> {
+    var pkt = new eu.client.pingbypass.protocol.packets.C2SInputKeyPacket(buf);
+    Minecraft.getInstance().execute(() -> EUClient.PB_SERVER_INPUT.onKeyTransition(pkt.getKey(), pkt.getAction()));
+}
+case eu.client.pingbypass.protocol.packets.C2SInputLookPacket.ID -> {
+    var pkt = new eu.client.pingbypass.protocol.packets.C2SInputLookPacket(buf);
+    Minecraft.getInstance().execute(() -> EUClient.PB_SERVER_INPUT.onLookDelta(pkt.getDeltaX(), pkt.getDeltaY()));
 }
 ```
 
-matching the existing `else if (packet instanceof ...)` chain style used for `C2SFriendSyncPacket` etc. in that same method.
+  Wrapping in `Minecraft.getInstance().execute(...)` matches the existing `C2SModuleTogglePacket`/`C2SFriendSyncPacket` arms in the same switch — `handlePbPayload` runs on the Netty IO thread, but `ServerInputService` touches `KeyMapping`/`LocalPlayer`, which must only be touched from the client (render) thread.
 
 - [ ] **Step 2:** `./gradlew compileJava`.
 - [ ] **Step 3: Commit**

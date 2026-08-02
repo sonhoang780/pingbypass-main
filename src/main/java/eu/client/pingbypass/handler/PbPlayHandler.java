@@ -456,6 +456,14 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
                         LOGGER.info("[PB] Synced {} friend(s) from client", pkt.getFriends().size());
                     });
                 }
+                case eu.client.pingbypass.protocol.packets.C2SInputKeyPacket.ID -> {
+                    var pkt = new eu.client.pingbypass.protocol.packets.C2SInputKeyPacket(buf);
+                    Minecraft.getInstance().execute(() -> EUClient.PB_SERVER_INPUT.onKeyTransition(pkt.getKey(), pkt.getAction()));
+                }
+                case eu.client.pingbypass.protocol.packets.C2SInputLookPacket.ID -> {
+                    var pkt = new eu.client.pingbypass.protocol.packets.C2SInputLookPacket(buf);
+                    Minecraft.getInstance().execute(() -> EUClient.PB_SERVER_INPUT.onLookDelta(pkt.getDeltaX(), pkt.getDeltaY()));
+                }
                 default -> LOGGER.debug("[PB] Unknown packet ID: {}", packetId);
             }
         } catch (Exception e) {
