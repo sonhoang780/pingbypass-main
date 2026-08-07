@@ -5,6 +5,8 @@ import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.pipeline.DepthStencilState;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.platform.CompareOp;
+import com.mojang.blaze3d.platform.DestFactor;
+import com.mojang.blaze3d.platform.SourceFactor;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
@@ -68,17 +70,63 @@ public class Renderer3D implements IMinecraft {
                     .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
                     .build()).createRenderSetup());
 
+    // ChamsModule "Shine": the pre-port version was literally the SAME no-depth quads/lines,
+    // just with RenderSystem.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_CONSTANT_ALPHA) swapped in for
+    // the draw call -- i.e. a DIFFERENT blend than plain alpha-blend, nothing else different (same
+    // colors, same geometry). Overlapping translucent faces (front+back of a box both visible
+    // through the fill, multiple limbs/cubes crossing on screen, etc.) then compound into bright
+    // hotspots instead of just alpha-blending flat -- the "glossy sweep" look in the reference
+    // screenshot -- not a special color or animated highlight, purely a blend-mode difference on
+    // otherwise identical geometry.
+    //
+    // NOT vanilla's BlendFunction.ADDITIVE preset -- verified via javap, that's (ONE, ONE), which
+    // ignores source alpha entirely (every quad contributes its FULL unscaled RGB regardless of
+    // the configured fill alpha), saturating to solid opaque white within 2-3 overlapping layers
+    // and completely white-washing anything with denser overlap (a crystal's 3 nested cubes have
+    // far more overlapping faces than a player silhouette does -- confirmed live-tested bug: crystal
+    // shine rendered as a solid white blob instead of the intended contained glossy highlight).
+    // Reproduce the ORIGINAL (SRC_ALPHA, ONE_MINUS_CONSTANT_ALPHA) exactly instead -- SRC_ALPHA
+    // properly scales each layer's contribution by its actual configured alpha, self-limiting the
+    // same way the pre-port version did. Blend state is baked per-RenderPipeline now (raw GL calls
+    // don't reach this pipeline, see the NO_DEPTH_QUADS comment above), hence a second pair of
+    // RenderTypes instead of a runtime blendFunc() call.
+    private static final BlendFunction SHINE_BLEND = new BlendFunction(SourceFactor.SRC_ALPHA, DestFactor.ONE_MINUS_CONSTANT_ALPHA);
+
+    private static final RenderType NO_DEPTH_QUADS_SHINE = RenderType.create("euclient_no_depth_quads_shine",
+            RenderSetup.builder(RenderPipeline.builder(new RenderPipeline.Snippet[]{RenderPipelinesAccessor.getDebugFilledSnippet()})
+                    .withLocation("euclient/no_depth_quads_shine")
+                    .withCull(false)
+                    .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
+                    .withColorTargetState(new ColorTargetState(SHINE_BLEND))
+                    .build()).sortOnUpload().createRenderSetup());
+
+    private static final RenderType NO_DEPTH_LINES_SHINE = RenderType.create("euclient_no_depth_lines_shine",
+            RenderSetup.builder(RenderPipeline.builder(new RenderPipeline.Snippet[]{RenderPipelinesAccessor.getLinesSnippet()})
+                    .withLocation("euclient/no_depth_lines_shine")
+                    .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
+                    .withColorTargetState(new ColorTargetState(SHINE_BLEND))
+                    .build()).createRenderSetup());
+
     public static List<VertexCollection> QUADS = new ArrayList<>();
     public static List<VertexCollection> DEBUG_LINES = new ArrayList<>();
 
     public static List<VertexCollection> SHINE_QUADS = new ArrayList<>();
     public static List<VertexCollection> SHINE_DEBUG_LINES = new ArrayList<>();
 
+    // Geometry destined for EspShader's animated fragment shader instead of the flat-colour
+    // pipelines. Same vertex data, different draw -- see EspShader.draw().
+    public static List<VertexCollection> SHADER_QUADS = new ArrayList<>();
+    public static List<VertexCollection> SHADER_DEBUG_LINES = new ArrayList<>();
+
     public static void renderBox(PoseStack matrices, AABB box, Color color) {
         renderGradientBox(matrices, box, color, color);
     }
 
     public static void renderGradientBox(PoseStack matrices, AABB box, Color startColor, Color endColor) {
+        renderGradientBox(QUADS, matrices, box, startColor, endColor);
+    }
+
+    public static void renderGradientBox(List<VertexCollection> QUADS, PoseStack matrices, AABB box, Color startColor, Color endColor) {
         if (!RENDERING) return;
         if (!isFrustumVisible(box)) return;
 
@@ -121,6 +169,10 @@ public class Renderer3D implements IMinecraft {
     }
 
     public static void renderGradientBoxOutline(PoseStack matrices, AABB box, Color startColor, Color endColor) {
+        renderGradientBoxOutline(DEBUG_LINES, matrices, box, startColor, endColor);
+    }
+
+    public static void renderGradientBoxOutline(List<VertexCollection> DEBUG_LINES, PoseStack matrices, AABB box, Color startColor, Color endColor) {
         if (!RENDERING) return;
         if (!isFrustumVisible(box)) return;
 
@@ -313,6 +365,9 @@ public class Renderer3D implements IMinecraft {
         SHINE_QUADS = new ArrayList<>();
         SHINE_DEBUG_LINES = new ArrayList<>();
 
+        SHADER_QUADS = new ArrayList<>();
+        SHADER_DEBUG_LINES = new ArrayList<>();
+
         RENDERING = true;
     }
 
@@ -325,30 +380,20 @@ public class Renderer3D implements IMinecraft {
             for (VertexCollection collection : quads) collection.quad(buffer);
 
             MeshData mesh = buffer.build();
-            if (mesh != null) NO_DEPTH_QUADS.draw(mesh);
+            if (mesh != null) (shine ? NO_DEPTH_QUADS_SHINE : NO_DEPTH_QUADS).draw(mesh);
         }
 
         if (!debugLines.isEmpty()) {
             // lines() expects POSITION_COLOR_NORMAL_LINE_WIDTH in LINES mode; vertices come in pairs.
             BufferBuilder buffer = Tesselator.getInstance().begin(VertexFormat.Mode.LINES, DefaultVertexFormat.POSITION_COLOR_NORMAL_LINE_WIDTH);
-            List<Vertex> flat = new ArrayList<>();
-            for (VertexCollection collection : debugLines) java.util.Collections.addAll(flat, collection.vertices());
 
             GL11.glHint(GL11.GL_LINE_SMOOTH_HINT, GL11.GL_NICEST);
             GL11.glEnable(GL11.GL_LINE_SMOOTH);
 
-            for (int i = 0; i + 1 < flat.size(); i += 2) {
-                Vertex a = flat.get(i);
-                Vertex b = flat.get(i + 1);
-                Vector3f normal = new Vector3f(b.x - a.x, b.y - a.y, b.z - a.z);
-                if (normal.lengthSquared() > 1.0e-6f) normal.normalize();
-                else normal.set(0.0f, 1.0f, 0.0f);
-                buffer.addVertex(a.matrix, a.x, a.y, a.z).setColor(a.color).setNormal(normal.x, normal.y, normal.z).setLineWidth(1.0f);
-                buffer.addVertex(b.matrix, b.x, b.y, b.z).setColor(b.color).setNormal(normal.x, normal.y, normal.z).setLineWidth(1.0f);
-            }
+            buildLines(buffer, debugLines);
 
             MeshData mesh = buffer.build();
-            if (mesh != null) NO_DEPTH_LINES.draw(mesh);
+            if (mesh != null) (shine ? NO_DEPTH_LINES_SHINE : NO_DEPTH_LINES).draw(mesh);
 
             GL11.glDisable(GL11.GL_LINE_SMOOTH);
         }
@@ -362,6 +407,23 @@ public class Renderer3D implements IMinecraft {
         // pass so the first draw() call doesn't repaint stale entries during the second.
         quads.clear();
         debugLines.clear();
+    }
+
+    // lines() expects POSITION_COLOR_NORMAL_LINE_WIDTH in LINES mode; vertices come in pairs and the
+    // normal has to be the segment direction (the vertex shader extrudes the quad along it).
+    public static void buildLines(BufferBuilder buffer, List<VertexCollection> debugLines) {
+        List<Vertex> flat = new ArrayList<>();
+        for (VertexCollection collection : debugLines) java.util.Collections.addAll(flat, collection.vertices());
+
+        for (int i = 0; i + 1 < flat.size(); i += 2) {
+            Vertex a = flat.get(i);
+            Vertex b = flat.get(i + 1);
+            Vector3f normal = new Vector3f(b.x - a.x, b.y - a.y, b.z - a.z);
+            if (normal.lengthSquared() > 1.0e-6f) normal.normalize();
+            else normal.set(0.0f, 1.0f, 0.0f);
+            buffer.addVertex(a.matrix, a.x, a.y, a.z).setColor(a.color).setNormal(normal.x, normal.y, normal.z).setLineWidth(1.0f);
+            buffer.addVertex(b.matrix, b.x, b.y, b.z).setColor(b.color).setNormal(normal.x, normal.y, normal.z).setLineWidth(1.0f);
+        }
     }
 
     public static boolean isFrustumVisible(AABB box) {

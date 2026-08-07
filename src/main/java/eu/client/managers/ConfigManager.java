@@ -211,11 +211,34 @@ public class ConfigManager {
                 }
 
                 switch (uncastedSetting) {
-                    case BooleanSetting setting -> setting.setValue(valueObject.getAsBoolean());
-                    case NumberSetting setting -> setting.setValue(valueObject.getAsNumber());
+                    // A setting can change primitive kind across versions (e.g. FakeLag's
+                    // AutoDisable: BooleanSetting -> NumberSetting, same name) -- an old config's
+                    // saved primitive kind no longer matching the current setting type crashed
+                    // loadConfig entirely (getAsBoolean()/getAsNumber() throw on a mismatched
+                    // JsonPrimitive) instead of just falling back to that one setting's default.
+                    case BooleanSetting setting -> {
+                        if (valueObject.getAsJsonPrimitive().isBoolean()) setting.setValue(valueObject.getAsBoolean());
+                        else setting.resetValue();
+                    }
+                    case NumberSetting setting -> {
+                        if (valueObject.getAsJsonPrimitive().isNumber()) setting.setValue(valueObject.getAsNumber());
+                        else setting.resetValue();
+                    }
                     case ModeSetting setting -> setting.setValue(valueObject.getAsString());
                     case StringSetting setting -> setting.setValue(valueObject.getAsString());
-                    case BindSetting setting -> setting.setValue(valueObject.getAsInt());
+                    case BindSetting setting -> {
+                        // Was a plain int (just the keycode) -- now "keycode,mode" so the
+                        // Bind/Hold/ReverseHold choice survives a restart. isNumber() keeps old
+                        // configs saved before this change loading correctly (mode defaults to
+                        // "Bind", matching what they always were).
+                        if (valueObject.isJsonPrimitive() && valueObject.getAsJsonPrimitive().isNumber()) {
+                            setting.setValue(valueObject.getAsInt());
+                        } else {
+                            String[] data = valueObject.getAsString().split(",", 2);
+                            setting.setValue(Integer.parseInt(data[0]));
+                            if (data.length > 1) setting.setMode(data[1]);
+                        }
+                    }
                     case ColorSetting setting -> {
                         String[] data = valueObject.getAsString().split(",");
                         if (data.length != 6) continue;
@@ -286,7 +309,7 @@ public class ConfigManager {
                     case NumberSetting setting -> settingsObject.add(setting.getName(), new JsonPrimitive(setting.getValue()));
                     case ModeSetting setting -> settingsObject.add(setting.getName(), new JsonPrimitive(setting.getValue()));
                     case StringSetting setting -> settingsObject.add(setting.getName(), new JsonPrimitive(setting.getValue()));
-                    case BindSetting setting -> settingsObject.add(setting.getName(), new JsonPrimitive(setting.getValue()));
+                    case BindSetting setting -> settingsObject.add(setting.getName(), new JsonPrimitive(setting.getValue() + "," + setting.getMode()));
                     case ColorSetting setting -> settingsObject.add(setting.getName(), new JsonPrimitive(setting.getValue().getColor().getRed() + "," + setting.getValue().getColor().getGreen() + "," + setting.getValue().getColor().getBlue() + "," + setting.getValue().getColor().getAlpha() + "," + setting.isSync() + "," + setting.isRainbow()));
                     case WhitelistSetting setting -> {
                         StringJoiner objects = new StringJoiner(",");

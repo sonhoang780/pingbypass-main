@@ -12,7 +12,6 @@ import net.minecraft.client.gui.screens.ChatScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.network.chat.Component;
-import net.minecraft.ChatFormatting;
 import org.lwjgl.glfw.GLFW;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -72,49 +71,71 @@ public class ChatScreenMixin extends Screen {
         if (suggestions.isEmpty()) return;
 
         boolean topLevel = euclient$isTopLevel(raw);
-        int x = input.getX();
+        // Was measured up to the cursor -- moved per keystroke as the current argument grows
+        // (".config load g" -> box under "g", then "gr", "gri", "grim", drifting right every
+        // character). Real command suggestions are anchored to where the CURRENT ARGUMENT
+        // STARTS (the component being completed), not to the cursor -- pin the box to the last
+        // space before the cursor instead, so it stays put while that one word is typed.
+        int cursor = input.getCursorPosition();
+        int lastSpace = raw.lastIndexOf(' ', Math.max(0, cursor - 1));
+        int tokenStart = lastSpace + 1;
+        int x = input.getX() + 4 + EUClient.FONT_MANAGER.getWidth(raw.substring(0, tokenStart));
         int lineHeight = EUClient.FONT_MANAGER.getHeight();
 
-        if (topLevel) {
-            int maxShown = 10;
-            int total = suggestions.size();
-            int shown = Math.min(total, maxShown);
+        // Both lists render as a single vertical column now -- sub-arg suggestions (add/clear/
+        // del/list, true/false, mode values...) used to render as one horizontal row, which reads
+        // fine for 3-4 entries but was inconsistent with the top-level command list right above it.
+        // Unselected entries are GRAY (not WHITE) so the selected one actually stands out.
+        int maxShown = topLevel ? 10 : 8;
+        int total = suggestions.size();
+        int shown = Math.min(total, maxShown);
 
-            // Scroll the window so the selected entry is always visible instead of always showing
-            // indices 0..9 -- with 50+ modules registered, cycling past the 10th match (e.g. Tab-ing
-            // all the way to "config") used to pick it as `selected` while the rendered list stayed
-            // frozen on the alphabetically-first page, so the highlighted entry was never on screen.
-            int start = total <= maxShown ? 0 : Math.max(0, Math.min(selected - maxShown / 2, total - maxShown));
-            int end = start + shown;
+        // Scroll the window so the selected entry is always visible instead of always showing
+        // indices 0..9 -- with 50+ modules registered, cycling past the 10th match (e.g. Tab-ing
+        // all the way to "config") used to pick it as `selected` while the rendered list stayed
+        // frozen on the alphabetically-first page, so the highlighted entry was never on screen.
+        int start = total <= maxShown ? 0 : Math.max(0, Math.min(selected - maxShown / 2, total - maxShown));
+        int end = start + shown;
 
-            int width = 0;
-            for (int i = start; i < end; i++) width = Math.max(width, EUClient.FONT_MANAGER.getWidth(suggestions.get(i)));
+        boolean overflow = total > shown;
+        int rows = shown + (overflow ? 1 : 0);
 
-            int bottom = input.getY() - 4;
-            int top = bottom - shown * lineHeight - 4;
+        int width = 0;
+        for (int i = start; i < end; i++) width = Math.max(width, EUClient.FONT_MANAGER.getWidth(suggestions.get(i)));
+        if (overflow) width = Math.max(width, EUClient.FONT_MANAGER.getWidth("..."));
 
-            Renderer2D.renderQuad(context, x - 2, top, x + width + 4, bottom, new Color(0, 0, 0, 215));
-            Renderer2D.renderOutline(context, x - 2, top, x + width + 4, bottom, new Color(0, 0, 0, 255));
-            for (int i = start; i < end; i++) {
-                int y = top + 2 + (i - start) * lineHeight;
-                EUClient.FONT_MANAGER.drawTextWithShadow(context, suggestions.get(i), x, y, i == selected ? Color.CYAN : Color.WHITE);
+        int bottom = input.getY() - 4;
+        int top = bottom - rows * lineHeight - 4;
+
+        Renderer2D.renderQuad(context, x - 2, top, x + width + 4, bottom, new Color(0, 0, 0, 215));
+        Renderer2D.renderOutline(context, x - 2, top, x + width + 4, bottom, new Color(0, 0, 0, 255));
+        for (int i = start; i < end; i++) {
+            int y = top + 2 + (i - start) * lineHeight;
+            EUClient.FONT_MANAGER.drawTextWithShadow(context, suggestions.get(i), x, y, i == selected ? Color.CYAN : Color.GRAY);
+        }
+        if (overflow) {
+            EUClient.FONT_MANAGER.drawTextWithShadow(context, "...", x, top + 2 + shown * lineHeight, Color.GRAY);
+        }
+
+        // Inline ghost-text completion (vanilla's own "/" command suggestions render the missing
+        // suffix directly in the input line, in gray, right after the cursor -- e.g. typing
+        // ".fakep" shows "layer" appended to complete "fakeplayer"). Only when the cursor sits at
+        // the very end of the current token: mid-string edits have no single unambiguous "rest of
+        // the word" to hint at without also affecting whatever comes after the cursor.
+        if (cursor == raw.length()) {
+            // For the FIRST token (the command name itself, tokenStart == 0), the raw substring
+            // still carries the "." prefix -- but CommandManager.getSuggestions returns bare names
+            // ("fakelag", not ".fakelag"), so comparing the prefixed token against them never
+            // matched (silently no-op, no visible bug, just no hint ever showing for command names --
+            // only for sub-arguments after a space, which don't carry the prefix).
+            String prefix = EUClient.COMMAND_MANAGER.getPrefix();
+            String currentToken = raw.substring(Math.max(tokenStart, prefix.length()));
+            String topSuggestion = suggestions.get(Math.max(0, Math.min(selected, suggestions.size() - 1)));
+            if (topSuggestion.length() > currentToken.length() && topSuggestion.regionMatches(true, 0, currentToken, 0, currentToken.length())) {
+                String hint = topSuggestion.substring(currentToken.length());
+                int hintX = input.getX() + 4 + EUClient.FONT_MANAGER.getWidth(raw);
+                EUClient.FONT_MANAGER.drawTextWithShadow(context, hint, hintX, input.getY() + 2, Color.GRAY);
             }
-        } else {
-            StringBuilder line = new StringBuilder();
-            int shown = Math.min(suggestions.size(), 8);
-            for (int i = 0; i < shown; i++) {
-                if (i > 0) line.append("  ");
-                line.append(i == selected ? ChatFormatting.AQUA : ChatFormatting.WHITE).append(suggestions.get(i));
-            }
-            if (suggestions.size() > shown) line.append(ChatFormatting.GRAY).append(" ...");
-
-            String text = line.toString();
-            int y = input.getY() - lineHeight - 4;
-            int width = EUClient.FONT_MANAGER.getWidth(text);
-
-            Renderer2D.renderQuad(context, x - 2, y - 2, x + width + 2, y + lineHeight + 2, new Color(0, 0, 0, 215));
-            Renderer2D.renderOutline(context, x - 2, y - 2, x + width + 2, y + lineHeight + 2, new Color(0, 0, 0, 255));
-            EUClient.FONT_MANAGER.drawTextWithShadow(context, text, x, y, Color.WHITE);
         }
     }
 

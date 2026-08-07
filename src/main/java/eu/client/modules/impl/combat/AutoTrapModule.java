@@ -55,6 +55,9 @@ public class AutoTrapModule extends Module {
 
     @SubscribeEvent
     public void onPlayerUpdate(PlayerUpdateEvent event) {
+        // No PingBypass skip here -- matches earthhack's real AutoTrap, which has zero PingBypass
+        // awareness at all. Runs the same whether connected to a proxy or not; the packets it
+        // sends get dumb-piped through like anything else.
         if (!whileEating.getValue() && mc.player.isUsingItem()) return;
 
         List<AbstractClientPlayer> players = mc.level.players();

@@ -11,6 +11,8 @@ import eu.client.utils.system.MathUtils;
 import eu.client.utils.system.Timer;
 import meteordevelopment.discordipc.DiscordIPC;
 import meteordevelopment.discordipc.RichPresence;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @RegisterModule(
         name = "RPC",
@@ -18,6 +20,7 @@ import meteordevelopment.discordipc.RichPresence;
         category = Module.Category.CORE
 )
 public class RPCModule extends Module {
+    private static final Logger LOGGER = LoggerFactory.getLogger("EUClient/RPC");
 
     public ModeSetting detailsMode = new ModeSetting(
             "Details",
@@ -42,7 +45,20 @@ public class RPCModule extends Module {
 
     @Override
     public void onEnable() {
-        DiscordIPC.start(1474637830906052631L, null);
+        // Was ignored entirely -- start() returns false when it can't find/open the local
+        // Discord IPC pipe at all (Discord not running, or -- when launched via `gradlew
+        // runClient` -- Discord's own "no activity from unknown/dev processes" setting
+        // silently dropping it), and setActivity()'s c==null guard then makes every later call
+        // a silent no-op. Route errors through the client logger (DiscordIPC's own default
+        // handler is a raw System.err.println, invisible in .minecraft/logs/latest.log) so a
+        // failure is actually diagnosable instead of just "nothing happens".
+        DiscordIPC.setOnError((code, message) -> LOGGER.warn("[RPC] Discord IPC error {}: {}", code, message));
+
+        boolean started = DiscordIPC.start(1474637830906052631L, () -> LOGGER.info("[RPC] Connected to Discord IPC"));
+        if (!started) {
+            LOGGER.warn("[RPC] DiscordIPC.start() returned false -- no local Discord IPC pipe found (is Discord running?)");
+            return;
+        }
 
         rpc.setStart(EUClient.UPTIME / 1000);
 

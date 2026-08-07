@@ -30,10 +30,17 @@ public abstract class PlayerListHudMixin {
     }
 
     // collectPlayerEntries renamed to getPlayerInfos(), no longer takes a scoreboard/limit param (fixed limit 80 upstream)
+    // Was getOnlinePlayers() (raw playerInfoMap.values()) -- vanilla's own getPlayerInfos() (the
+    // method this replaces) always reads getListedOnlinePlayers() instead. In singleplayer the
+    // integrated server pushes tab-list add/remove entries far more densely than a real remote
+    // server, and the unlisted map churns/iterates unsafely under that -- crashing the render and
+    // dropping back to the title screen (repeated "disconnect"). getListedOnlinePlayers() is the
+    // set vanilla already renders from every frame without issue; just raise vanilla's hardcoded
+    // limit(80) instead of swapping the source collection.
     @Inject(method = "getPlayerInfos", at = @At("HEAD"), cancellable = true)
     private void collectPlayerEntries(CallbackInfoReturnable<List<PlayerInfo>> info) {
         if (EUClient.MODULE_MANAGER.getModule(ExtraTabModule.class).isToggled()) {
-            info.setReturnValue(minecraft.player.connection.getOnlinePlayers().stream().sorted(PLAYER_COMPARATOR).limit(EUClient.MODULE_MANAGER.getModule(ExtraTabModule.class).limit.getValue().longValue()).toList());
+            info.setReturnValue(minecraft.player.connection.getListedOnlinePlayers().stream().sorted(PLAYER_COMPARATOR).limit(EUClient.MODULE_MANAGER.getModule(ExtraTabModule.class).limit.getValue().longValue()).toList());
         }
     }
 

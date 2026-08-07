@@ -20,10 +20,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 // ponytail: the old @Overwrite of updateRenderState / the custom euclient$render re-implementation
 // of LivingEntityRenderer.render(...) are both gone. render() itself was renamed submit(...) and
 // rewritten around SubmitNodeCollector.submitModel(...) (high-level, no manual VertexConsumer/model
-// draw calls to hand-roll anymore); euclient$render existed ONLY to be called from the now-deleted
-// ModelRenderer.java, which is unused since ChamsModule/PopChamsModule/ShadersModule moved onto
-// EntityRenderState.outlineColor (see EntityRendererMixin) -- vanilla's own submit() already applies
-// that field, so there's nothing left for a custom render path to do.
+// draw calls to hand-roll anymore). PopChamsModule/ShadersModule still ride EntityRenderState.
+// outlineColor (see EntityRendererMixin) -- vanilla's own submit() already applies that field.
+// ChamsModule instead captures real per-quad geometry at flush time now (ModelFeatureRendererMixin,
+// EntityRenderStateMixin/IChamsCapture) -- the modern equivalent of the old ModelRenderer.java
+// re-render trick, at the new architecture's actual vertex-level hook point.
 @Mixin(LivingEntityRenderer.class)
 public abstract class LivingEntityRendererMixin<T extends LivingEntity, S extends LivingEntityRenderState, M extends EntityModel<? super S>> extends EntityRenderer<T, S> implements IMinecraft {
     public LivingEntityRendererMixin(EntityRendererProvider.Context context) { super(context); }

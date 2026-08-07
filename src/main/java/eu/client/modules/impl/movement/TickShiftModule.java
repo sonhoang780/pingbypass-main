@@ -38,7 +38,20 @@ public class TickShiftModule extends Module {
         if (mc.player.fallDistance >= 5.0f)
             return;
 
-        if ((mc.player.xxa == 0.0f && mc.player.zza == 0.0f && mc.player.fallDistance == 0.0f) || EntityUtils.getSpeed(mc.player, EntityUtils.SpeedUnit.KILOMETERS) <= 5) {
+        // speed<=5 keeps charging (instead of spending) through the few ramp-up ticks right after
+        // pressing a movement key -- vanilla acceleration takes a moment to exceed 5km/h, so this
+        // avoids wasting charge on a tick that barely moved. Only meaningful for modes that
+        // actually HAVE a ramp, though: Sprint's Instant mode sets velocity straight to its target
+        // speed the same tick a key is pressed (no ramp at all, see SprintModule), so that window
+        // never exists for it -- keeping the speed<=5 clause for Instant just meant it never got
+        // ANY extra charge at sprint-start and combo'd as if TickShift wasn't running (reported:
+        // "behave y hệt sprint instant bình thường"). Skip the speed clause for Instant specifically
+        // (standing-still is still required); keep it for every other mode, unchanged.
+        boolean instant = EUClient.MODULE_MANAGER.getModule(SprintModule.class).mode.getValue().equalsIgnoreCase("Instant");
+        boolean charging = mc.player.xxa == 0.0f && mc.player.zza == 0.0f && mc.player.fallDistance == 0.0f;
+        if (!instant) charging |= EntityUtils.getSpeed(mc.player, EntityUtils.SpeedUnit.KILOMETERS) <= 5;
+
+        if (charging) {
             EUClient.WORLD_MANAGER.setTimerMultiplier(1.0f);
             if(wait >= delay.getValue().intValue()) {
                 if(ticks < maxTicks.getValue().intValue()) {
@@ -49,7 +62,7 @@ public class TickShiftModule extends Module {
             wait++;
         } else {
             if(ticks > 0) {
-                if (!EUClient.MODULE_MANAGER.getModule(SpeedModule.class).isToggled() && !mc.options.keyJump.isDown()) EUClient.WORLD_MANAGER.setTimerMultiplier(speed.getValue().floatValue());
+                if (!EUClient.MODULE_MANAGER.getModule(SpeedModule.class).isDrivingTimer() && !mc.options.keyJump.isDown()) EUClient.WORLD_MANAGER.setTimerMultiplier(speed.getValue().floatValue());
                 ticks--;
             } else {
                 reset();

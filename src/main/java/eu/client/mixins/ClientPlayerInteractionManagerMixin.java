@@ -53,13 +53,6 @@ public class ClientPlayerInteractionManagerMixin {
 
     @Inject(method = "startDestroyBlock", at = @At("HEAD"), cancellable = true)
     private void attackBlock(BlockPos pos, Direction direction, CallbackInfoReturnable<Boolean> info) {
-        // Under raw-input forwarding, the client never digs locally -- the ATTACK key is
-        // replayed on the proxy instead, whose own LocalPlayer starts the real dig.
-        if (eu.client.pingbypass.PingBypassFlags.rawInputForwardingActive
-                && EUClient.PINGBYPASS_CONFIG != null && !EUClient.PINGBYPASS_CONFIG.isServer()) {
-            info.setReturnValue(false);
-            return;
-        }
         AttackBlockEvent event = new AttackBlockEvent(pos, direction);
         EUClient.EVENT_HANDLER.post(event);
         if (event.isCancelled()) {
@@ -91,15 +84,8 @@ public class ClientPlayerInteractionManagerMixin {
         }
     }
 
-    @Inject(method = "attack", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "attack", at = @At("HEAD"))
     private void attackEntity(Player player, Entity target, CallbackInfo ci) {
-        // Under raw-input forwarding, the client never attacks locally -- the ATTACK key is
-        // replayed on the proxy instead, whose own LocalPlayer sends the real attack.
-        if (eu.client.pingbypass.PingBypassFlags.rawInputForwardingActive
-                && EUClient.PINGBYPASS_CONFIG != null && !EUClient.PINGBYPASS_CONFIG.isServer()) {
-            ci.cancel();
-            return;
-        }
         EUClient.EVENT_HANDLER.post(new AttackEntityEvent(player, target));
     }
 

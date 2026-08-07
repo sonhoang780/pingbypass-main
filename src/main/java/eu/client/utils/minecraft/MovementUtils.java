@@ -12,23 +12,18 @@ public class MovementUtils implements IMinecraft {
     public static double DEFAULT_SPEED = 0.2873;
 
     public static Vector2d forward(double speed) {
+        // KeyboardInput.tick() (vanilla) already normalizes getMoveVector() to length 1 --
+        // diagonal input (e.g. W+D) comes in as (~0.7071, ~0.7071), not raw (1, 1) like it did
+        // pre-1.20.5. Previously this force-clamped `forward` back to exactly +-1.0 while leaving
+        // `sideways` untouched at ~0.7071, inflating the combined vector's magnitude to
+        // speed*sqrt(1.5) (~1.22x) instead of exactly `speed` -- that's the "diagonal moves faster
+        // than straight" bug. forward/sideways are already correct unit-circle components; just
+        // use them directly, no re-clamping or yaw-rotation hack needed anymore.
         float forward = mc.player.input.getMoveVector().y;
         float sideways = mc.player.input.getMoveVector().x;
         float yaw = mc.player.getYRot();
 
         if (forward == 0.0f && sideways == 0.0f) return new Vector2d(0, 0);
-        if (forward != 0.0f) {
-            if (sideways >= 1.0f) {
-                yaw += ((forward > 0.0f) ? -45 : 45);
-                sideways = 0.0f;
-            } else if (sideways <= -1.0f) {
-                yaw += ((forward > 0.0f) ? 45 : -45);
-                sideways = 0.0f;
-            }
-
-            if (forward > 0.0f) forward = 1.0f;
-            else if (forward < 0.0f) forward = -1.0f;
-        }
 
         double motionX = Math.cos(Math.toRadians(yaw + 90.0f));
         double motionZ = Math.sin(Math.toRadians(yaw + 90.0f));

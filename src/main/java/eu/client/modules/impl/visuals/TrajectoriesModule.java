@@ -70,12 +70,21 @@ public class TrajectoriesModule extends Module {
 
         hitEntities.clear();
 
+        // getYRot()/getXRot() are the RAW current-tick values, only ever updated once per tick --
+        // the start position two lines below already lerps (xo/yo/zo -> current) so it moves
+        // smoothly every render frame, but the aim direction built from raw yaw/pitch snapped
+        // instantly to its new value the instant a tick landed, then held flat until the next
+        // tick -- a visible jitter/kink at the trajectory's own origin every tick boundary, even
+        // though the base position right next to it was moving continuously. Lerp yaw the same
+        // way (yRotO -> getYRot()); project() does the same for pitch internally.
+        float yaw = Mth.lerp(event.getTickDelta(), mc.player.yRotO, mc.player.getYRot());
+
         if ((mc.player.getOffhandItem().getItem() instanceof CrossbowItem && EnchantmentHelper.getItemEnchantmentLevel(mc.level.registryAccess().lookupOrThrow(Registries.ENCHANTMENT).getOrThrow(Enchantments.MULTISHOT), mc.player.getOffhandItem()) != 0) || (mc.player.getMainHandItem().getItem() instanceof CrossbowItem && EnchantmentHelper.getItemEnchantmentLevel(mc.level.registryAccess().lookupOrThrow(Registries.ENCHANTMENT).getOrThrow(Enchantments.MULTISHOT), mc.player.getMainHandItem()) != 0)) {
-            project(event.getMatrices(), activeHand == InteractionHand.OFF_HAND ? mc.player.getOffhandItem().getItem() : mc.player.getMainHandItem().getItem(), mc.player.getYRot() - 10, event.getTickDelta());
-            project(event.getMatrices(), activeHand == InteractionHand.OFF_HAND ? mc.player.getOffhandItem().getItem() : mc.player.getMainHandItem().getItem(), mc.player.getYRot(), event.getTickDelta());
-            project(event.getMatrices(), activeHand == InteractionHand.OFF_HAND ? mc.player.getOffhandItem().getItem() : mc.player.getMainHandItem().getItem(), mc.player.getYRot() + 10, event.getTickDelta());
+            project(event.getMatrices(), activeHand == InteractionHand.OFF_HAND ? mc.player.getOffhandItem().getItem() : mc.player.getMainHandItem().getItem(), yaw - 10, event.getTickDelta());
+            project(event.getMatrices(), activeHand == InteractionHand.OFF_HAND ? mc.player.getOffhandItem().getItem() : mc.player.getMainHandItem().getItem(), yaw, event.getTickDelta());
+            project(event.getMatrices(), activeHand == InteractionHand.OFF_HAND ? mc.player.getOffhandItem().getItem() : mc.player.getMainHandItem().getItem(), yaw + 10, event.getTickDelta());
         } else {
-            project(event.getMatrices(), activeHand == InteractionHand.OFF_HAND ? mc.player.getOffhandItem().getItem() : mc.player.getMainHandItem().getItem(), mc.player.getYRot(), event.getTickDelta());
+            project(event.getMatrices(), activeHand == InteractionHand.OFF_HAND ? mc.player.getOffhandItem().getItem() : mc.player.getMainHandItem().getItem(), yaw, event.getTickDelta());
         }
 
         mc.options.bobView().set(prevBobView);
@@ -98,9 +107,13 @@ public class TrajectoriesModule extends Module {
 
         float maxDistance = item instanceof BowItem ? 1.0f : 0.4f;
 
-        double motionX = -Mth.sin(yaw / 180.0f * 3.1415927f) * Mth.cos(mc.player.getXRot() / 180.0f * 3.1415927f) * maxDistance;
-        double motionY = -Mth.sin((mc.player.getXRot() - getThrowPitch(item)) / 180.0f * 3.141593f) * maxDistance;
-        double motionZ = Mth.cos(yaw / 180.0f * 3.1415927f) * Mth.cos(mc.player.getXRot() / 180.0f * 3.1415927f) * maxDistance;
+        // Same lerp as yaw above (see onRenderWorld) -- pitch is the other half of "which way is
+        // this pointing", raw getXRot() jitters at tick boundaries the same way raw getYRot() did.
+        float pitch = Mth.lerp(tickDelta, mc.player.xRotO, mc.player.getXRot());
+
+        double motionX = -Mth.sin(yaw / 180.0f * 3.1415927f) * Mth.cos(pitch / 180.0f * 3.1415927f) * maxDistance;
+        double motionY = -Mth.sin((pitch - getThrowPitch(item)) / 180.0f * 3.141593f) * maxDistance;
+        double motionZ = Mth.cos(yaw / 180.0f * 3.1415927f) * Mth.cos(pitch / 180.0f * 3.1415927f) * maxDistance;
 
         float power = mc.player.getTicksUsingItem() / 20.0f;
         power = (power * power + power * 2.0f) / 3.0f;

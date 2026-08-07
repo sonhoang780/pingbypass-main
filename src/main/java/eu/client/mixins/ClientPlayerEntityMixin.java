@@ -77,13 +77,20 @@ public abstract class ClientPlayerEntityMixin extends AbstractClientPlayer {
 
     @Inject(method = "move", at = @At("HEAD"), cancellable = true)
     private void move(MoverType movementType, Vec3 movement, CallbackInfo info) {
-        // Under raw-input forwarding, the client never moves locally at all -- the proxy's
-        // own LocalPlayer (driven by ServerInputService) is the sole source of movement.
-        if (eu.client.pingbypass.PingBypassFlags.rawInputForwardingActive
-                && EUClient.PINGBYPASS_CONFIG != null && !EUClient.PINGBYPASS_CONFIG.isServer()) {
+        // Matches earthhack's PbMoveListener (cancels MoveEvent whenever PingBypass.isConnected(),
+        // i.e. server && connected -- proxy side only): the ghost player here is teleported
+        // straight from the client's own forwarded packets (PbPlayHandler.handleMovePlayer) and
+        // must never run its own physics/collision on top of that -- doing so fights the teleport
+        // every tick (gravity/friction applied from wherever the last teleport left off), corrupting
+        // the position the proxy then reports to the real server. That's the rubberbanding/can't-jump
+        // bug: previously nothing here suppressed the ghost's own move() at all, despite the stale
+        // comment at the top of PbPlayHandler claiming it was suppressed.
+        if (eu.client.pingbypass.PingBypassFlags.proxyForwardingActive
+                && EUClient.PINGBYPASS_CONFIG != null && EUClient.PINGBYPASS_CONFIG.isServer()) {
             info.cancel();
             return;
         }
+
         PlayerMoveEvent event = new PlayerMoveEvent(movementType, movement);
         EUClient.EVENT_HANDLER.post(event);
 
@@ -100,25 +107,18 @@ public abstract class ClientPlayerEntityMixin extends AbstractClientPlayer {
 
     @Inject(method = "sendPosition", at = @At("HEAD"), cancellable = true)
     private void sendMovementPackets(CallbackInfo info) {
-        // When proxy forwarding is active on the SERVER (proxy), cancel sendMovementPackets.
-        // The client's movement packets are forwarded by PbPlayHandler.onPlayerMove.
-        // Without this cancel, the proxy would send its OWN movement to the server
-        // (conflicting with the forwarded client packets).
-        if (eu.client.pingbypass.PingBypassFlags.proxyForwardingActive
-                && EUClient.PINGBYPASS_CONFIG != null && EUClient.PINGBYPASS_CONFIG.isServer()) {
-            info.cancel();
-            return;
-        }
-        // On the CLIENT side: under raw-input forwarding, the client never moves locally
-        // (see `move` above), so there is nothing meaningful to send -- the proxy's own
-        // LocalPlayer sends real movement packets to the backend server itself.
-        if (eu.client.pingbypass.PingBypassFlags.rawInputForwardingActive
-                && EUClient.PINGBYPASS_CONFIG != null && !EUClient.PINGBYPASS_CONFIG.isServer()) {
-            info.cancel();
-            return;
-        }
-        // Otherwise (dumb-pipe mode): the client sends movement packets to the proxy
-        // normally, and the proxy forwards them to the real server.
+        // Same path on both sides. On the CLIENT, this sends the real player's own movement
+        // packet to the proxy as always. On the PROXY, mc.player is the ghost that
+        // PbPlayHandler.handleMovePlayer() keeps positioned from the client's own packets --
+        // this now generates the proxy's OWN fresh movement packet from that position each
+        // tick and sends it straight to the real server (mc.getConnection() on the proxy IS
+        // the real server connection, see ProxyServer.setServerConnection callers), matching
+        // earthhack's MotionUpdateHelper.invokeUpdateWalkingPlayer() -- rather than dumb-piping
+        // the client's raw packet bytes through. This is also the hook point for proxy-side
+        // aim modules: the WrapOperation getYRot/getXRot below already substitutes
+        // RotationManager's queued rotation into whatever packet gets built here, for both
+        // sides, so a module's rotation is applied before the send regardless of which side
+        // is running it.
         SendMovementEvent event = new SendMovementEvent();
         EUClient.EVENT_HANDLER.post(event);
         if (event.isCancelled()) {
@@ -155,14 +155,6 @@ public abstract class ClientPlayerEntityMixin extends AbstractClientPlayer {
 
     @Inject(method = "swing", at = @At("HEAD"), cancellable = true)
     private void swingHand(InteractionHand hand, CallbackInfo info) {
-        // Under raw-input forwarding, the client never attacks locally -- the ATTACK key
-        // is replayed on the proxy instead (see ClientPlayerInteractionManagerMixin.attack),
-        // whose own swing() call is the sole source of the swing packet.
-        if (eu.client.pingbypass.PingBypassFlags.rawInputForwardingActive
-                && EUClient.PINGBYPASS_CONFIG != null && !EUClient.PINGBYPASS_CONFIG.isServer()) {
-            info.cancel();
-            return;
-        }
         if (EUClient.MODULE_MANAGER.getModule(SwingModule.class).isToggled()) {
             if (!EUClient.MODULE_MANAGER.getModule(SwingModule.class).hand.getValue().equals("None")) {
                 switch (EUClient.MODULE_MANAGER.getModule(SwingModule.class).hand.getValue()) {

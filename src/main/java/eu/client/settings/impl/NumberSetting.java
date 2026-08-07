@@ -11,37 +11,33 @@ public class NumberSetting extends Setting {
     private final Number defaultValue;
     private final Number minimum;
     private final Number maximum;
+    // Drag rounding granularity (e.g. 100 so a 100..1000ms slider only stops on hundreds).
+    // Defaults to 0, meaning "use the type's normal precision" (integer step 1, float/double step 0.01).
+    private final Number step;
 
     public NumberSetting(String name, String description, Number value, Number minimum, Number maximum) {
-        super(name, name, description, new Setting.Visibility());
-        this.value = value;
-        this.defaultValue = value;
-        this.minimum = minimum;
-        this.maximum = maximum;
+        this(name, name, description, new Setting.Visibility(), value, minimum, maximum, 0);
     }
 
     public NumberSetting(String name, String tag, String description, Number value, Number minimum, Number maximum) {
-        super(name, tag, description, new Setting.Visibility());
-        this.value = value;
-        this.defaultValue = value;
-        this.minimum = minimum;
-        this.maximum = maximum;
+        this(name, tag, description, new Setting.Visibility(), value, minimum, maximum, 0);
     }
 
     public NumberSetting(String name, String description, Setting.Visibility visibility, Number value, Number minimum, Number maximum) {
-        super(name, name, description, visibility);
-        this.value = value;
-        this.defaultValue = value;
-        this.minimum = minimum;
-        this.maximum = maximum;
+        this(name, name, description, visibility, value, minimum, maximum, 0);
     }
 
     public NumberSetting(String name, String tag, String description, Setting.Visibility visibility, Number value, Number minimum, Number maximum) {
+        this(name, tag, description, visibility, value, minimum, maximum, 0);
+    }
+
+    public NumberSetting(String name, String tag, String description, Setting.Visibility visibility, Number value, Number minimum, Number maximum, Number step) {
         super(name, tag, description, visibility);
         this.value = value;
         this.defaultValue = value;
         this.minimum = minimum;
         this.maximum = maximum;
+        this.step = step;
     }
 
     public void setValue(Number value) {

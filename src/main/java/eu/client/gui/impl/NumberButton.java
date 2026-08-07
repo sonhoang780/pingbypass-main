@@ -36,8 +36,9 @@ public class NumberButton extends Button {
         if(setting.getType() == NumberSetting.Type.INTEGER) {
             slider = sliderMax * (setting.getValue().intValue() - setting.getMinimum().intValue()) / (setting.getMaximum().intValue() - setting.getMinimum().intValue());
             if(dragging) {
-                int value = (int) MathUtils.round(drag / sliderMax * (setting.getMaximum().intValue() - setting.getMinimum().intValue()) + setting.getMinimum().intValue(), 0);
-                setting.setValue(value);
+                int raw = (int) MathUtils.round(drag / sliderMax * (setting.getMaximum().intValue() - setting.getMinimum().intValue()) + setting.getMinimum().intValue(), 0);
+                int step = setting.getStep().intValue();
+                setting.setValue(step > 0 ? Math.round((float) raw / step) * step : raw);
             }
         } else if(setting.getType() == NumberSetting.Type.FLOAT) {
             slider = sliderMax * (setting.getValue().floatValue() - setting.getMinimum().floatValue()) / (setting.getMaximum().floatValue() - setting.getMinimum().floatValue());

@@ -89,37 +89,37 @@ public class InventoryUtils implements IMinecraft {
     public static void swap(String mode, int slot, int targetSlot) {
         switch (mode) {
             case "Pickup" -> {
-                mc.gameMode.handleContainerInput(mc.player.containerMenu.containerId, indexToSlot(slot), 0, ContainerInput.PICKUP, mc.player);
-                mc.gameMode.handleContainerInput(mc.player.containerMenu.containerId, indexToSlot(targetSlot), 0, ContainerInput.PICKUP, mc.player);
-                mc.gameMode.handleContainerInput(mc.player.containerMenu.containerId, indexToSlot(slot), 0, ContainerInput.PICKUP, mc.player);
+                click(indexToSlot(slot), 0, ContainerInput.PICKUP);
+                click(indexToSlot(targetSlot), 0, ContainerInput.PICKUP);
+                click(indexToSlot(slot), 0, ContainerInput.PICKUP);
             }
-            case "Swap" -> {
-                mc.gameMode.handleContainerInput(mc.player.containerMenu.containerId, indexToSlot(slot), targetSlot, ContainerInput.SWAP, mc.player);
-            }
+            case "Swap" -> click(indexToSlot(slot), targetSlot, ContainerInput.SWAP);
         }
-
-        // Unlike "Normal" mode's setSelectedSlot (mirrored to the client instantly via
-        // syncSlotToClientIfProxy), handleContainerInput above only applies the swap to the
-        // PROXY's own local menu prediction. The real client's own inventory only learns about
-        // it once the real server's ClientboundContainerSetContentPacket/SetSlotPacket confirms
-        // and gets forwarded back -- a full real-network round trip. If another module (e.g.
-        // AutoCrystal's Normal switch) reselects a slot on the client's side inside that window,
-        // the client is acting on stale slot contents and desyncs from what the real server
-        // actually has, showing up as "can't crystal" / "block doesn't break" / rubberband when
-        // combined with other proxy-side inventory switches. Broadcast the proxy's own
-        // just-applied prediction to the client immediately instead of waiting on that RTT.
-        syncInventoryToClientIfProxy();
     }
 
-    private static void syncInventoryToClientIfProxy() {
+    // Was: apply the click to the proxy's own menu, then separately broadcast the proxy's
+    // resulting FULL container snapshot (ClientboundContainerSetContentPacket) to the client.
+    // That snapshot only reflects the proxy's own prediction -- any slot the CLIENT had already
+    // mispredicted on its own, that this exact click didn't happen to also touch, was never
+    // corrected by it, and the real server's own broadcastChanges() only ever diffs against the
+    // slots ITS shadow (which tracks the PROXY, not the client) saw change -- so that
+    // mispredicted slot (and whatever enchantments/NBT it carries) stayed wrong indefinitely.
+    // Matches earthhack's real PbWindowClickService/S2CWindowClick instead: replay the EXACT
+    // SAME click on the client (S2CWindowClickPacket), not a snapshot of the outcome -- the
+    // client's own AbstractContainerMenu.clicked() then resolves it exactly like the proxy's did.
+    private static void click(int slotNum, int buttonNum, ContainerInput containerInput) {
+        mc.gameMode.handleContainerInput(mc.player.containerMenu.containerId, slotNum, buttonNum, containerInput, mc.player);
+        broadcastClickToClientIfProxy(slotNum, buttonNum, containerInput);
+    }
+
+    private static void broadcastClickToClientIfProxy(int slotNum, int buttonNum, ContainerInput containerInput) {
         if (EUClient.PINGBYPASS_CONFIG == null || !EUClient.PINGBYPASS_CONFIG.isServer()) return;
         if (!eu.client.pingbypass.PingBypassFlags.proxyForwardingActive || EUClient.PROXY_SERVER == null) return;
 
-        var packet = new net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket(
-                mc.player.containerMenu.containerId,
-                mc.player.containerMenu.incrementStateId(),
-                mc.player.containerMenu.getItems(),
-                mc.player.containerMenu.getCarried());
+        var packet = new net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket(
+                eu.client.pingbypass.protocol.PbCustomPayload.fromPacket(
+                        new eu.client.pingbypass.protocol.packets.S2CWindowClickPacket(
+                                mc.player.containerMenu.containerId, slotNum, buttonNum, containerInput)));
         for (net.minecraft.network.Connection conn : EUClient.PROXY_SERVER.getConnections()) {
             if (conn.isConnected()) conn.send(packet);
         }

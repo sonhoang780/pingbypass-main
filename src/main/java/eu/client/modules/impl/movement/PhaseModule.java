@@ -32,6 +32,14 @@ public class PhaseModule extends Module {
     public ModeSetting mode = new ModeSetting("Mode", "The method that will be used for phasing.", "Pearl", new String[]{"Pearl", "Teleport"});
     public ModeSetting autoSwitch = new ModeSetting("Switch", "The mode that will be used for automatically switching to necessary items.", new ModeSetting.Visibility(mode, "Pearl"), "Silent", InventoryUtils.SWITCH_MODES);
     public NumberSetting pitch = new NumberSetting("Pitch", "The pitch at which the pearl will be thrown.", new ModeSetting.Visibility(mode, "Pearl"), 85, 70, 90);
+    // Ported from example-addon-master's PearlPhase (dev.leonetic's PhaseModule, via boze-api) --
+    // that version aims at an explicit XYZ target and retargets its Y from playerY-0.5 to
+    // blockPosition().below().getY() under Crawl, because crawling lowers eye height and the
+    // fixed target undershoots/overshoots from the wrong eye position. This module doesn't build
+    // an explicit target at all normally (fixed Pitch setting, straight down); Crawl here instead
+    // aims properly at the exact block-below center via RotationUtils, same fix adapted to this
+    // module's simpler fixed-pitch throw instead of PearlPhase's variable-charge/solved-pitch one.
+    public BooleanSetting crawl = new BooleanSetting("Crawl", "Aims at the exact block underfoot instead of a fixed pitch -- needed to phase while in the crawling pose, where the lower eye height throws a fixed-pitch pearl off target.", false);
 
     public BooleanSetting fireCharge = new BooleanSetting("FireCharge", "Uses fire to bypass pearl distance checks.", false);
     public BooleanSetting alternative = new BooleanSetting("Alternative", "Uses a flint and steel rather than a fire charge to perform the phase bypass.", false);
@@ -78,6 +86,13 @@ public class PhaseModule extends Module {
             float prevPitch = mc.player.getXRot();
 
             BlockPos downPosition = mc.player.blockPosition().below();
+
+            // Crawl: aim at the block underfoot's actual center instead of the fixed Pitch
+            // setting -- the crawling pose's lower eye height means a pitch tuned for standing
+            // no longer points at the same spot relative to the block below.
+            float throwPitch = crawl.getValue()
+                    ? RotationUtils.getRotations(Vec3.atCenterOf(downPosition))[1]
+                    : pitch.getValue().intValue();
             if (fireCharge.getValue() && mc.level.getBlockState(mc.player.blockPosition()).isAir() && !(mc.level.getBlockState(downPosition).canBeReplaced())) {
                 int chargeSlot = InventoryUtils.find(alternative.getValue() ? Items.FLINT_AND_STEEL : Items.FIRE_CHARGE, InventoryUtils.HOTBAR_START, fireSwitch.getValue().equalsIgnoreCase("AltSwap") || fireSwitch.getValue().equalsIgnoreCase("AltPickup") ? 35 : 8);
 
@@ -93,11 +108,11 @@ public class PhaseModule extends Module {
                 }
             }
 
-            EUClient.ROTATION_MANAGER.packetRotate(yaw, pitch.getValue().intValue());
+            EUClient.ROTATION_MANAGER.packetRotate(yaw, throwPitch);
 
             InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
 
-            NetworkUtils.sendSequencedPacket(sequence -> new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, sequence, yaw, pitch.getValue().intValue()));
+            NetworkUtils.sendSequencedPacket(sequence -> new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, sequence, yaw, throwPitch));
             mc.getConnection().send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
 
             InventoryUtils.switchBack(autoSwitch.getValue(), slot, previousSlot);

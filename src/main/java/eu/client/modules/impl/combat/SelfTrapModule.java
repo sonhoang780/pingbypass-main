@@ -111,7 +111,12 @@ public class SelfTrapModule extends Module {
                     Direction supportDirection = WorldUtils.getDirection(supportPosition, placedPositions, strictDirection.getValue());
                     if (supportDirection == null) continue;
 
-                    WorldUtils.placeBlock(supportPosition, supportDirection, InteractionHand.MAIN_HAND, rotate.getValue(), crystalDestruction.getValue(), render.getValue());
+                    // Only count/reserve the slot as used when a block ACTUALLY placed -- a false
+                    // return means a crystal was in the way and only got attacked this tick (see
+                    // WorldUtils.placeBlock), and burning the per-tick limit on a no-op starved the
+                    // other, unblocked positions of their own attempt.
+                    if (!WorldUtils.placeBlock(supportPosition, supportDirection, InteractionHand.MAIN_HAND, rotate.getValue(), crystalDestruction.getValue(), render.getValue()))
+                        continue;
                     placedPositions.add(supportPosition);
                     blocksPlaced++;
 
@@ -122,7 +127,8 @@ public class SelfTrapModule extends Module {
                     if (direction == null) continue;
                 }
 
-                WorldUtils.placeBlock(position, direction, InteractionHand.MAIN_HAND, rotate.getValue(), crystalDestruction.getValue(), render.getValue());
+                if (!WorldUtils.placeBlock(position, direction, InteractionHand.MAIN_HAND, rotate.getValue(), crystalDestruction.getValue(), render.getValue()))
+                    continue;
                 placedPositions.add(position);
                 blocksPlaced++;
             }

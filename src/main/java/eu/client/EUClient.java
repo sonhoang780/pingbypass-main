@@ -65,8 +65,6 @@ public class EUClient implements ModInitializer {
 
 	public static PingBypassConfig PINGBYPASS_CONFIG;
 	public static ProxyServer PROXY_SERVER;
-	public static final eu.client.pingbypass.input.ClientInputService PB_CLIENT_INPUT = new eu.client.pingbypass.input.ClientInputService();
-	public static final eu.client.pingbypass.input.ServerInputService PB_SERVER_INPUT = new eu.client.pingbypass.input.ServerInputService();
 	public static final eu.client.pingbypass.modules.PbModuleManager PB_MODULE_MANAGER = new eu.client.pingbypass.modules.PbModuleManager();
 
 	@Override
@@ -126,12 +124,16 @@ public class EUClient implements ModInitializer {
 		MODULE_MANAGER = new ModuleManager();
 		COMMAND_MANAGER = new CommandManager();
 
-		// Initialize proxy modules now that MODULE_MANAGER is available
+		// Initialize proxy modules now that MODULE_MANAGER is available. AutoCrystal/AutoTotem are
+		// the only ones with a real earthhack proxy-side counterpart (ServerAutoCrystal/
+		// ServerAutoTotem) -- earthhack's own AutoTrap has zero PingBypass awareness and Surround
+		// is explicitly documented as "not recommended... on a PingBypass proxy" in its own
+		// description, neither ever got a server-side port there. ServerSurround/ServerAutoTrap
+		// were eu-client-only additions with no earthhack basis; removed so those two modules run
+		// as plain client-side dumb-pipe, matching earthhack.
 		if (PROXY_SERVER != null) {
 			PB_MODULE_MANAGER.register(new eu.client.pingbypass.modules.submodules.crystal.ServerAutoCrystal());
 			PB_MODULE_MANAGER.register(new eu.client.pingbypass.modules.submodules.totem.ServerAutoTotem());
-			PB_MODULE_MANAGER.register(new eu.client.pingbypass.modules.submodules.surround.ServerSurround());
-			PB_MODULE_MANAGER.register(new eu.client.pingbypass.modules.submodules.trap.ServerAutoTrap());
 		}
 	}
 

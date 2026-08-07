@@ -135,6 +135,15 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
 
     @Override
     public void handleMovePlayer(ServerboundMovePlayerPacket p) {
+        // Runs on the Netty IO thread. Matches earthhack's PbNetHandler.processPlayer, which
+        // defers the equivalent mc.player mutation to mc.addScheduledTask -- without that, this
+        // races the render thread's own tick()/move() (now cancelled above for the ghost, but
+        // still reads/builds the outgoing packet from mc.player in sendPosition()) touching the
+        // same mc.player fields concurrently, corrupting the position mid-write.
+        Minecraft.getInstance().execute(() -> handleMovePlayer0(p));
+    }
+
+    private void handleMovePlayer0(ServerboundMovePlayerPacket p) {
         // Sync proxy state so modules can read player position
         Minecraft mc = Minecraft.getInstance();
         if (mc.player != null) {
@@ -169,17 +178,54 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
                 mc.player.setXRot(p.getXRot(mc.player.getXRot()));
             }
             mc.player.setOnGround(p.isOnGround());
+            // ServerboundMovePlayerPacket packs horizontalCollision into EVERY movement packet's
+            // flags byte (Pos/PosRot/Rot all take it), and vanilla's sendPosition() reads it
+            // straight off mc.player.horizontalCollision (an Entity field only ever updated by
+            // real physics collision in move()) -- which is cancelled entirely for this ghost now.
+            // It was frozen at whatever it happened to be the instant physics got disabled and
+            // never changed again, so EVERY regular movement packet (not just the rotation
+            // packets modules build by hand, which already read PingBypassFlags.
+            // clientHorizontalCollision) carried a stale, usually-wrong flag to the real server --
+            // that's the rubberbanding on every move/jump/fall, not just while a module rotates.
+            mc.player.horizontalCollision = p.horizontalCollision();
+
+            // Matches earthhack's MotionUpdateHelper: setPosition() immediately followed by a
+            // synchronous invokeUpdateWalkingPlayer() call in the SAME scheduled task -- one
+            // outgoing packet per incoming client packet, right away. This used to instead rely on
+            // the ghost's own tick()-driven sendPosition() (ClientPlayerEntityMixin) picking the
+            // new position up on ITS OWN next tick, decoupled from when this handler actually ran.
+            // If multiple client movement packets landed within a single ghost tick (bursty
+            // delivery, or simply the ghost's tick cadence drifting out of phase with incoming
+            // packets), only the LAST one before that tick's sendPosition() call ever got relayed
+            // -- the real server saw fewer, larger position jumps than the client actually made,
+            // which is exactly what real-server anti-cheat speed/distance checks correct: the
+            // rubberbanding on every move/jump/fall. Send immediately instead of waiting.
+            // Now that ProxyServerTickListener also blacklists ServerboundMovePlayerPacket (matches
+            // earthhack's Pb2SManager -- the ghost's own movement sends are blocked by default),
+            // this explicit send needs the same authorization MotionUpdateHelper gives its own
+            // invokeUpdateWalkingPlayer() call (PACKET_MANAGER.allowAllOnThisThread(true)).
+            ProxyServerTickListener.allowSend(() ->
+                    ((eu.client.mixins.accessors.ClientPlayerEntityAccessor) mc.player).invokeSendMovementPackets());
         }
-        // The rotation-piggyback patch that used to live here (rewriting the client's forwarded
-        // movement packet with an active RotationManager rotation, plus the clientOnGround/
-        // clientHorizontalCollision flag mirror it depended on) is obsolete now that raw-input
-        // forwarding (see ClientPlayerEntityMixin/ServerInputService) is the sole source of
-        // movement/rotation once connected -- the client no longer sends its own movement
-        // packets at all in that mode, so there is nothing left to piggyback onto. This handler
-        // now only mirrors the client's forwarded packet onto the proxy's ghost player state
-        // above (position/fallDistance/rotation/onGround) for modules that read it, and forwards
-        // the packet unchanged.
-        forward(p);
+        // Record exactly what the client reported so proxy-side modules injecting their own
+        // rotation packets can echo the same flags back instead of inventing their own from the
+        // ghost player. onGround is mirrored onto mc.player above, but horizontalCollision has
+        // no such mirror -- the ghost never runs collision, so mc.player.horizontalCollision is
+        // permanently stale. A rotation packet carrying a horizontalCollision that contradicts
+        // the client's own forwarded movement packets makes the real server correct the player:
+        // the rubberbanding seen only while moving with AutoCrystal/SpeedMine rotating.
+        eu.client.pingbypass.PingBypassFlags.clientOnGround = p.isOnGround();
+        eu.client.pingbypass.PingBypassFlags.clientHorizontalCollision = p.horizontalCollision();
+
+        // No forward(p) here: the client's raw movement packet is NOT relayed to the real
+        // server. mc.player (the proxy's own ghost) was just repositioned above, and
+        // invokeSendMovementPackets() was just called synchronously to build+send a FRESH
+        // movement packet on the proxy's own connection to the real server right away, exactly
+        // like earthhack's MotionUpdateHelper.makeMotionUpdate()+invokeUpdateWalkingPlayer(). That
+        // path is also where RotationManager's queued rotation gets substituted in before the
+        // send (ClientPlayerEntityMixin's WrapOperation), so proxy-side aim modules
+        // (ServerAutoCrystal etc) always land in the same single outgoing packet rather than
+        // racing a second, separately-injected one.
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -265,7 +311,17 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
 
     @Override public void handleAnimate(ServerboundSwingPacket p) { forward(p); }
     @Override public void handleContainerClick(ServerboundContainerClickPacket p) {
-        // Replay the click on the proxy's container so its inventory stays in sync
+        // Like movement: don't dumb-pipe the client's raw packet. It carries the CLIENT's own
+        // container's stateId/changedSlots-prediction, which is tracked independently from the
+        // PROXY's own container instance (the one the real server is actually validating
+        // against) -- forwarding it as-is desyncs the transaction sequence, matching earthhack's
+        // real PbNetHandler.processClickWindow: replay the click on the proxy's own container,
+        // then build+send a FRESH packet carrying the proxy's own container's stateId.
+        // changedSlots/carriedItem are the client's local slot-prediction shortcut for the
+        // server to skip a full resync -- we don't have that prediction on the proxy's side, so
+        // send HashedStack.EMPTY/no predicted slots; worst case the server does a full
+        // resync (ContainerSetContent) instead of trusting the prediction, same as vanilla
+        // falls back to when the prediction hash doesn't match.
         Minecraft mc = Minecraft.getInstance();
         if (mc.player != null) {
             mc.execute(() -> {
@@ -275,10 +331,14 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
                                     ? mc.player.containerMenu
                                     : mc.player.inventoryMenu;
                     handler.clicked(p.slotNum(), p.buttonNum(), p.containerInput(), mc.player);
+                    var freshPacket = new ServerboundContainerClickPacket(
+                            p.containerId(), handler.getStateId(), p.slotNum(), p.buttonNum(),
+                            p.containerInput(), it.unimi.dsi.fastutil.ints.Int2ObjectMaps.emptyMap(),
+                            net.minecraft.network.HashedStack.EMPTY);
+                    forward(freshPacket);
                 } catch (Exception ignored) {}
             });
         }
-        forward(p);
     }
     @Override public void handleContainerClose(ServerboundContainerClosePacket p) { forward(p); }
     @Override public void handleSetCarriedItem(ServerboundSetCarriedItemPacket p) {
@@ -319,7 +379,16 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
     @Override public void handleSpectateEntity(net.minecraft.network.protocol.game.ServerboundSpectateEntityPacket p) { forward(p); }
     @Override public void handleResourcePackResponse(net.minecraft.network.protocol.common.ServerboundResourcePackPacket p) { forward(p); }
     @Override public void handleCookieResponse(ServerboundCookieResponsePacket p) { forward(p); }
-    @Override public void handleAcceptTeleportPacket(ServerboundAcceptTeleportationPacket p) { /* proxy already confirmed */ }
+    // Was a no-op ("proxy already confirmed") -- inverted from earthhack's real PbNetHandler,
+    // which forwards the REAL client's confirm and blocks the ghost's own (Pb2SManager). The
+    // ghost applies+confirms a teleport the instant it's forwarded, before the real client (which
+    // is still catching up over real network latency) has even seen it -- the real server then
+    // sees the ghost's later, pre-teleport-confirm movement packets as "moved wrongly" and
+    // re-teleports, which the ghost re-confirms instantly again: a self-sustaining rubberband
+    // loop for as long as the real client lags behind. Forwarding the real client's own confirm
+    // instead means the real server keeps ignoring stale positions (matches vanilla
+    // ServerGamePacketListenerImpl.updateAwaitingTeleport) until the real client has actually caught up.
+    @Override public void handleAcceptTeleportPacket(ServerboundAcceptTeleportationPacket p) { forward(p); }
     @Override public void handleChunkBatchReceived(net.minecraft.network.protocol.game.ServerboundChunkBatchReceivedPacket p) { forward(p); }
     @Override public void handleClientTickEnd(ServerboundClientTickEndPacket p) { forward(p); }
     @Override public void handleConfigurationAcknowledged(net.minecraft.network.protocol.game.ServerboundConfigurationAcknowledgedPacket p) { forward(p); }
@@ -435,6 +504,19 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
                         handleSettingChange(pkt);
                     }
                 }
+                case eu.client.pingbypass.protocol.packets.C2SOpenInventoryPacket.ID -> {
+                    var pkt = new eu.client.pingbypass.protocol.packets.C2SOpenInventoryPacket(buf);
+                    Minecraft.getInstance().execute(() -> {
+                        Minecraft mc = Minecraft.getInstance();
+                        if (mc.player == null) return;
+                        if (pkt.isOpen()) {
+                            mc.setScreen(new net.minecraft.client.gui.screens.inventory.InventoryScreen(mc.player));
+                        } else if (mc.screen instanceof net.minecraft.client.gui.screens.inventory.InventoryScreen inv
+                                && inv.getMenu() == mc.player.inventoryMenu) {
+                            mc.setScreen(null);
+                        }
+                    });
+                }
                 case eu.client.pingbypass.protocol.packets.C2SFriendSyncPacket.ID -> {
                     var pkt = new eu.client.pingbypass.protocol.packets.C2SFriendSyncPacket(buf);
                     Minecraft.getInstance().execute(() -> {
@@ -442,18 +524,6 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
                         for (String friend : pkt.getFriends()) EUClient.FRIEND_MANAGER.add(friend);
                         LOGGER.info("[PB] Synced {} friend(s) from client", pkt.getFriends().size());
                     });
-                }
-                case eu.client.pingbypass.protocol.packets.C2SInputKeyPacket.ID -> {
-                    var pkt = new eu.client.pingbypass.protocol.packets.C2SInputKeyPacket(buf);
-                    Minecraft.getInstance().execute(() -> EUClient.PB_SERVER_INPUT.onKeyTransition(pkt.getKey(), pkt.getScancode(), pkt.getModifiers(), pkt.isPressed()));
-                }
-                case eu.client.pingbypass.protocol.packets.C2SInputMousePacket.ID -> {
-                    var pkt = new eu.client.pingbypass.protocol.packets.C2SInputMousePacket(buf);
-                    Minecraft.getInstance().execute(() -> EUClient.PB_SERVER_INPUT.onMouseTransition(pkt.getButton(), pkt.getModifiers(), pkt.isPressed()));
-                }
-                case eu.client.pingbypass.protocol.packets.C2SInputLookPacket.ID -> {
-                    var pkt = new eu.client.pingbypass.protocol.packets.C2SInputLookPacket(buf);
-                    Minecraft.getInstance().execute(() -> EUClient.PB_SERVER_INPUT.onLookDelta(pkt.getDeltaX(), pkt.getDeltaY()));
                 }
                 default -> LOGGER.debug("[PB] Unknown packet ID: {}", packetId);
             }

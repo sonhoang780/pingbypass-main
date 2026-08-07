@@ -36,7 +36,10 @@ public class InventoryCleanerModule extends Module {
                 if (mc.player.getInventory().getItem(i).isEmpty()) continue;
 
                 Item item = mc.player.getInventory().getItem(i).getItem();
-                if (whitelist.isWhitelistContains(item)) continue;
+                // Was "keep listed items, drop everything else" -- inverted to match the setting's
+                // name: Whitelist now means "only these get dropped", everything not listed stays
+                // (an empty whitelist means nothing is targeted, so nothing gets dropped).
+                if (!whitelist.isWhitelistContains(item)) continue;
 
                 mc.gameMode.handleContainerInput(mc.player.containerMenu.containerId, InventoryUtils.indexToSlot(i), 0, ContainerInput.PICKUP, mc.player);
                 mc.gameMode.handleContainerInput(mc.player.containerMenu.containerId, -999, 0, ContainerInput.PICKUP, mc.player);

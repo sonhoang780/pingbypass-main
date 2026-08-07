@@ -153,4 +153,23 @@ public class KeyboardUtils {
             }
         };
     }
+
+    /**
+     * Whether a BindSetting's raw value (positive = GLFW keyboard key, negative = -(button) - 1
+     * mouse button, matching ModuleManager's key/mouse dispatch) is currently physically held.
+     * Used for BindSetting's Hold/ReverseHold modes.
+     */
+    public static boolean isBindDown(int bind) {
+        if (bind == 0) return false;
+
+        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc.getWindow() == null) return false;
+
+        if (bind >= 0) {
+            return InputConstants.isKeyDown(mc.getWindow(), bind);
+        }
+
+        int button = -bind - 1;
+        return GLFW.glfwGetMouseButton(mc.getWindow().handle(), button) == GLFW.GLFW_PRESS;
+    }
 }

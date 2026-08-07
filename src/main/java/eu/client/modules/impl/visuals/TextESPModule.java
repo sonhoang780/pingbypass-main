@@ -9,6 +9,7 @@ import eu.client.modules.RegisterModule;
 import eu.client.settings.impl.BooleanSetting;
 import eu.client.settings.impl.ColorSetting;
 import eu.client.settings.impl.NumberSetting;
+import eu.client.settings.impl.WhitelistSetting;
 import eu.client.utils.graphics.Renderer3D;
 import eu.client.utils.minecraft.EntityUtils;
 import net.minecraft.world.entity.Entity;
@@ -25,11 +26,13 @@ import java.util.ArrayList;
 @RegisterModule(name = "TextESP", description = "Renders text ESP on the world.", category = Module.Category.VISUALS)
 public class TextESPModule extends Module {
     public BooleanSetting items = new BooleanSetting("Items", "Renders text ESP on item entities.", true);
+    public WhitelistSetting itemWhitelist = new WhitelistSetting("ItemWhitelist", "Only render text ESP on these items. Empty means nothing renders.", new BooleanSetting.Visibility(items, true), WhitelistSetting.Type.ITEMS);
     public BooleanSetting pearls = new BooleanSetting("Pearls", "Renders text ESP on pearl entities.", true);
     public BooleanSetting chorus = new BooleanSetting("Chorus", "Renders text ESP on chorus sounds.", true);
 
     public NumberSetting scale = new NumberSetting("Scale", "The scaling that will be applied to the text ESP rendering.", 30, 10, 100);
     public ColorSetting color = new ColorSetting("Color", "The color that will be used for the text ESP rendering.", new ColorSetting.Color(Color.WHITE, false, false));
+    // Reuses NameTagsModule's own Threshold/Intensity -- both just arm the same star_glow_text pass.
 
     private final ArrayList<Chorus> chorusList = new ArrayList<>();
 
@@ -55,7 +58,7 @@ public class TextESPModule extends Module {
         for(Entity e : mc.level.entitiesForRendering()) {
             if(!Renderer3D.isFrustumVisible(e.getBoundingBox())) continue;
 
-            if(e instanceof ItemEntity item && items.getValue()) {
+            if(e instanceof ItemEntity item && items.getValue() && itemWhitelist.isWhitelistContains(item.getItem().getItem())) {
                 Vec3 pos = EntityUtils.getRenderPos(item, event.getTickDelta());
                 String s = item.getName().getString() + (item.getItem().getCount() > 1 ? " x" + item.getItem().getCount() : "");
                 Renderer3D.renderScaledText(event.getMatrices(), s, pos.x, pos.y, pos.z, scale.getValue().intValue(), false, color.getColor());

@@ -97,20 +97,32 @@ public class SelfFillModule extends Module {
             return;
         }
 
+        // proxyEnhanced -- can run directly on the proxy. ProxyServerTickListener blacklists
+        // ServerboundMovePlayerPacket by default now (matches earthhack's Pb2SManager); wrap
+        // these deliberate sends in allowSend so the proxy doesn't silently drop them. No-op on
+        // the client.
         if (jumpMode.getValue().equals("Packet")) {
-            mc.player.connection.send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY() + 0.4, mc.player.getZ(), false, mc.player.horizontalCollision));
-            mc.player.connection.send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY() + 0.75, mc.player.getZ(), false, mc.player.horizontalCollision));
-            mc.player.connection.send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY() + 1.01, mc.player.getZ(), false, mc.player.horizontalCollision));
-            mc.player.connection.send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY() + (jumpMode.getValue().equalsIgnoreCase("Packet") && burrow.getValue().equalsIgnoreCase("Bypass") ? 0.99999992 : 1.15), mc.player.getZ(), false, mc.player.horizontalCollision));
+            eu.client.pingbypass.server.ProxyServerTickListener.allowSend(() -> {
+                mc.player.connection.send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY() + 0.4, mc.player.getZ(), false, mc.player.horizontalCollision));
+                mc.player.connection.send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY() + 0.75, mc.player.getZ(), false, mc.player.horizontalCollision));
+                mc.player.connection.send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY() + 1.01, mc.player.getZ(), false, mc.player.horizontalCollision));
+                mc.player.connection.send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY() + (jumpMode.getValue().equalsIgnoreCase("Packet") && burrow.getValue().equalsIgnoreCase("Bypass") ? 0.99999992 : 1.15), mc.player.getZ(), false, mc.player.horizontalCollision));
+            });
         }
 
         InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
-        WorldUtils.placeBlock(lastPosition, direction, InteractionHand.MAIN_HAND, !(jumpMode.getValue().equalsIgnoreCase("Packet") && burrow.getValue().equalsIgnoreCase("Bypass")) && rotate.getValue(), crystalDestruction.getValue(), render.getValue());
+        // false = a crystal was sitting on the target spot and only got attacked this tick (see
+        // WorldUtils.placeBlock's comment) -- retry next tick instead of disabling permanently
+        // after a single attack-only attempt (this module only ever gets ONE shot otherwise).
+        boolean placed = WorldUtils.placeBlock(lastPosition, direction, InteractionHand.MAIN_HAND, !(jumpMode.getValue().equalsIgnoreCase("Packet") && burrow.getValue().equalsIgnoreCase("Bypass")) && rotate.getValue(), crystalDestruction.getValue(), render.getValue());
         InventoryUtils.switchBack(autoSwitch.getValue(), slot, previousSlot);
+        if (!placed) return;
 
         if (jumpMode.getValue().equals("Packet") && burrow.getValue().equalsIgnoreCase("Bypass")) {
-            mc.player.connection.send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY() + 1.15, mc.player.getZ(), mc.player.onGround(), mc.player.horizontalCollision));
-            mc.player.connection.send(new ServerboundMovePlayerPacket.PosRot(mc.player.getX(), mc.player.getY(), mc.player.getZ(), mc.player.getYRot(), mc.player.getXRot(), mc.player.onGround(), mc.player.horizontalCollision));
+            eu.client.pingbypass.server.ProxyServerTickListener.allowSend(() -> {
+                mc.player.connection.send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY() + 1.15, mc.player.getZ(), mc.player.onGround(), mc.player.horizontalCollision));
+                mc.player.connection.send(new ServerboundMovePlayerPacket.PosRot(mc.player.getX(), mc.player.getY(), mc.player.getZ(), mc.player.getYRot(), mc.player.getXRot(), mc.player.onGround(), mc.player.horizontalCollision));
+            });
             mc.player.setPos(mc.player.getX(), mc.player.getY(), mc.player.getZ());
         }
 

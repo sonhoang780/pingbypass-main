@@ -4,6 +4,7 @@ import eu.client.EUClient;
 import eu.client.gui.ClickGuiScreen;
 import eu.client.gui.PingBypassScreen;
 import eu.client.modules.impl.core.ClickGuiModule;
+import eu.client.modules.impl.core.MenuModule;
 import eu.client.utils.color.ColorUtils;
 import eu.client.utils.graphics.Renderer2D;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -27,15 +28,25 @@ import java.util.List;
  */
 public class MainMenuScreen extends Screen {
     private final List<Entry> entries = new ArrayList<>();
+    private final CozyMenuBackground cozyBackground = new CozyMenuBackground();
+    private final CozyGlowCapture textGlow = new CozyGlowCapture();
 
     public MainMenuScreen() {
         super(Component.literal(EUClient.MOD_NAME));
+    }
+
+    private static boolean isCozy() {
+        return EUClient.MODULE_MANAGER.getModule(MenuModule.class).style.getValue().equalsIgnoreCase("Cozy");
     }
 
     @Override
     protected void init() {
         entries.clear();
 
+        if (isCozy()) initCozy(); else initClassic();
+    }
+
+    private void initClassic() {
         int buttonWidth = 230;
         int buttonHeight = 22;
         int spacing = 6;
@@ -44,23 +55,52 @@ public class MainMenuScreen extends Screen {
         int x = width / 2 - buttonWidth / 2;
         int y = height / 2 - 18;
 
-        entries.add(new Entry("Singleplayer", x, y, buttonWidth, buttonHeight,
+        entries.add(new Entry("Singleplayer", x, y, buttonWidth, buttonHeight, true,
                 () -> this.minecraft.setScreen(new SelectWorldScreen(this))));
         y += buttonHeight + spacing;
 
-        entries.add(new Entry("Multiplayer", x, y, buttonWidth, buttonHeight,
+        entries.add(new Entry("Multiplayer", x, y, buttonWidth, buttonHeight, true,
                 () -> this.minecraft.setScreen(new JoinMultiplayerScreen(this))));
         y += buttonHeight + spacing;
 
-        entries.add(new Entry("PingBypass", x, y, buttonWidth, buttonHeight,
+        entries.add(new Entry("PingBypass", x, y, buttonWidth, buttonHeight, true,
                 () -> this.minecraft.setScreen(new PingBypassScreen(this))));
         y += buttonHeight + spacing;
 
         // Two half-width buttons sharing one row.
         int half = (buttonWidth - spacing) / 2;
-        entries.add(new Entry("Options", x, y, half, buttonHeight,
+        entries.add(new Entry("Options", x, y, half, buttonHeight, true,
                 () -> this.minecraft.setScreen(new OptionsScreen(this, this.minecraft.options, false))));
-        entries.add(new Entry("Quit", x + half + spacing, y, buttonWidth - half - spacing, buttonHeight,
+        entries.add(new Entry("Quit", x + half + spacing, y, buttonWidth - half - spacing, buttonHeight, true,
+                () -> this.minecraft.stop()));
+    }
+
+    // Left-anchored vertical list, transparent (no background fill/left bar, just text + a
+    // centre-out underline on hover) -- matches the Claude Design mockup's menu block.
+    private void initCozy() {
+        int buttonWidth = 260;
+        int buttonHeight = 32;
+        int spacing = 20;
+        int x = 96;
+        int y = height / 2 - 10;
+
+        entries.add(new Entry("Singleplayer", x, y, buttonWidth, buttonHeight, false,
+                () -> this.minecraft.setScreen(new SelectWorldScreen(this))));
+        y += buttonHeight + spacing;
+
+        entries.add(new Entry("Multiplayer", x, y, buttonWidth, buttonHeight, false,
+                () -> this.minecraft.setScreen(new JoinMultiplayerScreen(this))));
+        y += buttonHeight + spacing;
+
+        entries.add(new Entry("PingBypass", x, y, buttonWidth, buttonHeight, false,
+                () -> this.minecraft.setScreen(new PingBypassScreen(this))));
+        y += buttonHeight + spacing;
+
+        entries.add(new Entry("Options", x, y, buttonWidth, buttonHeight, false,
+                () -> this.minecraft.setScreen(new OptionsScreen(this, this.minecraft.options, false))));
+        y += buttonHeight + spacing;
+
+        entries.add(new Entry("Quit", x, y, buttonWidth, buttonHeight, false,
                 () -> this.minecraft.stop()));
     }
 
@@ -68,10 +108,11 @@ public class MainMenuScreen extends Screen {
     public void extractRenderState(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta) {
         super.extractRenderState(context, mouseX, mouseY, delta);
 
-        renderLogo(context);
+        if (isCozy()) renderCozyPanel(context);
+        else renderLogo(context);
 
         for (Entry entry : entries) {
-            entry.render(context, mouseX, mouseY, delta);
+            entry.render(context, mouseX, mouseY, delta, textGlow, width, height);
         }
 
         renderFooter(context);
@@ -79,9 +120,36 @@ public class MainMenuScreen extends Screen {
 
     @Override
     public void extractBackground(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta) {
+        if (isCozy()) {
+            cozyBackground.render(context, width, height, mouseX, mouseY);
+            return;
+        }
+
         // Vertical gradient — slightly lighter at the top, fading into near-black at the bottom.
         Renderer2D.renderGradient(context, 0, 0, width, height,
                 new Color(18, 14, 30), new Color(8, 6, 14));
+    }
+
+    @Override
+    public void removed() {
+        super.removed();
+        cozyBackground.close();
+        textGlow.close();
+    }
+
+    private void renderCozyPanel(GuiGraphicsExtractor context) {
+        int panelX = 60;
+        int titleY = height / 2 - 110;
+
+        String title = "EU CLIENT";
+        Color accent = accentColor(255);
+        EUClient.FONT_MANAGER.drawTextWithShadow(context, title, panelX, titleY, new Color(244, 220, 174));
+
+        int underlineY = titleY + EUClient.FONT_MANAGER.getHeight() + 10;
+        Renderer2D.renderQuad(context, panelX, underlineY, panelX + 160, underlineY + 1, new Color(230, 180, 110, 180));
+
+        String subtitle = "v" + EUClient.MOD_VERSION + " • MC " + EUClient.MINECRAFT_VERSION;
+        EUClient.FONT_MANAGER.drawTextWithShadow(context, subtitle, panelX, underlineY + 10, new Color(200, 170, 130, 160));
     }
 
     private void renderLogo(GuiGraphicsExtractor context) {
@@ -159,15 +227,20 @@ public class MainMenuScreen extends Screen {
     private static class Entry {
         private final String label;
         private final int x, y, width, height;
+        // Classic = filled panel look (background tint + left accent bar + centred label).
+        // Cozy (panel=false) = the mockup's transparent list item: no fill/bar, left-aligned
+        // warm-gold text that brightens on hover, same centre-out underline either way.
+        private final boolean panel;
         private final Runnable action;
         private float hover;
 
-        private Entry(String label, int x, int y, int width, int height, Runnable action) {
+        private Entry(String label, int x, int y, int width, int height, boolean panel, Runnable action) {
             this.label = label;
             this.x = x;
             this.y = y;
             this.width = width;
             this.height = height;
+            this.panel = panel;
             this.action = action;
         }
 
@@ -175,35 +248,65 @@ public class MainMenuScreen extends Screen {
             return mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + height;
         }
 
-        private void render(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta) {
+        private void render(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta, CozyGlowCapture textGlow, int screenWidth, int screenHeight) {
             float target = isHovered(mouseX, mouseY) ? 1f : 0f;
             hover += (target - hover) * 0.2f;
 
-            Color accent = accentColor(255);
+            // Cozy always uses a fixed warm gold, not the user's globally-configured ClickGui
+            // accent (which defaults to blue) -- the mockup's underline is a fixed amber-orange
+            // gradient (#ffb85c -> #ff7a3c), not theme-driven.
+            Color accent = panel ? accentColor(255) : new Color(255, 145, 70);
 
-            // Background darkens a touch towards the accent as you hover over it.
-            Color base = ColorUtils.getColor(new Color(
-                    (int) (24 + (accent.getRed() - 24) * 0.18f * hover),
-                    (int) (20 + (accent.getGreen() - 20) * 0.18f * hover),
-                    (int) (32 + (accent.getBlue() - 32) * 0.18f * hover)), 220);
-            Renderer2D.renderQuad(context, x, y, x + width, y + height, base);
+            if (panel) {
+                // Background darkens a touch towards the accent as you hover over it.
+                Color base = ColorUtils.getColor(new Color(
+                        (int) (24 + (accent.getRed() - 24) * 0.18f * hover),
+                        (int) (20 + (accent.getGreen() - 20) * 0.18f * hover),
+                        (int) (32 + (accent.getBlue() - 32) * 0.18f * hover)), 220);
+                Renderer2D.renderQuad(context, x, y, x + width, y + height, base);
 
-            // Left accent bar grows in from nothing as the item lights up.
-            float bar = 3f * hover;
-            if (bar > 0.1f) {
-                Renderer2D.renderQuad(context, x, y, x + bar, y + height, accent);
+                // Left accent bar grows in from nothing as the item lights up.
+                float bar = 3f * hover;
+                if (bar > 0.1f) {
+                    Renderer2D.renderQuad(context, x, y, x + bar, y + height, accent);
+                }
             }
 
-            // Thin underline that expands from the centre on hover.
-            float underline = (width / 2f) * hover;
-            Renderer2D.renderQuad(context, x + width / 2f - underline, y + height - 1,
-                    x + width / 2f + underline, y + height, accent);
+            if (panel) {
+                // Classic: thin underline that expands from the centre on hover.
+                float underline = (width / 2f) * hover;
+                Renderer2D.renderQuad(context, x + width / 2f - underline, y + height - 1,
+                        x + width / 2f + underline, y + height, accent);
+            } else {
+                // Cozy: left-anchored underline (matches the mockup's `left:0; width:var(--uw)`
+                // -- grows out from and retracts back into the left edge, not the centre, since
+                // the label itself is left-aligned here).
+                float underline = width * hover;
+                Renderer2D.renderQuad(context, x, y + height - 1, x + underline, y + height, accent);
+            }
 
-            Color textColor = lerp(new Color(200, 200, 210), Color.WHITE, hover);
-            int labelWidth = EUClient.FONT_MANAGER.getWidth(label);
-            int textX = x + width / 2 - labelWidth / 2;
+            Color textColor = panel ? lerp(new Color(200, 200, 210), Color.WHITE, hover)
+                    : lerp(new Color(224, 196, 152), new Color(255, 220, 168), hover);
             int textY = y + height / 2 - EUClient.FONT_MANAGER.getHeight() / 2;
-            EUClient.FONT_MANAGER.drawTextWithShadow(context, label, textX, textY, textColor);
+
+            if (panel) {
+                int labelWidth = EUClient.FONT_MANAGER.getWidth(label);
+                int textX = x + width / 2 - labelWidth / 2;
+                EUClient.FONT_MANAGER.drawTextWithShadow(context, label, textX, textY, textColor);
+            } else {
+                String text = label.toUpperCase(java.util.Locale.ROOT);
+
+                // Real GPU-blurred glow (CozyGlowCapture: draw the label into a scratch target,
+                // box-blur it, composite back) instead of a faked soft quad behind the text.
+                if (hover > 0.02f) {
+                    textGlow.beginCapture(screenWidth, screenHeight);
+                    textGlow.captureText(text, x, textY, 0xFFFFFFFF);
+                    textGlow.endCapture();
+                    textGlow.blurAndComposite(context, screenWidth, screenHeight);
+                }
+
+                EUClient.FONT_MANAGER.drawTextWithShadow(context, text, x, textY, textColor);
+            }
         }
 
         private static Color lerp(Color from, Color to, float t) {

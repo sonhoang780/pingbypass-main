@@ -11,6 +11,7 @@ import eu.client.modules.impl.combat.AutoCrystalModule;
 import eu.client.modules.impl.core.RendersModule;
 import eu.client.utils.IMinecraft;
 import eu.client.utils.animations.Easing;
+import eu.client.utils.graphics.EspShader;
 import eu.client.utils.graphics.Renderer2D;
 import eu.client.utils.graphics.Renderer3D;
 import eu.client.utils.minecraft.WorldUtils;
@@ -25,6 +26,7 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.phys.Vec3;
 
 import java.awt.*;
+import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 public class RenderManager implements IMinecraft {
@@ -94,10 +96,41 @@ public class RenderManager implements IMinecraft {
             if (autoCrystalModule.mode.getValue().equals("Shrink")) box = MathUtils.getBox(renderPosition).deflate(0.5).inflate(Mth.clamp(scale / 2.0, 0.0, 0.5));
         }
 
-        if (autoCrystalModule.renderMode.getValue().equalsIgnoreCase("Fill") || autoCrystalModule.renderMode.getValue().equalsIgnoreCase("Both"))
-            Renderer3D.renderGradientBox(event.getMatrices(), box, EUClient.MODULE_MANAGER.getModule(RendersModule.class).getColor(autoCrystalModule.mode.getValue(), autoCrystalModule.fillColorUp.getColor(), scale), EUClient.MODULE_MANAGER.getModule(RendersModule.class).getColor(autoCrystalModule.mode.getValue(), autoCrystalModule.fillColorDown.getColor(), scale));
-        if (autoCrystalModule.renderMode.getValue().equalsIgnoreCase("Outline") || autoCrystalModule.renderMode.getValue().equalsIgnoreCase("Both"))
-            Renderer3D.renderGradientBoxOutline(event.getMatrices(), box, EUClient.MODULE_MANAGER.getModule(RendersModule.class).getColor(autoCrystalModule.mode.getValue(), autoCrystalModule.outlineColorUp.getColor(), scale), EUClient.MODULE_MANAGER.getModule(RendersModule.class).getColor(autoCrystalModule.mode.getValue(), autoCrystalModule.outlineColorDown.getColor(), scale));
+        RendersModule renders = EUClient.MODULE_MANAGER.getModule(RendersModule.class);
+        boolean fill = autoCrystalModule.renderMode.getValue().equalsIgnoreCase("Fill") || autoCrystalModule.renderMode.getValue().equalsIgnoreCase("Both");
+        boolean outline = autoCrystalModule.renderMode.getValue().equalsIgnoreCase("Outline") || autoCrystalModule.renderMode.getValue().equalsIgnoreCase("Both");
+
+        // Shader != None routes the exact same geometry into Renderer3D's SHADER_* lists instead, so
+        // the animated fragment shader replaces the flat fill/outline colors. The configured colors
+        // still matter: only their ALPHA survives (the shader multiplies vertexColor.a), which is how
+        // Sydney faded the shaded box in and out with the place animation.
+        int effect = EspShader.modeIndex(autoCrystalModule.shader.getValue());
+        List<Renderer3D.VertexCollection> quadSink = effect == 0 ? Renderer3D.QUADS : Renderer3D.SHADER_QUADS;
+        List<Renderer3D.VertexCollection> lineSink = effect == 0 ? Renderer3D.DEBUG_LINES : Renderer3D.SHADER_DEBUG_LINES;
+
+        if (effect != 0) {
+            float speed = autoCrystalModule.shaderSpeed.getValue().floatValue();
+            float step = autoCrystalModule.shaderStep.getValue().floatValue();
+            // Sydney folded speed (and, for Gradient only, step) straight into `time` rather than
+            // uploading them as animation-rate uniforms -- keep that or Gradient scrolls at a
+            // completely different rate than it did there.
+            float time = (System.currentTimeMillis() % 2000000L) / 1000.0f * speed * (effect == 1 ? step : 1.0f);
+            float distance = autoCrystalModule.shaderDistanceScaling.getValue()
+                    ? (float) Math.sqrt(mc.player.distanceToSqr(box.getCenter()))
+                    : 1.0f;
+
+            EspShader.setSettings(new EspShader.Settings(effect, time, step,
+                    autoCrystalModule.shaderOpacity.getValue().floatValue() / 100.0f, distance,
+                    effect == 7 ? autoCrystalModule.shaderGlowColor.getColor() : autoCrystalModule.shaderColor1.getColor(),
+                    autoCrystalModule.shaderColor2.getColor(),
+                    autoCrystalModule.shaderColor3.getColor(),
+                    autoCrystalModule.shaderColor4.getColor()));
+        }
+
+        if (fill)
+            Renderer3D.renderGradientBox(quadSink, event.getMatrices(), box, renders.getColor(autoCrystalModule.mode.getValue(), autoCrystalModule.fillColorUp.getColor(), scale), renders.getColor(autoCrystalModule.mode.getValue(), autoCrystalModule.fillColorDown.getColor(), scale));
+        if (outline)
+            Renderer3D.renderGradientBoxOutline(lineSink, event.getMatrices(), box, renders.getColor(autoCrystalModule.mode.getValue(), autoCrystalModule.outlineColorUp.getColor(), scale), renders.getColor(autoCrystalModule.mode.getValue(), autoCrystalModule.outlineColorDown.getColor(), scale));
     }
 
     @SubscribeEvent

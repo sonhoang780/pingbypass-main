@@ -25,9 +25,11 @@ import net.minecraft.network.protocol.game.ServerboundSwingPacket;
 import net.minecraft.network.protocol.game.ServerboundAttackPacket;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
 import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
+import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
 import net.minecraft.network.protocol.game.ClientboundSoundPacket;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.sounds.SoundEvents;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.phys.AABB;
@@ -55,6 +57,11 @@ public class SurroundModule extends Module {
     public BooleanSetting floor = new BooleanSetting("Floor", "Places blocks under your feet as well.", true);
     public BooleanSetting extension = new BooleanSetting("Extension", "Extends the surround if there are entities obstructing block placement.", true);
     public BooleanSetting whileEating = new BooleanSetting("WhileEating", "Places blocks normally while eating.", true);
+    // Ported from Sydney-Legacy's Surround -- both were declared-but-dropped during the port
+    // (ClientboundBlockUpdatePacket sat imported and unused; there was no PlayerPositionLook
+    // handling at all).
+    public BooleanSetting chorusCenter = new BooleanSetting("CenterOnTP", "Centers you if you have just teleported to surround against crystals easier.", true);
+    public BooleanSetting predict = new BooleanSetting("Predict", "Replaces a surround block instantly the moment we see the server's own break packet for it, instead of waiting for the next normal placement cycle.", true);
 
     public BooleanSetting selfDisable = new BooleanSetting("SelfDisable", "Toggles off the module once it is finished with placing.", false);
     public BooleanSetting jumpDisable = new BooleanSetting("JumpDisable", "Toggles off the module whenever your Y level changes.", true);
@@ -70,12 +77,20 @@ public class SurroundModule extends Module {
 
     private int ticks = 0;
     private int blocksPlaced = 0;
+    // Set when the server acks a chorus-fruit teleport while chorusCenter is on -- the actual
+    // re-center happens on the NEXT player-update tick (the teleport packet itself only carries
+    // the new position; mc.player's own position needs a tick to actually reflect it here).
+    private boolean awaitChorusCenter = false;
 
+    // No PingBypass skip anywhere in this module (removed) -- matches earthhack's real Surround,
+    // which has no proxy-side port at all; its own description even warns it's "not recommended
+    // when using this on a PingBypass proxy" rather than offering a dedicated proxy mode. Runs as
+    // plain client-side dumb-pipe unconditionally, same as without PingBypass.
     @Override
     public void onEnable() {
-        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         if (mc.player == null || mc.level == null) return;
         lastPosition = PositionUtils.getFlooredPosition(mc.player);
+        awaitChorusCenter = false;
 
         if(stepToggle.getValue() && EUClient.MODULE_MANAGER.getModule(StepModule.class).isToggled()) EUClient.MODULE_MANAGER.getModule(StepModule.class).setToggled(false);
         if(speedToggle.getValue() && EUClient.MODULE_MANAGER.getModule(SpeedModule.class).isToggled()) EUClient.MODULE_MANAGER.getModule(SpeedModule.class).setToggled(false);
@@ -84,7 +99,6 @@ public class SurroundModule extends Module {
 
     @SubscribeEvent
     public void onPlayerJump(PlayerJumpEvent event) {
-        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         if (jumpDisable.getValue()) {
             setToggled(false);
         }
@@ -92,8 +106,15 @@ public class SurroundModule extends Module {
 
     @SubscribeEvent
     public void onPlayerUpdate(PlayerUpdateEvent event) {
-        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         if (mc.player == null || mc.level == null) return;
+
+        if (awaitChorusCenter) {
+            BlockPos currentPos = PositionUtils.getFlooredPosition(mc.player);
+            mc.player.setPos(currentPos.getX() + 0.5, mc.player.getY(), currentPos.getZ() + 0.5);
+            lastPosition = currentPos;
+            awaitChorusCenter = false;
+        }
+
         if (jumpDisable.getValue() && (mc.player.fallDistance > 2.0f || ((EUClient.MODULE_MANAGER.getModule(StepModule.class).isToggled() || EUClient.MODULE_MANAGER.getModule(SpeedModule.class).isToggled()) && (lastPosition == null || lastPosition.getY() != PositionUtils.getFlooredPosition(mc.player).getY())))) {
             setToggled(false);
             return;
@@ -156,7 +177,12 @@ public class SurroundModule extends Module {
                 Direction supportDirection = WorldUtils.getDirection(supportPosition, placedPositions, strictDirection.getValue());
                 if (supportDirection == null) continue;
 
-                WorldUtils.placeBlock(supportPosition, supportDirection, InteractionHand.MAIN_HAND, rotate.getValue(), crystalDestruction.getValue(), render.getValue());
+                // Only count/reserve the slot as used when a block ACTUALLY placed -- a false
+                // return means a crystal was in the way and only got attacked this tick (see
+                // WorldUtils.placeBlock), and burning the per-tick limit on a no-op starved the
+                // other, unblocked positions of their own attempt.
+                if (!WorldUtils.placeBlock(supportPosition, supportDirection, InteractionHand.MAIN_HAND, rotate.getValue(), crystalDestruction.getValue(), render.getValue()))
+                    continue;
                 placedPositions.add(supportPosition);
                 blocksPlaced++;
 
@@ -167,7 +193,8 @@ public class SurroundModule extends Module {
                 if (direction == null) continue;
             }
 
-            WorldUtils.placeBlock(position, direction, InteractionHand.MAIN_HAND, rotate.getValue(), crystalDestruction.getValue(), render.getValue());
+            if (!WorldUtils.placeBlock(position, direction, InteractionHand.MAIN_HAND, rotate.getValue(), crystalDestruction.getValue(), render.getValue()))
+                continue;
             placedPositions.add(position);
             blocksPlaced++;
         }
@@ -179,10 +206,35 @@ public class SurroundModule extends Module {
 
     @SubscribeEvent
     public void onPacketReceive(PacketReceiveEvent event) {
-        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         if (mc.player == null || mc.level == null) return;
+
+        // Unconditional (not gated on Sequential timing) -- matches Sydney's own ordering. A
+        // chorus-fruit teleport lands the player at an arbitrary sub-block offset; centering onto
+        // the floored block makes the very next Surround cycle place cleanly against all 4 sides
+        // instead of half-hanging over an edge.
+        if (event.getPacket() instanceof ClientboundPlayerPositionPacket && chorusCenter.getValue() && mc.player.isUsingItem() && mc.player.getUseItem().getItem() == Items.CHORUS_FRUIT) {
+            awaitChorusCenter = true;
+        }
+
         if (!timing.getValue().equalsIgnoreCase("Sequential"))
             return;
+
+        if (predict.getValue() && event.getPacket() instanceof ClientboundBlockUpdatePacket packet && packet.getBlockState().isAir() && targetPositions.contains(packet.getPos())) {
+            if (blocksPlaced > limit.getValue().intValue()) return;
+            if (!whileEating.getValue() && mc.player.isUsingItem()) return;
+
+            int slot = InventoryUtils.findHardestBlock(0, autoSwitch.getValue().equalsIgnoreCase("AltSwap") || autoSwitch.getValue().equalsIgnoreCase("AltPickup") ? 35 : 8);
+            int previousSlot = mc.player.getInventory().getSelectedSlot();
+            if (slot == -1) return;
+
+            Direction direction = WorldUtils.getDirection(packet.getPos(), strictDirection.getValue());
+            if (direction == null) return;
+
+            InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
+            WorldUtils.placeBlock(packet.getPos(), direction, InteractionHand.MAIN_HAND, rotate.getValue(), crystalDestruction.getValue(), render.getValue());
+            blocksPlaced++;
+            InventoryUtils.switchBack(autoSwitch.getValue(), slot, previousSlot);
+        }
 
         if (event.getPacket() instanceof ClientboundAddEntityPacket packet && packet.getType().equals(EntityType.END_CRYSTAL)) {
             EndCrystal crystal = new EndCrystal(mc.level, packet.getX(), packet.getY(), packet.getZ());
@@ -219,8 +271,8 @@ public class SurroundModule extends Module {
 
     @SubscribeEvent
     public void onDisable() {
-        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
         lastPosition = null;
+        awaitChorusCenter = false;
         targetPositions.clear();
 
         ticks = 0;

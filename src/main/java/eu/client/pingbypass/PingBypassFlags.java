@@ -31,26 +31,35 @@ public class PingBypassFlags {
     public static volatile boolean proxyForwardingActive = false;
 
     /**
-     * When true, the CLIENT no longer builds/sends its own movement or action packets at all --
-     * ClientInputService forwards raw key/mouse input to the proxy instead, and the proxy's own
-     * LocalPlayer (via ServerInputService) is the sole source of every gameplay packet.
-     * Only meaningful on the client side; the proxy always ticks its player normally.
+     * The onGround / horizontalCollision the REAL client last reported, captured from its
+     * forwarded ServerboundMovePlayerPacket in PbPlayHandler.
+     *
+     * Proxy-side modules that inject their own rotation packets must send these rather than
+     * mc.player.onGround()/horizontalCollision: the proxy's ghost player is teleported with
+     * setPos() straight from the client's packets and never runs real physics or collision, so
+     * its own onGround is stale/meaningless. Sending a rotation packet carrying a ground flag
+     * that contradicts the client's own movement packets (which are being forwarded on the same
+     * connection) makes the real server see the player flip between on-ground and airborne
+     * several times a second -- it "corrects" that, which is the rubberbanding that only happens
+     * while moving and while a module (AutoCrystal/SpeedMine) is actively rotating.
      */
-    public static volatile boolean rawInputForwardingActive = false;
+    public static volatile boolean clientOnGround = true;
+    public static volatile boolean clientHorizontalCollision = false;
 
     /**
-     * True when this JVM is the real player's own client and a PingBypass proxy is actively
-     * driving gameplay via raw-input replay -- combat/target-tracking modules (AutoCrystal,
-     * AutoTotem, Surround, ...) must skip their own decision logic entirely here, deferring
-     * to the proxy's ServerAutoCrystal/ServerAutoTotem/ServerSurround (which see the same
-     * world state via the dumb-pipe S2C forward and would otherwise act on it independently,
-     * sending duplicate/conflicting packets to the real server -- these modules build and
-     * send packets directly via mc.getConnection(), bypassing the raw-input cancellation in
-     * ClientPlayerEntityMixin/ClientPlayerInteractionManagerMixin, which only covers the real
-     * player's own hardware-triggered move/attack/dig).
+     * True on the real client, while connected to a PingBypass proxy -- matches earthhack's
+     * isPingBypass()/PingBypass.isConnected() check. AutoCrystal and AutoTotem use this to skip
+     * their own local calculation/thread while connected, deferring entirely to the proxy's
+     * ServerAutoCrystal/ServerAutoTotem -- which see the same dumb-piped world state and would
+     * otherwise act on it independently, producing duplicate/conflicting packets. Surround and
+     * AutoTrap do NOT use this anymore -- matching earthhack, neither has a proxy-side port at
+     * all, so both run unconditionally client-side regardless of PingBypass connection state.
+     * The client's own movement/attack/dig packets are never touched by this -- those are always
+     * sent normally (dumb pipe), matching
+     * CPacketPlayerService's real behavior.
      */
-    public static boolean isClientDeferringToProxy() {
-        return rawInputForwardingActive
+    public static boolean isPingBypassActive() {
+        return proxyForwardingActive
                 && eu.client.EUClient.PINGBYPASS_CONFIG != null
                 && !eu.client.EUClient.PINGBYPASS_CONFIG.isServer();
     }

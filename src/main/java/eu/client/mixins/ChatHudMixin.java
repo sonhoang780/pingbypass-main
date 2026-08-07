@@ -96,6 +96,32 @@ public abstract class ChatHudMixin {
         return instance.get();
     }
 
+    // "Custom" needs the redirect above (alpha) AND this one (hue) -- the vanilla method builds
+    // every chat background fill via ARGB.black(alpha), which is hardcoded pure black (RGB 0,0,0)
+    // regardless of that alpha value. Redirecting only the OptionInstance read above controls how
+    // OPAQUE the background is, never WHAT COLOR it is -- Custom mode's whole point (a colored
+    // background, not just a darker/lighter black one) needs the black swapped for the user's
+    // chosen RGB at the actual fill-color call site, keeping vanilla's own alpha computation
+    // (the incoming `alpha` param already reflects the redirect above).
+    //
+    // The per-message background fill (the one actually visible behind chat text -- the other two
+    // ARGB.black(...) call sites in this method, the message-queue counter and the restricted-chat
+    // banner, are rare/edge-case) is built inside forEachLine's lambda argument, which javac
+    // compiles to its OWN separate method (lambda$extractRenderState$1), not inline in
+    // extractRenderState's own bytecode -- a @Redirect targeting extractRenderState can never see
+    // it. Verified against the real compiled class (javap on the actual game jar, not the
+    // decompiled reference source, which doesn't preserve real lambda numbering) rather than
+    // guessing the synthetic name.
+    @Redirect(method = "lambda$extractRenderState$1(IILnet/minecraft/client/gui/components/ChatComponent$ChatGraphicsAccess;IFLnet/minecraft/client/multiplayer/chat/GuiMessage$Line;IF)V",
+            at = @At(value = "INVOKE", target = "Lnet/minecraft/util/ARGB;black(F)I"))
+    private static int euclient$backgroundColor(float alpha) {
+        BetterChatModule module = EUClient.MODULE_MANAGER.getModule(BetterChatModule.class);
+        if (module.isToggled() && module.background.getValue().equalsIgnoreCase("Custom")) {
+            return net.minecraft.util.ARGB.color(Math.round(alpha * 255.0F), module.color.getColor().getRGB() & 0x00FFFFFF);
+        }
+        return net.minecraft.util.ARGB.black(alpha);
+    }
+
     @ModifyArgs(method = "addMessage(Lnet/minecraft/network/chat/Component;Lnet/minecraft/network/chat/MessageSignature;Lnet/minecraft/client/multiplayer/chat/GuiMessageSource;Lnet/minecraft/client/multiplayer/chat/GuiMessageTag;)V",
             at = @At(value = "INVOKE", target = "Lnet/minecraft/client/multiplayer/chat/GuiMessage;<init>(ILnet/minecraft/network/chat/Component;Lnet/minecraft/network/chat/MessageSignature;Lnet/minecraft/client/multiplayer/chat/GuiMessageSource;Lnet/minecraft/client/multiplayer/chat/GuiMessageTag;)V"))
     private void addMessage(Args args, Component message, MessageSignature signature, GuiMessageSource source, GuiMessageTag indicator) {

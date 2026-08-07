@@ -9,6 +9,7 @@ import eu.client.modules.Module;
 import eu.client.gui.impl.ModuleButton;
 import eu.client.modules.impl.core.ClickGuiModule;
 import eu.client.utils.graphics.Renderer2D;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 
 import java.awt.*;
@@ -21,6 +22,29 @@ public class Frame {
     private int x, y, width, height, totalHeight, dragX = 0, dragY = 0, textPadding = 3;
     public boolean open = true, dragging = false;
     private final ArrayList<Button> buttons = new ArrayList<>();
+
+    // SmoothScroll: content (everything below the header) slides on scrollOffset instead of the
+    // whole frame (header included) being dragged around by mouseScrolled -- that's what let a
+    // category's own header scroll off past the top of the screen with nothing stopping it.
+    // scrollVelocity gives it inertia (impulse per scroll tick, damped every frame instead of an
+    // instant jump); once scrollOffset is clamped outside [minScroll, maxScroll] a spring force
+    // pulls it back, and impulses landing while already out of bounds get damped (rubber-band
+    // resistance) so overscroll stretches instead of flying off -- "kéo hết cỡ, lộ nền category,
+    // nhả ra thì nảy lại". Bounds are computed off *last* frame's totalHeight (one-frame lag,
+    // imperceptible) since this frame's isn't known until after buttons are laid out.
+    private float scrollOffset = 0f, scrollVelocity = 0f;
+    private static final float SCROLL_FRICTION = 0.85f;
+    private static final float SCROLL_SPRING = 0.06f;
+    private static final float SCROLL_OVERSCROLL_RESISTANCE = 0.30f;
+    private static final float SCROLL_MAX_STRETCH = 18f;
+
+    // Category open/close (right-click the header) had zero animation -- content just vanished/
+    // appeared instantly on the `open` flip. Same slide-reveal pattern as CategorySetting/
+    // ModuleButton: scissor-clip the content area to fullContentHeight * openAmount instead of
+    // gating the whole layout+render block on the raw boolean. Seeded to (1,1) since `open`
+    // defaults to true -- else the first read plays a phantom open animation (same class of bug
+    // fixed earlier for BooleanSetting.openAnim).
+    private final eu.client.utils.animations.Animation openAnim = new eu.client.utils.animations.Animation(1f, 1f, 200, eu.client.utils.animations.Easing.Method.EASE_OUT_QUAD);
 
     public Frame(Module.Category category, int x, int y, int width, int height) {
         this.category = category;
@@ -46,7 +70,19 @@ public class Frame {
 
         this.totalHeight = height;
 
-        if(open) {
+        // Layout runs at scrollOffset=0 first (real Y positions, unshifted) so totalHeight below
+        // is THIS frame's actual content height -- bounds computed off it can never lag behind
+        // what just got laid out. The old order (bounds off last frame's stale totalHeight, THEN
+        // layout with that scrollOffset) under/over-shot whenever content height changed between
+        // frames (closing a panel, search filtering, a panel still mid-animation growing), letting
+        // scrollOffset drift outside what the CURRENT content actually supports -- content
+        // rendering above the header, or the bottom-most row never reachable. Shifted into place
+        // by scrollOffset at the very end instead.
+        //
+        // Layout always runs (even while closed/animating) so revealHeight below has a real
+        // fullContentHeight to scale against -- only the SCISSOR further down decides what's
+        // actually visible.
+        {
             totalHeight += 1;
             for(Button button : buttons) {
                 // Filter by search query
@@ -69,21 +105,74 @@ public class Frame {
                 totalHeight += button.getHeight();
 
                 if(button instanceof ModuleButton moduleButton) {
-                    // Scale each setting row's height contribution by the panel's open animation
-                    // (0..1) instead of gating on the instant open/closed boolean -- packs the rows
-                    // tighter while opening/closing so the whole panel visibly unfolds/collapses
-                    // rather than the total height just snapping between two values.
+                    // Rows sit at their FULL, un-scaled Y offsets (never compressed) -- what used
+                    // to shrink every row's spacing continuously while still drawing full-size
+                    // text crammed multiple rows into an ever-shrinking gap right before fully
+                    // closed ("chữ rít vào nhau"). A later fix instead hid whole rows in discrete
+                    // steps to dodge the overlap, but that turned the slide into a chunky pop-in
+                    // ("như 30fps, không có gia tốc") since the easing curve was still evaluated
+                    // continuously but only ever visible at row-count granularity.
+                    // Now: rows keep full spacing, and ModuleButton.render() scissor-clips them to
+                    // revealHeight (continuous, same eased openAmount curve as before) -- the
+                    // panel genuinely slides open/closed pixel-by-pixel with full acceleration,
+                    // and a row can never show more of itself than the clip allows, so nothing
+                    // overlaps.
                     float openAmount = moduleButton.getOpenAmount();
-                    if (openAmount > 0.001f) {
-                        for (Button b : moduleButton.getButtons()) {
-                            b.getSetting().getVisibility().update();
-                            b.setVisible(b.getSetting().getVisibility().isVisible());
-                            if (!b.isVisible()) continue;
+                    java.util.List<Button> settingButtons = moduleButton.getButtons();
+                    float childOffset = 0f;
+                    float fullHeight = 0f;
+                    for (Button b : settingButtons) {
+                        b.getSetting().getVisibility().update();
+                        boolean visible = b.getSetting().getVisibility().isVisible();
+                        b.setVisible(visible);
+                        if (!visible) continue;
 
-                            b.setX(x);
-                            b.setY(y + totalHeight);
-                            totalHeight += Math.round(b.getHeight() * openAmount);
+                        // A setting gated behind a CategorySetting (the collapsible "+" sub-pages,
+                        // e.g. AutoCrystal's Attack/Place/Misc/...) scales by ITS OWN open
+                        // animation too, same nested reveal-while-growing effect as the module
+                        // panel itself.
+                        float categoryScale = 1f;
+                        if (b.getSetting().getVisibility() instanceof eu.client.settings.impl.CategorySetting.Visibility categoryVisibility) {
+                            categoryScale = categoryVisibility.getValue().getOpenAmount();
+                        } else if (b.getSetting().getVisibility() instanceof eu.client.settings.impl.BooleanSetting.Visibility booleanVisibility) {
+                            categoryScale = booleanVisibility.getOpenAmount();
                         }
+                        float rowHeight = b.getHeight() * categoryScale;
+
+                        b.setX(x);
+                        b.setY(y + totalHeight + Math.round(childOffset));
+                        childOffset += rowHeight;
+                        fullHeight += rowHeight;
+                    }
+
+                    int revealHeight = Math.round(fullHeight * openAmount);
+                    moduleButton.setRevealHeight(revealHeight);
+                    totalHeight += revealHeight;
+                }
+            }
+        }
+
+        // Bounds off THIS frame's now-accurate totalHeight, step the spring physics, then shift
+        // every already-laid-out button (and its settings rows) down by the result.
+        int screenHeight = Minecraft.getInstance().getWindow().getGuiScaledHeight();
+        float maxScroll = 0f;
+        float minScroll = -Math.max(0, totalHeight - (screenHeight - y - 4));
+
+        scrollOffset += scrollVelocity;
+        scrollVelocity *= SCROLL_FRICTION;
+        if (scrollOffset > maxScroll) scrollVelocity += (maxScroll - scrollOffset) * SCROLL_SPRING;
+        else if (scrollOffset < minScroll) scrollVelocity += (minScroll - scrollOffset) * SCROLL_SPRING;
+        scrollOffset = Math.clamp(scrollOffset, minScroll - SCROLL_MAX_STRETCH, maxScroll + SCROLL_MAX_STRETCH);
+        if (Math.abs(scrollVelocity) < 0.01f && scrollOffset >= minScroll && scrollOffset <= maxScroll) scrollVelocity = 0f;
+
+        int shift = Math.round(scrollOffset);
+        if (shift != 0) {
+            for (Button button : buttons) {
+                if (!button.isVisible()) continue;
+                button.setY(button.getY() + shift);
+                if (button instanceof ModuleButton moduleButton) {
+                    for (Button b : moduleButton.getButtons()) {
+                        if (b.isVisible()) b.setY(b.getY() + shift);
                     }
                 }
             }
@@ -95,13 +184,30 @@ public class Frame {
         Renderer2D.renderQuad(context, x, y + height - 1, x + width, y + height, accentColor);
         EUClient.FONT_MANAGER.drawTextWithShadow(context, category.getName(), x + textPadding, y + 2, Color.WHITE);
 
-        if(open) {
-            Renderer2D.renderQuad(context, x, y + height, x + width, y + totalHeight + 1, new Color(15, 15, 20, 180));
+        float frameOpenAmount = openAnim.get(open ? 1f : 0f);
+        int fullContentHeight = totalHeight - height - 1;
+        int revealHeight = Math.round(fullContentHeight * frameOpenAmount);
+
+        // Extra breathing room below the last row -- without it the frame's own bottom border sat
+        // flush against the last module's text/settings, looking cramped.
+        int bottomMargin = 4;
+
+        if(revealHeight > 0) {
+            int clipTop = y + height;
+            context.enableScissor(x, clipTop, x + width, clipTop + revealHeight + bottomMargin);
+            Renderer2D.renderQuad(context, x, y + height, x + width, y + Math.round(scrollOffset) + totalHeight + 1 + bottomMargin, new Color(15, 15, 20, 180));
             for(Button button : buttons) {
                 if(!button.isVisible()) continue;
                 button.render(context, mouseX, mouseY, delta);
             }
+            context.disableScissor();
         }
+
+        // Border outline around the whole frame (header + revealed content), colored to match
+        // ClickGui's own theme Color setting.
+        Color borderColor = ClickGuiScreen.getButtonColor(y, 120);
+        int borderBottom = open ? y + height + revealHeight + bottomMargin : y + height;
+        Renderer2D.renderOutline(context, x, y, x + width, borderBottom, borderColor);
     }
 
     public void mouseClicked(double mouseX, double mouseY, int button) {
@@ -151,12 +257,14 @@ public class Frame {
                     }
                 }
             }
-            if (!whitelistHandling) {
-                if (verticalAmount < 0) {
-                    setY(getY() - EUClient.MODULE_MANAGER.getModule(ClickGuiModule.class).scrollSpeed.getValue().intValue());
-                } else if (verticalAmount > 0) {
-                    setY(getY() + EUClient.MODULE_MANAGER.getModule(ClickGuiModule.class).scrollSpeed.getValue().intValue());
-                }
+            if (!whitelistHandling && verticalAmount != 0) {
+                float impulse = EUClient.MODULE_MANAGER.getModule(ClickGuiModule.class).scrollSpeed.getValue().floatValue();
+                // Rubber-band resistance: an impulse landing while already past the clamp range
+                // (mid-overscroll) only stretches it further at a fraction of normal strength,
+                // instead of flying off unbounded.
+                boolean outOfBounds = scrollOffset > 0f || scrollOffset < -Math.max(0, totalHeight - (Minecraft.getInstance().getWindow().getGuiScaledHeight() - y - 4));
+                float resistance = outOfBounds ? SCROLL_OVERSCROLL_RESISTANCE : 1f;
+                scrollVelocity += (verticalAmount < 0 ? -impulse : impulse) * resistance;
             }
         }
     }

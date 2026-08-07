@@ -17,9 +17,15 @@ import java.util.Optional;
  * Whatever resolver chain vanilla's ServerAddressResolver/Netty use internally keeps failing
  * with "Unknown host" for hosts with long DNS chains (multiple CNAMEs + many A records, e.g.
  * play.6b6t.org behind TCPShield) -- confirmed repeatedly that java.net.InetAddress resolves the
- * exact same host fine every time. Replace the resolve step outright with a plain
- * `new InetSocketAddress(host, port)` (java.net, proven reliable) instead of chasing which
- * specific internal resolver is broken.
+ * exact same host fine every time.
+ *
+ * This must be a genuine FALLBACK, not a replacement: vanilla's resolveAddress() also runs the
+ * DNS SRV redirect lookup (ServerRedirectHandler.createDnsSrvRedirectHandler()) and AddressCheck
+ * filtering before ever getting to the plain A-record resolve. Overriding at HEAD (as this used
+ * to) skips both unconditionally for every server, not just the ones with broken DNS chains --
+ * any server relying on an SRV record to route to a different real IP/port got connected to the
+ * wrong endpoint instead ("Connection refused") even though vanilla resolves it correctly.
+ * Only step in when vanilla's own result comes back empty.
  *
  * Critically, java.net.InetSocketAddress(String, int) keeps the ORIGINAL hostname string
  * alongside the resolved IP -- getHostString() returns it without re-resolving -- so the
@@ -30,8 +36,10 @@ import java.util.Optional;
 public class ServerNameResolverMixin {
     private static final Logger LOGGER = LoggerFactory.getLogger("EUClient/DnsFix");
 
-    @Inject(method = "resolveAddress", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "resolveAddress", at = @At("RETURN"), cancellable = true)
     private void resolveAddress(ServerAddress address, CallbackInfoReturnable<Optional<ResolvedServerAddress>> cir) {
+        if (cir.getReturnValue().isPresent()) return; // vanilla (incl. SRV redirect) already resolved it -- leave it alone
+
         try {
             InetSocketAddress resolved = new InetSocketAddress(address.getHost(), address.getPort());
             if (resolved.isUnresolved()) {

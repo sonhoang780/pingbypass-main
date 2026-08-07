@@ -126,7 +126,6 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
     private final Timer placeTimer = new Timer();
     private final Timer facePlaceTimer = new Timer();
     private final Timer loopTimer = new Timer();
-    private final Timer cpsLogTimer = new Timer();
     private long totalPlaces = 0;
     private long totalAttacks = 0;
 
@@ -169,9 +168,6 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
             pendingCalc.cancel(false);
             pendingCalc = null;
         }
-
-        EUClient.LOGGER.info("[PB] AutoCrystal proxy-side CPS={} at disable (ping to real server={}ms, calc={})",
-                crystalCounter.getCount(), EUClient.SERVER_MANAGER.getPing(), calculationTime);
 
         if (savedSlot != -1) {
             InventoryUtils.switchBackNormal(savedSlot);
@@ -227,14 +223,6 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
 
         crystalsPerSecond = crystalCounter.getCount();
 
-        if (cpsLogTimer.hasTimeElapsed(2000L)) {
-            cpsLogTimer.reset();
-            EUClient.LOGGER.info("[PB] AutoCrystal proxy-side CPS={} (ping to real server={}ms, calc={})",
-                    crystalsPerSecond, EUClient.SERVER_MANAGER.getPing(), calculationTime);
-            EUClient.LOGGER.info("[PB] AutoCrystal state: totalPlaces={} totalAttacks={} attackTarget={} placeTarget={} sequenceAttack={} sequencePlace={}",
-                    totalPlaces, totalAttacks, attackTarget != null, placeTarget != null, sequenceAttack, sequencePlace);
-        }
-
         Runnable runnable = () -> {
             long startTime = System.nanoTime();
 
@@ -244,10 +232,6 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
             long calcNanos = System.nanoTime() - startTime;
             calculationTime = new DecimalFormat("0.00").format(calcNanos / 1000000.0) + "ms";
             calculationCount = placeTarget == null ? 0 : placeTarget.getCalculations();
-            if (calcNanos > 20_000_000L) {
-                EUClient.LOGGER.info("[PB] AutoCrystal calc took {}ms ({} candidates scanned)",
-                        new DecimalFormat("0.00").format(calcNanos / 1000000.0), calculationCount);
-            }
             calculationDamage = placeTarget == null ? "0.00" : new DecimalFormat("0.00").format(placeTarget.getDamage());
 
             target = placeTarget == null ? null : placeTarget.getPlayer();
@@ -430,8 +414,14 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
     private void attackCrystals() {
         EndCrystal overrideCrystal = null;
 
+        // obstructions accumulates EVERY blocked candidate scanned, not just whatever's in the
+        // way of the spot we actually ended up placing at -- if a clear position was found
+        // elsewhere (getPosition() != null, meaning we already have our own crystal down and
+        // ready to detonate), a leftover obstruction from some other, unrelated candidate spot
+        // must not hijack the attack away from our own placed crystal. Only treat obstructions
+        // as attack-worthy when they're the reason NO placement could be made at all.
         PlaceTarget pt = this.placeTarget;
-        boolean flag = pt != null && pt.obstructions != null && !pt.obstructions.isEmpty();
+        boolean flag = pt != null && pt.getPosition() == null && pt.obstructions != null && !pt.obstructions.isEmpty();
         for (Entity entity : flag ? pt.obstructions : mc.level.entitiesForRendering()) {
             if (!(entity instanceof EndCrystal crystal)) continue;
             if (!crystal.isAlive()) continue;
@@ -457,15 +447,17 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
         }
 
         Entity entity = mc.level.getEntity(crystal.getId());
-        if (entity == null) return;
+        String bailReason = null;
+        if (entity == null) bailReason = "entity-gone";
+        else if (!(entity instanceof EndCrystal)) bailReason = "not-end-crystal";
+        else if (!((EndCrystal) entity).isAlive()) bailReason = "dead";
+        else if (inhibit.getValue() && attackedCrystals.containsKey(entity.getId())) bailReason = "inhibit";
+        else if (entity.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > Mth.square(attackRange.getValue().doubleValue())) bailReason = "range";
+        else if (!mc.level.getWorldBorder().isWithinBounds(entity.blockPosition())) bailReason = "border";
+        else if (!WorldUtils.canSee(entity) && (raytrace.getValue() || entity.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > Mth.square(attackWallsRange.getValue().doubleValue())))
+            bailReason = "cannot-see";
 
-        if (!(entity instanceof EndCrystal endCrystal)) return;
-        if (!endCrystal.isAlive()) return;
-        if (inhibit.getValue() && attackedCrystals.containsKey(entity.getId())) return;
-        if (endCrystal.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > Mth.square(attackRange.getValue().doubleValue())) return;
-        if (!mc.level.getWorldBorder().isWithinBounds(endCrystal.blockPosition())) return;
-        if (!WorldUtils.canSee(endCrystal) && (raytrace.getValue() || endCrystal.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > Mth.square(attackWallsRange.getValue().doubleValue())))
-            return;
+        if (bailReason != null) return;
 
         attackRunnable = () -> {
             if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
@@ -623,6 +615,14 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
 
         int calculations = 0;
 
+        // Matches the known-good pre-port (1.21.4) implementation byte-for-byte: self-origin,
+        // nearest-first, break on the first lethal candidate. Two separate "improvements" were
+        // tried here this session (origin-from-target with a self-damage tiebreak, then
+        // origin-from-target with a same-distance-tier damage comparison) and BOTH still
+        // reproduced the exact same misplacement the user reported, on the same test case the
+        // pre-port version handles correctly with this plain algorithm -- so the search structure
+        // itself was never the actual bug. Reverted back to it; the real defect is elsewhere
+        // (damage calc / gating), not in how candidates are ordered or when the scan stops.
         for (int i = 0; i < EUClient.WORLD_MANAGER.getRadius(Math.max(placeRange.getValue().doubleValue(), placeWallsRange.getValue().doubleValue())); i++) {
             BlockPos position = mc.player.blockPosition().offset(EUClient.WORLD_MANAGER.getOffset(i));
 
@@ -635,7 +635,16 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
 
             if (mc.level.getEntities((Entity) null, new AABB(position.offset(0, 1, 0)), entity -> true).stream().anyMatch(entity -> entity.isAlive() && !(entity instanceof ExperienceOrb) && !(entity instanceof EndCrystal))) continue;
 
-            List<Entity> obstructingCrystals = mc.level.getEntities((Entity) null, new AABB(position.offset(0, 1, 0)), entity -> true).stream().filter(entity -> entity instanceof EndCrystal crystal && crystal.tickCount >= (20 - attackSpeed.getValue().intValue()) + 15).toList();
+            // A crystal WE just placed here needs a moment to actually land its hit before we
+            // treat it as "in the way" and attack it ourselves (the tickCount grace period, keyed
+            // off attackSpeed). Any OTHER crystal already sitting here -- one we didn't place,
+            // already past its own attack window, or just pre-existing -- isn't waiting on
+            // anything and should count as an obstruction immediately. Without this distinction,
+            // calculatePlacements kept skipping this position for the full grace window every
+            // cycle, repeatedly searching for (and often failing to find) somewhere else instead
+            // of just clearing the crystal actually blocking the best spot.
+            List<Entity> obstructingCrystals = mc.level.getEntities((Entity) null, new AABB(position.offset(0, 1, 0)), entity -> true).stream().filter(entity -> entity instanceof EndCrystal crystal
+                    && (!placedCrystals.containsKey(crystal.blockPosition().below()) || crystal.tickCount >= (20 - attackSpeed.getValue().intValue()) + 15)).toList();
 
             if (!EUClient.MODULE_MANAGER.getModule(SuicideModule.class).isToggled()) {
                 float selfDamage = DamageUtils.getCrystalDamage(mc.player, null, position, exception, ignoreTerrain.getValue());

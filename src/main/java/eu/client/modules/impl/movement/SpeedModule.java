@@ -59,14 +59,32 @@ public class SpeedModule extends Module {
 
         if (mode.getValue().equalsIgnoreCase("Strafe") || mode.getValue().equalsIgnoreCase("StrafeStrict")) {
             distance = Math.sqrt(Mth.square(mc.player.getX() - mc.player.xo) + Mth.square(mc.player.getZ() - mc.player.zo));
-            boolean flag = MovementUtils.isMoving() && !mc.player.isShiftKeyDown() && !mc.player.isInFluid(net.minecraft.tags.FluidTags.WATER) && mc.player.fallDistance < 5.0f;
-            EUClient.WORLD_MANAGER.setTimerMultiplier(useTimer.getValue() && flag && (ticks > bypassThreshold.getValue().intValue() || !timerBypass.getValue()) ? timerMultiplier.getValue().floatValue() : 1.0f);
+            EUClient.WORLD_MANAGER.setTimerMultiplier(isDrivingTimer() ? timerMultiplier.getValue().floatValue() : 1.0f);
         }
 
         if (mode.getValue().equalsIgnoreCase("Grim")) {
             if(autoJump.getValue() && MovementUtils.isMoving() && mc.player.onGround() && !pressed) {
                 mc.options.keyJump.setDown(true);
                 pressed = true;
+
+                // Vanilla's own sprint-jump boost (Player.jumpFromGround()) ALSO fires this same
+                // tick (isSprinting() is true, forced by Sprint's Grim mode) and pushes along
+                // camera YAW, not actual movement direction. First attempt just ADDED a
+                // correct-direction boost on top of it -- while facing your real direction of
+                // travel (forward) that STACKED both boosts (reported: ~30km/h, too much); while
+                // facing away from it (walking backward, Sprint Grim turning the model around)
+                // vanilla's wrong-direction push partially CANCELLED the correct one instead
+                // (reported: still stuck under 20km/h). Cancel vanilla's own boost out first, THEN
+                // add the correct one -- exactly one clean 0.2 boost in the real movement
+                // direction, regardless of which way the camera happens to be facing.
+                if (mc.player.isSprinting()) {
+                    float yRotRad = mc.player.getYRot() * (float) (Math.PI / 180.0);
+                    double vanillaX = -Math.sin(yRotRad) * 0.2;
+                    double vanillaZ = Math.cos(yRotRad) * 0.2;
+
+                    Vector2d boost = MovementUtils.forward(0.2);
+                    mc.player.setDeltaMovement(mc.player.getDeltaMovement().x - vanillaX + boost.x, mc.player.getDeltaMovement().y, mc.player.getDeltaMovement().z - vanillaZ + boost.y);
+                }
             }
 
             if(!mc.player.onGround() && pressed) {
@@ -134,5 +152,22 @@ public class SpeedModule extends Module {
     @Override
     public String getMetaData() {
         return mode.getValue();
+    }
+
+    /**
+     * True only on ticks where this module is itself actively driving the world timer multiplier
+     * (Strafe/StrafeStrict + UseTimer + actually strafing right now). TickShiftModule defers to
+     * this instead of plain isToggled() -- gating on isToggled() alone blocked TickShift's own
+     * boost whenever Speed was merely enabled, even in Vanilla/Grim mode or while Strafe wasn't
+     * currently asserting a multiplier (standing still, sneaking, etc.), so the two never worked
+     * together at all.
+     */
+    public boolean isDrivingTimer() {
+        if (mc.player == null) return false;
+        if (!(mode.getValue().equalsIgnoreCase("Strafe") || mode.getValue().equalsIgnoreCase("StrafeStrict"))) return false;
+        if (!useTimer.getValue()) return false;
+
+        boolean flag = MovementUtils.isMoving() && !mc.player.isShiftKeyDown() && !mc.player.isInFluid(net.minecraft.tags.FluidTags.WATER) && mc.player.fallDistance < 5.0f;
+        return flag && (ticks > bypassThreshold.getValue().intValue() || !timerBypass.getValue());
     }
 }

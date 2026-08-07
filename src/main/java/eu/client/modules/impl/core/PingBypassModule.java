@@ -133,7 +133,6 @@ public class PingBypassModule extends Module {
         serverName = null;
         proxyConnection = null;
         eu.client.pingbypass.PingBypassFlags.proxyForwardingActive = false;
-        eu.client.pingbypass.PingBypassFlags.rawInputForwardingActive = false;
         if (inputForwarder != null) {
             inputForwarder.stop();
             inputForwarder = null;
@@ -237,6 +236,8 @@ public class PingBypassModule extends Module {
                 case S2CBlockRenderPacket.ID -> handleBlockRender(new S2CBlockRenderPacket(buf));
                 case S2CMiningStatePacket.ID -> handleMiningState(new S2CMiningStatePacket(buf));
                 case S2CSlotSyncPacket.ID -> handleSlotSync(new S2CSlotSyncPacket(buf));
+                case eu.client.pingbypass.protocol.packets.S2CWindowClickPacket.ID ->
+                        handleWindowClick(new eu.client.pingbypass.protocol.packets.S2CWindowClickPacket(buf));
             }
         } catch (Exception e) {
             EUClient.LOGGER.warn("[PingBypass] Failed to handle S2C packet", e);
@@ -386,10 +387,9 @@ public class PingBypassModule extends Module {
     private void handleServerName(S2CServerNamePacket packet) {
         this.serverName = packet.getServerIp();
         eu.client.pingbypass.PingBypassFlags.proxyForwardingActive = true;
-        eu.client.pingbypass.PingBypassFlags.rawInputForwardingActive = true;
         // Start forwarding mouse/keyboard input to the proxy
         if (inputForwarder == null) {
-            inputForwarder = new eu.client.pingbypass.input.ClientInputService();
+            inputForwarder = new eu.client.pingbypass.input.ClientInputForwarder();
             inputForwarder.start();
         }
         // Bulk-sync all proxy-enhanced module settings and toggle states to the proxy
@@ -410,8 +410,7 @@ public class PingBypassModule extends Module {
 
         int settingCount = 0;
         for (Module module : EUClient.MODULE_MANAGER.getModules()) {
-            if (!module.isProxyEnhanced()
-                    && !eu.client.pingbypass.modules.PbModuleManager.MIGRATED_MODULE_NAMES.contains(module.getName())) continue;
+            if (!module.isProxyEnhanced()) continue;
 
             // Sync toggle state
             connection.send(new net.minecraft.network.protocol.common.ServerboundCustomPayloadPacket(
@@ -450,7 +449,7 @@ public class PingBypassModule extends Module {
                         new java.util.ArrayList<>(EUClient.FRIEND_MANAGER.getFriends())))));
     }
 
-    private eu.client.pingbypass.input.ClientInputService inputForwarder;
+    private eu.client.pingbypass.input.ClientInputForwarder inputForwarder;
 
     /**
      * Handles S2C_RENDER_POSITION — syncs the AutoCrystal render position from proxy.
@@ -490,6 +489,24 @@ public class PingBypassModule extends Module {
         if (mc.player != null) {
             mc.player.getInventory().setSelectedSlot(packet.getSlot());
         }
+    }
+
+    /**
+     * Handles S2C_WINDOW_CLICK -- replays a container click the PROXY made on its own (a module's
+     * AltSwap/AltPickup switch) onto the real client's own container, matching earthhack's real
+     * S2CWindowClick. Uses AbstractContainerMenu.clicked() directly, NOT
+     * mc.gameMode.handleContainerInput() -- the latter would send a fresh
+     * ServerboundContainerClickPacket back to the proxy and double-apply the click.
+     */
+    private void handleWindowClick(eu.client.pingbypass.protocol.packets.S2CWindowClickPacket packet) {
+        mc.execute(() -> {
+            if (mc.player == null || mc.player.containerMenu.containerId != packet.getContainerId()) return;
+            try {
+                mc.player.containerMenu.clicked(packet.getSlotNum(), packet.getButtonNum(), packet.getContainerInput(), mc.player);
+            } catch (Exception e) {
+                EUClient.LOGGER.warn("[PingBypass] Failed to replay proxy window click", e);
+            }
+        });
     }
 
     /**

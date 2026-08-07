@@ -87,8 +87,17 @@ public class ClientConnectionMixin {
             boolean genuinelyPastHandshake = packetListener != null
                     && packetListener.protocol() != net.minecraft.network.ConnectionProtocol.HANDSHAKING;
             if (genuinelyPastHandshake) {
+                // Log-only, do NOT cancel: briefly tried cancelling here (matches earthhack's
+                // principle -- this packet is never legitimate on our own PB connections at this
+                // point) but this mixin fires for EVERY Connection in the JVM, not just PB's own.
+                // Other mods doing their own protocol-version negotiation over the same vanilla
+                // Connection/ClientIntentionPacket path (e.g. ViaFabricPlus retrying a handshake
+                // with a different protocol version on what it still considers a live connection)
+                // got silently blocked by the cancel, which broke server pinging entirely for
+                // every server, PingBypass or not. Back to just recording the call site.
                 LOGGER.error("[PB] Caught an outgoing ClientIntentionPacket in doSendPacket on {} -- this connection is already past handshake, this send will crash it",
                         self.getLoggableAddress(false), new Throwable("call site"));
+                return;
             }
         }
     }

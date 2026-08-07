@@ -11,6 +11,10 @@ public class NoRenderModule extends Module {
     public BooleanSetting hurtCamera = new BooleanSetting("HurtCamera", "Disables the rendering of the hurt camera.", true);
     public BooleanSetting explosions = new BooleanSetting("Explosions", "Disables the rendering of explosion particles.", true);
     public BooleanSetting fireOverlay = new BooleanSetting("FireOverlay", "Disables the rendering of the fire overlay.", true);
+    // Fire/Block/Liquid overlays: real screen-space texture overlays, all three drawn by
+    // net.minecraft.client.renderer.ScreenEffectRenderer (renderFire/renderTex/renderWater),
+    // NOT chunk mesh or FogEnvironment or the per-entity flame layer (two earlier guesses,
+    // both confirmed wrong by live test) -- see ScreenEffectRendererMixin.
     public BooleanSetting blockOverlay = new BooleanSetting("BlockOverlay", "Disables the rendering of the block suffocation overlay.", false);
     public BooleanSetting liquidOverlay = new BooleanSetting("LiquidOverlay", "Disables the rendering of the liquid overlay.", false);
     public BooleanSetting snowOverlay = new BooleanSetting("SnowOverlay", "Disables the rendering of the snow overlay.", false);
@@ -25,6 +29,7 @@ public class NoRenderModule extends Module {
     public BooleanSetting armor = new BooleanSetting("Armor", "Disables the rendering of armor.", false);
     public BooleanSetting limbSwing = new BooleanSetting("LimbSwing", "Disables the rendering of limb swing animations.", false);
     public BooleanSetting corpses = new BooleanSetting("Corpses", "Disables the rendering of corpses.", false);
+    public BooleanSetting background = new BooleanSetting("Background", "Disables the dark background dimming behind inventory/other screens.", false);
     public ModeSetting tileEntities = new ModeSetting("TileEntities", "Disables the rendering of tile entities, such as chests, when meeting requirements.", "Never", new String[]{"Never", "Distance", "Always"});
     public NumberSetting tileDistance = new NumberSetting("TileDistance", "The distance at which tile entities will stop rendering.", new ModeSetting.Visibility(tileEntities, "Distance"), 10.0f, 0.0f, 100.0f);
 }
