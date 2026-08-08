@@ -191,8 +191,14 @@ public class RotationManager implements IMinecraft {
         if(delta > 180) delta -= 380;
         else if(delta < -180) delta += 360;
 
-        float yaw = Mth.lerp(Easing.toDelta(lastRenderTime, 1000), from, from + delta);
-        float pitch = Mth.lerp(Easing.toDelta(lastRenderTime, 1000), prevRenderPitch, rotation == null ? mc.player.getXRot() : getServerPitch());
+        // Was 1000ms -- a full second to visually catch up to a silent rotation, way slower than
+        // vanilla's own body/head turn (which settles within a tick or two, ~50-100ms at 20 TPS).
+        // Purely cosmetic (own player's THIRD-PERSON MODEL only, see LivingEntityRendererMixin --
+        // never touches the real getYRot()/packets/game logic), but 1000ms made silent rotation
+        // visibly lag behind the actual (instant) aim for a full second, reading as "the model is
+        // still turning" long after the shot/attack already landed.
+        float yaw = Mth.lerp(Easing.toDelta(lastRenderTime, 100), from, from + delta);
+        float pitch = Mth.lerp(Easing.toDelta(lastRenderTime, 100), prevRenderPitch, rotation == null ? mc.player.getXRot() : getServerPitch());
         prevRenderYaw = yaw;
         prevRenderPitch = pitch;
 

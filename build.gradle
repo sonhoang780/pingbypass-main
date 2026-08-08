@@ -84,6 +84,19 @@ loom {
 	accessWidenerPath = file("src/main/resources/euclient.accesswidener")
 }
 
+// DiscordRPC works under the 1.21.4 project (Java 21 target) but silently fails to open the
+// local IPC pipe here (Java 25 target, see JavaCompile.release above -- this is the one real
+// difference between the two projects' build config; RPCModule.java itself is otherwise
+// unchanged). Every `gradlew.bat` invocation all session has shown "WARNING: A restricted
+// method in java.lang.System has been called ... will be blocked in a future release unless
+// native access is enabled" for OTHER native-backed dependencies (JNA, native-platform) --
+// discord-ipc's own Windows named-pipe I/O is plausibly hitting the same JDK 21->25 native-
+// access tightening. Untested (needs a live retest with Discord running) -- if this doesn't
+// fix it, revert and look elsewhere; it's a cheap, reversible, JVM-arg-only change.
+tasks.named("runClient") {
+	jvmArgs "--enable-native-access=ALL-UNNAMED"
+}
+
 // Lombok wired manually instead of via io.freefair.lombok: that plugin (8.11,
 // built for Gradle 8) silently fails to add Lombok to javac's -processorpath
 // under Gradle 9.6.1, so annotation processing no-ops and no getters/

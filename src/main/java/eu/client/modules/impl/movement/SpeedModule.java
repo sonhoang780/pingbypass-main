@@ -133,8 +133,20 @@ public class SpeedModule extends Module {
 
             speed = Math.max(speed, MovementUtils.getPotionSpeed(MovementUtils.DEFAULT_SPEED));
 
-            double ncp = MovementUtils.getPotionSpeed(mode.getValue().equalsIgnoreCase("StrafeStrict") || mc.player.input.getMoveVector().y < 1 ? 0.465 : 0.576);
-            double bypass = MovementUtils.getPotionSpeed(mode.getValue().equalsIgnoreCase("StrafeStrict") || mc.player.input.getMoveVector().y < 1 ? 0.44 : 0.57);
+            // Was `getMoveVector().y < 1` -- meant to tell "moving purely forward" (raw magnitude
+            // 1, the higher speed cap) apart from "diagonal" (normalized to ~0.707, the lower
+            // cap), which only works if getMoveVector() is actually guaranteed unit-length. Under
+            // ViaFabricPlus's older-protocol input emulation that guarantee doesn't hold the same
+            // way native connections give it (see MovementUtils.forward's comment) -- if it hands
+            // back forward=1.0 even while ALSO strafing, this wrongly read as "pure forward",
+            // picking the HIGHER cap during actual diagonal movement (reported: Strafe spiking to
+            // ~44km/h on diagonal specifically under ViaFabricPlus). Raw key state instead --
+            // "pure forward" means the forward key is held and NEITHER strafe key is, a direct
+            // boolean check immune to whatever scaling the input source applies to the vector.
+            boolean pureForward = mc.player.input.keyPresses.forward() && !mc.player.input.keyPresses.backward()
+                    && !mc.player.input.keyPresses.left() && !mc.player.input.keyPresses.right();
+            double ncp = MovementUtils.getPotionSpeed(mode.getValue().equalsIgnoreCase("StrafeStrict") || !pureForward ? 0.465 : 0.576);
+            double bypass = MovementUtils.getPotionSpeed(mode.getValue().equalsIgnoreCase("StrafeStrict") || !pureForward ? 0.44 : 0.57);
 
             speed = Math.min(speed, ticks > 25 ? ncp : bypass);
 

@@ -54,6 +54,7 @@
     "ChatHudMixin",
     "ChatScreenMixin",
     "ClientExplosionTrackerMixin",
+    "CommandSuggestionsMixin",
     "ClientPlayerEntityMixin",
     "ClientPlayerInteractionManagerMixin",
     "ClientPlayNetworkHandlerMixin",

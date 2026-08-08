@@ -27,6 +27,7 @@ import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.objectweb.asm.Opcodes;
 
 @Mixin(LocalPlayer.class)
 public abstract class ClientPlayerEntityMixin extends AbstractClientPlayer {
@@ -53,21 +54,47 @@ public abstract class ClientPlayerEntityMixin extends AbstractClientPlayer {
         EUClient.EVENT_HANDLER.post(new UpdateMovementEvent.Post());
     }
 
-    // PORT: sendMovementPackets was inlined into tick()/sendPosition() -- the passenger-rotation
-    // send path in tick() itself is left alone (not covered by the old feature either); this wraps
-    // the on-foot movement-send path (sendPosition), which reads getYRot/getXRot both to build the
-    // outgoing packet and to refresh the yRotLast/xRotLast change-detection cache.
-    @WrapOperation(method = "sendPosition", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/player/LocalPlayer;getYRot()F"))
-    private float sendPosition$getYRot(LocalPlayer instance, Operation<Float> original) {
+    // PORT REGRESSION FIX. 1.21.4 wrapped the FIELD read `lastYaw` at ordinal 0 -- i.e. ONLY the
+    // change-detection baseline in `getYaw() - lastYaw`, replacing it with the last yaw actually
+    // PUT ON THE WIRE, so "did my look change since the server last heard about it" is measured
+    // against the server's view instead of the local cache. The port instead wrapped
+    // `getYRot()`/`getXRot()` in sendPosition with no ordinal, which hits ALL THREE uses: the
+    // delta computation, the packet payload itself, and the `yRotLast = getYRot()` refresh. Net
+    // effect while ANY rotation is queued:
+    //   deltaYRot = serverYaw - yRotLast, and yRotLast was itself last set to serverYaw
+    //             => delta is always 0 => `rot` is false => a Pos-only packet is sent
+    //   and even when something else forced a rotation packet, its payload was serverYaw
+    //             (the PREVIOUS packet's yaw), never rotation.getYaw().
+    // So RotationManager's yaw swap (applied to the real mc.player for the whole
+    // UpdateMovementEvent -> UpdateMovementEvent.Post window, which encloses sendPosition) was
+    // correctly putting the spoofed yaw on mc.player, and this mixin then threw it away: NO silent
+    // rotation from ANY module has been reaching the server since the port. Everything downstream
+    // that assumes "the server now believes I'm facing X" (SprintModule's Grim/GrimStrict/RageStrict
+    // yaw compensation, AutoCrystal's Rotate=Normal, KillAura, SpeedMine) was silently a no-op on
+    // the wire while still altering local state -- exactly the movement/rotation desync a real
+    // prediction-based anticheat sets you back for.
+    // 26.1.2's sendPosition reads yRotLast/xRotLast once each (the delta) before writing them back,
+    // so ordinal 0 is the read, same as 1.21.4's lastYaw.
+    @WrapOperation(method = "sendPosition", at = @At(value = "FIELD", target = "Lnet/minecraft/client/player/LocalPlayer;yRotLast:F", opcode = Opcodes.GETFIELD, ordinal = 0))
+    private float sendPosition$yRotLast(LocalPlayer instance, Operation<Float> original) {
         if (EUClient.ROTATION_MANAGER.getRotation() != null) return EUClient.ROTATION_MANAGER.getServerYaw();
         return original.call(instance);
     }
 
-    @WrapOperation(method = "sendPosition", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/player/LocalPlayer;getXRot()F"))
-    private float sendPosition$getXRot(LocalPlayer instance, Operation<Float> original) {
+    @WrapOperation(method = "sendPosition", at = @At(value = "FIELD", target = "Lnet/minecraft/client/player/LocalPlayer;xRotLast:F", opcode = Opcodes.GETFIELD, ordinal = 0))
+    private float sendPosition$xRotLast(LocalPlayer instance, Operation<Float> original) {
         if (EUClient.ROTATION_MANAGER.getRotation() != null) return EUClient.ROTATION_MANAGER.getServerPitch();
         return original.call(instance);
     }
+
+    // NOTE for Sprint "Grim" (omni-sprint vs GrimAC): there is deliberately NO wire input-key fake
+    // here any more. 26.1.2's LocalPlayer.tick() calls super.tick() (-> aiStep -> ClientInput.tick())
+    // BEFORE it builds ServerboundPlayerInputPacket from this.input.keyPresses, so the single write
+    // KeyboardInputMixin already makes at the tail of KeyboardInput.tick() is what ends up on the
+    // wire -- and is the same object vanilla's physics reads. A second, independent fake at packet-
+    // send time (what the previous attempt did) can only ever drift from the first one.
+    // The sendPosition wire-rotation fix above is what carries Grim's faked YAW, unchanged: Grim
+    // queues into ROTATION_MANAGER like every other aim module and inherits it for free.
 
     @ModifyExpressionValue(method = "modifyInput", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/player/LocalPlayer;isUsingItem()Z"))
     private boolean tickMovement$isUsingItem(boolean original) {

@@ -6,6 +6,7 @@ import eu.client.events.impl.PlayerMoveEvent;
 import eu.client.modules.Module;
 import eu.client.modules.RegisterModule;
 import eu.client.settings.impl.BooleanSetting;
+import eu.client.settings.impl.ModeSetting;
 import eu.client.settings.impl.NumberSetting;
 import eu.client.utils.minecraft.HoleUtils;
 import eu.client.utils.minecraft.InventoryUtils;
@@ -33,6 +34,21 @@ public class HoleSnapModule extends Module {
     // after the first one.
     public BooleanSetting step = new BooleanSetting("Step", "Keeps snapping to the next nearest hole instead of stopping once you've reached one.", false);
     public BooleanSetting fillHole = new BooleanSetting("FillHole", "Fills every cell of the hole you just stepped out of, once you've fully left its footprint (needs Step).", new BooleanSetting.Visibility(step, true), false);
+    // Same placement/render controls Surround/SelfTrap/HoleFill expose -- FillHole's placeBlock
+    // call itself already went through the shared WorldUtils.placeBlock, but hardcoded "Silent"/
+    // true/true/false instead of reading real settings, and (the actual root cause of "không place
+    // được" on a real server) resolved each cell's direction against ONLY the pre-existing world
+    // state -- an interior cell of a double/quad hole with no already-solid neighbor (every side
+    // still air, since nothing's been placed yet) had no valid face to click and just silently
+    // got dropped from the queue. Fixed below by tracking cells placed earlier in this same fill
+    // run and passing them to getDirection's exceptions list, exactly like Surround's
+    // placedPositions -- later cells can then reference an EARLIER cell in the same run as a valid
+    // face the instant it's placed, not just genuinely pre-existing blocks.
+    public ModeSetting autoSwitch = new ModeSetting("Switch", "The mode that will be used for automatically switching to necessary items.", "Silent", InventoryUtils.SWITCH_MODES);
+    public BooleanSetting rotate = new BooleanSetting("Rotate", "Sends a packet rotation whenever placing a block.", true);
+    public BooleanSetting strictDirection = new BooleanSetting("StrictDirection", "Only places using directions that face you.", false);
+    public BooleanSetting crystalDestruction = new BooleanSetting("CrystalDestruction", "Destroys any crystals that interfere with block placement.", true);
+    public BooleanSetting render = new BooleanSetting("Render", "Whether or not to render the place position.", true);
     // Ported from example-addon-master's HoleSnap ("Timer" tick-speed multiplier while snapping,
     // its own CustomTimer.multiplier -- this client already has an equivalent real mechanism,
     // WORLD_MANAGER.setTimerMultiplier, the same one TimerModule itself drives). Set on enable and
@@ -56,6 +72,16 @@ public class HoleSnapModule extends Module {
 
     // Real jump key state for the auto-hop-over-obstruction case in onPlayerMove -- see there.
     private boolean jumpPressed = false;
+    // Counts jump ATTEMPTS (not ticks) against the current target -- a single vanilla jump only
+    // ever clears a 1-block obstruction. A wall taller than that (or geometry with no valid
+    // walk-in path at all) makes every attempt fail identically forever; there's no amount of
+    // retrying that fixes an obstruction a real player couldn't jump over either. Past a small
+    // attempt count, give up on THIS hole and let a different candidate get picked instead of
+    // being stuck in place bouncing against the same wall indefinitely.
+    private int jumpAttempts = 0;
+    private AABB unreachableHole = null;
+    // Ticks since the current jump press started -- see the timeout comment in onPlayerMove.
+    private int jumpWaitTicks = 0;
 
     // Ported from Sydney-Legacy -- used by FakeLagModule's OnlyOnHoleLeave to detect the exact
     // tick you step out of a hole (regardless of whether HoleSnap itself is even toggled).
@@ -68,6 +94,8 @@ public class HoleSnapModule extends Module {
     // your own feet mid-transition.
     private final Deque<BlockPos> fillQueue = new ArrayDeque<>();
     private AABB pendingFillHole = null;
+    // Cells already placed THIS fill run -- see the getDirection exceptions comment above.
+    private final List<BlockPos> filledPositions = new ArrayList<>();
 
     @Override
     public void onEnable() {
@@ -75,6 +103,10 @@ public class HoleSnapModule extends Module {
         startingHole = null;
         fillQueue.clear();
         pendingFillHole = null;
+        filledPositions.clear();
+        jumpAttempts = 0;
+        jumpWaitTicks = 0;
+        unreachableHole = null;
         EUClient.WORLD_MANAGER.setTimerMultiplier(timer.getValue().floatValue());
 
         // Step actively walks you across/out of holes -- Surround (fills the hole you're
@@ -95,6 +127,7 @@ public class HoleSnapModule extends Module {
             mc.options.keyJump.setDown(false);
             jumpPressed = false;
         }
+        jumpWaitTicks = 0;
     }
 
     @SubscribeEvent
@@ -114,6 +147,7 @@ public class HoleSnapModule extends Module {
             // Fill done -- this was the last step of the one-shot Step+FillHole run, disable now
             // instead of falling through into picking a brand new target.
             pendingFillHole = null;
+            filledPositions.clear();
             setToggled(false);
             return;
         }
@@ -163,6 +197,17 @@ public class HoleSnapModule extends Module {
                 if (!filtered.isEmpty()) holes = filtered;
             }
 
+            // Same for a target that just gave up on repeated jump attempts (see the jumpAttempts
+            // block above) -- UNLIKE lastUsedHole, never fall back to re-picking it: it's not just
+            // "boring to repeat", it's PROVEN unreachable (nothing about retrying changes that), so
+            // falling back to it here re-picked the exact same hole every time, walked back into
+            // the exact same wall, timed out the exact same way, forever -- the reported "vẫn
+            // không auto-disable, xung quanh cũng không có hole nào khác". No fallback: if nothing
+            // ELSE is reachable, there's genuinely nothing left to snap to.
+            if (unreachableHole != null) {
+                holes = holes.stream().filter(h -> !h.box().equals(unreachableHole)).toList();
+            }
+
             if (holes.isEmpty()) {
                 // Nothing valid to snap to (e.g. every candidate got filtered out) -- don't sit
                 // toggled-on doing nothing forever.
@@ -209,15 +254,46 @@ public class HoleSnapModule extends Module {
             if (mc.player.horizontalCollision && mc.player.onGround() && !jumpPressed) {
                 mc.options.keyJump.setDown(true);
                 jumpPressed = true;
+                jumpWaitTicks = 0;
+                jumpAttempts++;
+
+                if (jumpAttempts > 5) {
+                    mc.options.keyJump.setDown(false);
+                    jumpPressed = false;
+                    jumpAttempts = 0;
+                    unreachableHole = hole;
+                    hole = null;
+                    startingHole = null;
+                    return;
+                }
             }
-            if (jumpPressed && !mc.player.onGround()) {
-                mc.options.keyJump.setDown(false);
-                jumpPressed = false;
+            if (jumpPressed) {
+                jumpWaitTicks++;
+                // A wall taller than one block (or the player's hitbox otherwise wedged, e.g.
+                // pinned under a ceiling) means the jump can NEVER clear it -- onGround() then
+                // never once flips false, the only signal this used to release on. jumpPressed got
+                // stuck true forever, which blocks the `!jumpPressed` guard above from ever firing
+                // again, which in turn means jumpAttempts never reaches its give-up threshold --
+                // the reported "mãi không chịu tắt, chỉ khi mở GUI mới dừng" (a Screen forcibly
+                // releasing held keys was the only thing that ever broke the deadlock). Time out
+                // the attempt after half a second even if onGround() never budges, so the state
+                // machine can never get permanently wedged waiting on a transition that may not
+                // exist for this geometry.
+                if (!mc.player.onGround() || jumpWaitTicks > 10) {
+                    mc.options.keyJump.setDown(false);
+                    jumpPressed = false;
+                    jumpWaitTicks = 0;
+                }
             }
 
             MovementUtils.moveTowards(event, hole.getCenter(), MovementUtils.getPotionSpeed(MovementUtils.DEFAULT_SPEED));
             return;
         }
+
+        // Made real progress toward this target (centered, or at least airborne clearing the
+        // obstruction) -- the attempt counter only tracks CONSECUTIVE failures against the SAME
+        // hole while stuck at its base, not overall jump usage.
+        jumpAttempts = 0;
 
         // Landed dead-center this exact tick -- moveTowards() (above) only ever ran while NOT
         // centered, so nothing has zeroed this tick's movement yet. Reflex-holding a movement key
@@ -304,27 +380,58 @@ public class HoleSnapModule extends Module {
             return;
         }
 
-        Direction direction = WorldUtils.getDirection(pos, false);
-        if (direction == null) {
-            fillQueue.poll();
-            return;
-        }
-
-        int slot = InventoryUtils.findHardestBlock(0, 8);
+        boolean altSlots = autoSwitch.getValue().equalsIgnoreCase("AltSwap") || autoSwitch.getValue().equalsIgnoreCase("AltPickup");
+        int slot = InventoryUtils.findHardestBlock(0, altSlots ? 35 : 8);
         if (slot == -1) {
             fillQueue.clear();
             return;
         }
 
         int previousSlot = mc.player.getInventory().getSelectedSlot();
-        InventoryUtils.switchSlot("Silent", slot, previousSlot);
-        boolean placed = WorldUtils.placeBlock(pos, direction, InteractionHand.MAIN_HAND, true, true, false);
-        InventoryUtils.switchBack("Silent", slot, previousSlot);
+
+        // Same as Surround's placedPositions -- an interior cell of a double/quad hole can have
+        // every side still air (nothing placed yet), leaving no pre-existing solid face to click.
+        // filledPositions lets a cell reference one placed EARLIER in this same run as a valid
+        // face too, not just genuinely pre-existing world blocks.
+        Direction direction = WorldUtils.getDirection(pos, filledPositions, strictDirection.getValue());
+        if (direction == null) {
+            // No solid face anywhere around it yet (not even from earlier cells this run) --
+            // same fallback Surround uses: place a support block directly below first, then
+            // retry THIS cell's direction off of that.
+            BlockPos supportPosition = pos.offset(0, -1, 0);
+            if (!WorldUtils.isPlaceable(supportPosition)) {
+                fillQueue.poll();
+                return;
+            }
+
+            Direction supportDirection = WorldUtils.getDirection(supportPosition, filledPositions, strictDirection.getValue());
+            if (supportDirection == null) {
+                fillQueue.poll();
+                return;
+            }
+
+            InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
+            boolean supportPlaced = WorldUtils.placeBlock(supportPosition, supportDirection, InteractionHand.MAIN_HAND, rotate.getValue(), crystalDestruction.getValue(), render.getValue());
+            InventoryUtils.switchBack(autoSwitch.getValue(), slot, previousSlot);
+
+            if (!supportPlaced) return;
+            filledPositions.add(supportPosition);
+
+            direction = WorldUtils.getDirection(pos, filledPositions, strictDirection.getValue());
+            if (direction == null) return;
+        }
+
+        InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
+        boolean placed = WorldUtils.placeBlock(pos, direction, InteractionHand.MAIN_HAND, rotate.getValue(), crystalDestruction.getValue(), render.getValue());
+        InventoryUtils.switchBack(autoSwitch.getValue(), slot, previousSlot);
 
         // false = a crystal was sitting there and only got attacked this tick (see
         // WorldUtils.placeBlock) -- leave this position at the front of the queue and retry it
         // next tick instead of dropping it.
-        if (placed) fillQueue.poll();
+        if (placed) {
+            filledPositions.add(pos);
+            fillQueue.poll();
+        }
     }
 
     private List<HoleUtils.Hole> getHoles() {
