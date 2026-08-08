@@ -109,7 +109,13 @@ public class HoleFillModule extends Module {
             }
 
             if (positions.isEmpty()) {
-                if (selfDisable.getValue()) setToggled(false);
+                // Smart's whole point is sitting idle in the background watching for an enemy to
+                // get near a hole -- "no target right now" is the EXPECTED, normal state most of
+                // the time, not a stopping condition. SelfDisable only makes sense for Normal mode
+                // (fill whatever holes are around you once, then you're done) -- was applying to
+                // both, so Smart turned itself off the instant nothing was immediately nearby
+                // ("cứ tự tắt, kể cả đã để mode Smart"), defeating the entire mode.
+                if (selfDisable.getValue() && !mode.getValue().equalsIgnoreCase("Smart")) setToggled(false);
                 return;
             }
 

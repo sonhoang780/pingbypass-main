@@ -53,19 +53,33 @@ public class PopChamsModule extends Module {
         if (!isToggled() || mc.level == null || event.getPlayer() == mc.player) return;
 
         Player player = event.getPlayer();
-        GameProfile profile = new GameProfile(UUID.randomUUID(), player.getName().getString());
-        RemotePlayer ghost = new RemotePlayer(mc.level, profile);
-        ghost.setId(nextId--);
-        ghost.copyPosition(player);
-        ghost.setYHeadRot(player.getYHeadRot());
-        ghost.setPose(player.getPose());
-        ghost.refreshDimensions();
-        for (EquipmentSlot slot : COPIED_SLOTS) {
-            ghost.setItemSlot(slot, player.getItemBySlot(slot).copy());
-        }
 
-        mc.level.addEntity(ghost);
-        ghosts.put(ghost, System.currentTimeMillis());
+        // PlayerPopEvent fires straight off the packet-receive mixin, on the netty IO thread --
+        // mc.level.addEntity() mutates the level's live entity list, and anything ELSE walking
+        // that list concurrently on another thread (e.g. AutoCrystalModule's own async
+        // calculatePlacements, which iterates entities for collision checks) throws a real
+        // ConcurrentModificationException, not a soft/ignorable race (crash report: "Ticking
+        // entity" -> AutoCrystalModule.calculatePlacements -> ... -> EntitySection.getEntities).
+        // `ghosts` (a plain HashMap, read every frame from the render thread by isGhost/
+        // getFillColor/getOutlineColor) has the exact same problem writing from netty. Defer both
+        // onto the main thread instead of touching either from here directly.
+        mc.execute(() -> {
+            if (mc.level == null) return;
+
+            GameProfile profile = new GameProfile(UUID.randomUUID(), player.getName().getString());
+            RemotePlayer ghost = new RemotePlayer(mc.level, profile);
+            ghost.setId(nextId--);
+            ghost.copyPosition(player);
+            ghost.setYHeadRot(player.getYHeadRot());
+            ghost.setPose(player.getPose());
+            ghost.refreshDimensions();
+            for (EquipmentSlot slot : COPIED_SLOTS) {
+                ghost.setItemSlot(slot, player.getItemBySlot(slot).copy());
+            }
+
+            mc.level.addEntity(ghost);
+            ghosts.put(ghost, System.currentTimeMillis());
+        });
     }
 
     @SubscribeEvent
