@@ -5,6 +5,7 @@ import eu.client.modules.impl.visuals.ChamsModule;
 import eu.client.modules.impl.visuals.NameTagsModule;
 import eu.client.modules.impl.visuals.PopChamsModule;
 import eu.client.modules.impl.visuals.ShadersModule;
+import eu.client.utils.mixins.IChamsCapture;
 import net.minecraft.client.renderer.entity.EntityRenderer;
 import net.minecraft.client.renderer.entity.state.EntityRenderState;
 import net.minecraft.world.entity.Entity;
@@ -29,23 +30,30 @@ public class EntityRendererMixin<T extends Entity, S extends EntityRenderState> 
 
     @Inject(method = "extractRenderState", at = @At("TAIL"))
     private void euclient$chams(T entity, S state, float partialTicks, CallbackInfo info) {
+        // Chams now captures real per-quad fill+outline geometry at flush time (see
+        // ModelFeatureRendererMixin) instead of riding vanilla's outlineColor/entity_outline
+        // post-chain -- reset every frame (an entity that stops matching, or the module getting
+        // toggled off, must not keep whatever spec was set on a previous frame) then set for real
+        // if it currently qualifies.
         ChamsModule chams = EUClient.MODULE_MANAGER.getModule(ChamsModule.class);
+        IChamsCapture capture = (IChamsCapture) (Object) state;
+        capture.euclient$setChams(false, 0, false, 0, false);
         if (chams.isToggled()) {
             if (entity instanceof LivingEntity livingEntity && chams.isValidEntity(livingEntity)) {
-                state.outlineColor = chams.getEntityColor(livingEntity).getRGB();
+                chams.applyEntityChams(livingEntity, capture);
             } else if (chams.crystals.getValue() && entity instanceof EndCrystal) {
-                state.outlineColor = chams.getCrystalColor().getRGB();
+                chams.applyCrystalChams(capture);
             }
         }
 
         PopChamsModule popChams = EUClient.MODULE_MANAGER.getModule(PopChamsModule.class);
         if (entity instanceof Player player && popChams.isActive(player)) {
-            state.outlineColor = popChams.getColor(player).getRGB();
+            state.outlineColor = popChams.getColor(player).getRGB() | 0xFF000000;
         }
 
         ShadersModule shaders = EUClient.MODULE_MANAGER.getModule(ShadersModule.class);
         if (shaders.isToggled() && shaders.isValidEntity(entity)) {
-            state.outlineColor = shaders.getColor(entity).getRGB();
+            state.outlineColor = shaders.getFillColor(entity);
         }
     }
 }

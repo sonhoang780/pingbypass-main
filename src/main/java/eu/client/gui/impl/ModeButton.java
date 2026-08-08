@@ -5,6 +5,8 @@ import eu.client.gui.ClickGuiScreen;
 import eu.client.gui.api.Button;
 import eu.client.gui.api.Frame;
 import eu.client.settings.impl.ModeSetting;
+import eu.client.utils.animations.Animation;
+import eu.client.utils.animations.Easing;
 import eu.client.utils.color.ColorUtils;
 import eu.client.utils.graphics.Renderer2D;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -17,9 +19,18 @@ public class ModeButton extends Button {
     private final ModeSetting setting;
     private boolean open = false;
 
+    // Dropdown reveal -- same slide-open pattern as ModuleButton's settings panel (Animation +
+    // EASE_OUT_QUAD, decelerating: fast start, settles in gently instead of snapping straight to
+    // full height).
+    private final Animation openAnim = new Animation(180, Easing.Method.EASE_OUT_QUAD);
+
     public ModeButton(ModeSetting setting, Frame parent, int height) {
         super(setting, parent, height, setting.getDescription());
         this.setting = setting;
+    }
+
+    private float getOpenAmount() {
+        return openAnim.get(open ? 1f : 0f);
     }
 
     @Override
@@ -31,11 +42,17 @@ public class ModeButton extends Button {
         EUClient.FONT_MANAGER.drawTextWithShadow(context, setting.getTag(), getX() + getTextPadding() + 3, getY() + 2, Color.WHITE);
         EUClient.FONT_MANAGER.drawTextWithShadow(context, ChatFormatting.GRAY + setting.getValue(), getX() + getWidth() - getTextPadding() - 1 - EUClient.FONT_MANAGER.getWidth(setting.getValue()), getY() + 2, Color.WHITE);
 
-        if(open) {
+        float openAmount = getOpenAmount();
+        if (openAmount > 0.001f) {
+            // Only draw as many rows as the current animated height actually fits -- rows appear
+            // one at a time as the panel grows instead of the full list popping in ahead of the
+            // space animating open for it.
+            int visibleRows = Mth.clamp(Math.round(setting.getModes().size() * openAmount), 0, setting.getModes().size());
             int i = 0;
-            for(String s : setting.getModes()) {
-                EUClient.FONT_MANAGER.drawTextWithShadow(context, (setting.getValue().equals(s) ? "" : ChatFormatting.GRAY) + s, getX() + getTextPadding() + 2, getY() + getParent().getHeight() + i + 2, Color.WHITE);
-                i += getParent().getHeight();
+            for (String s : setting.getModes()) {
+                if (i >= visibleRows) break;
+                EUClient.FONT_MANAGER.drawTextWithShadow(context, (setting.getValue().equals(s) ? "" : ChatFormatting.GRAY) + s, getX() + getTextPadding() + 2, getY() + getParent().getHeight() + i * getParent().getHeight() + 2, Color.WHITE);
+                i++;
             }
         }
     }
@@ -63,7 +80,7 @@ public class ModeButton extends Button {
 
     @Override
     public int getHeight() {
-        return getParent().getHeight() + (open ? getParent().getHeight() * setting.getModes().size() : 0);
+        return getParent().getHeight() + Math.round(getParent().getHeight() * setting.getModes().size() * getOpenAmount());
     }
 
     @Override

@@ -6,6 +6,7 @@ import eu.client.events.impl.GameLoopEvent;
 import eu.client.events.impl.TickEvent;
 import eu.client.gui.special.MainMenuScreen;
 import eu.client.modules.impl.core.MenuModule;
+import eu.client.modules.impl.miscellaneous.AutoEscapeModule;
 import eu.client.modules.impl.miscellaneous.AutoRespawnModule;
 import eu.client.modules.impl.player.FastPlaceModule;
 import eu.client.modules.impl.player.MultiTaskModule;
@@ -28,6 +29,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
@@ -66,7 +68,13 @@ public abstract class MinecraftClientMixin implements IMinecraft {
         EUClient.EVENT_HANDLER.post(new TickEvent());
     }
 
-    @Inject(method = "startUseItem", at = @At("HEAD"))
+    // Was HEAD -- verified via .mcref that startUseItem()'s own body unconditionally sets
+    // rightClickDelay = 4 as its SECOND statement (right after the isDestroying() guard), so a
+    // HEAD injection's override got immediately clobbered by vanilla's own assignment a few lines
+    // later in the SAME call, every time (reported: FastPlace not matching its description at
+    // all). Injecting right after that specific field write instead -- still fires before any of
+    // the method's later early-return branches, since it's the first thing the method body does.
+    @Inject(method = "startUseItem", at = @At(value = "FIELD", target = "Lnet/minecraft/client/Minecraft;rightClickDelay:I", shift = At.Shift.AFTER))
     private void doItemUse(CallbackInfo info) {
         if (EUClient.MODULE_MANAGER != null && EUClient.MODULE_MANAGER.getModule(FastPlaceModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(FastPlaceModule.class).isValidItem(player.getMainHandItem().getItem())) {
             rightClickDelay = EUClient.MODULE_MANAGER.getModule(FastPlaceModule.class).ticks.getValue().intValue();
@@ -85,8 +93,29 @@ public abstract class MinecraftClientMixin implements IMinecraft {
         return original;
     }
 
+    // AutoEscapeModule's root cause: it calls mc.gameMode.useItem(...) programmatically to start
+    // eating the chorus fruit, but handleKeybinds() runs EVERY tick and unconditionally releases
+    // any in-progress item use the instant it sees `player.isUsingItem() && !keyUse.isDown()` --
+    // exactly what's true here, since nothing ever actually held the real right-click key down.
+    // Vanilla itself was cancelling the eat one tick after we started it, every time, before the
+    // 1.6s consume could ever finish -- the module then just waited out its own fake timer over
+    // nothing and reported "escaped" regardless. Verified against the real compiled Minecraft.class
+    // (javap): exactly one releaseUsingItem(...) call exists in this method, immediately gated by
+    // this isDown() check, so redirecting it here can't accidentally skip anything else.
+    @Redirect(method = "handleKeybinds", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/multiplayer/MultiPlayerGameMode;releaseUsingItem(Lnet/minecraft/world/entity/player/Player;)V"))
+    private void euclient$dontReleaseFakedUse(net.minecraft.client.multiplayer.MultiPlayerGameMode instance, net.minecraft.world.entity.player.Player releasedPlayer) {
+        if (EUClient.MODULE_MANAGER.getModule(AutoEscapeModule.class).isEating()) return;
+        instance.releaseUsingItem(releasedPlayer);
+    }
+
     @Inject(method = "pick", at = @At("HEAD"), cancellable = true)
     private void pick(float partialTicks, CallbackInfo info) {
+        // level/player can go null mid-disconnect (Minecraft.disconnect() still calls into a
+        // pending renderFrame -> pick() before teardown finishes) while Freecam is still toggled
+        // -- WorldUtils.getRaytraceTarget unconditionally uses mc.level.clip(...)/mc.player, NPEs
+        // otherwise. Not our raytrace to make in that state anyway; let vanilla's own pick run.
+        if (mc.level == null || player == null) return;
+
         FreecamModule module = EUClient.MODULE_MANAGER.getModule(FreecamModule.class);
         if (module.isToggled()) {
             hitResult = WorldUtils.getRaytraceTarget(module.getFreeYaw(), module.getFreePitch(), module.getFreeX(), module.getFreeY(), module.getFreeZ());

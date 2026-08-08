@@ -45,8 +45,15 @@ public class ClickGuiScreen extends Screen {
     // mc.setScreen(EUClient.CLICK_GUI) every open, never reconstructed), so the animation can't just
     // be "start fresh in the constructor" -- it's driven by this open/closing flag instead, and
     // Animation.get() smoothly re-targets on its own if the user re-opens mid-close.
-    private static final int SLIDE_DURATION_MS = 220;
-    private static final float SLIDE_DISTANCE = 40f;
+    // 400f/220ms with EASE_OUT_CUBIC on BOTH directions put all the visible motion in the first
+    // ~46ms (easeOutCubic hits 0.5 at t~=0.21) and left the rest happening off-screen -- looked
+    // like no deceleration at all, especially on close (starts at max speed since ease-out
+    // decelerates approaching 1, not useful when animating toward 0). Shorter distance keeps the
+    // slow phase on-screen; longer duration makes it perceptible; per-direction easing (set in
+    // requestClose/cancelClose below) makes closing actually start slow and speed up off-screen,
+    // where OPENING keeps decelerating INTO place. Tune these three by eye, not further guessing.
+    private static final int SLIDE_DURATION_MS = 320;
+    private static final float SLIDE_DISTANCE = 160f;
     private final Animation slideAnim = new Animation(SLIDE_DURATION_MS, Easing.Method.EASE_OUT_CUBIC);
     private boolean closing = false;
 
@@ -54,10 +61,12 @@ public class ClickGuiScreen extends Screen {
     // actually call mc.setScreen(null) once it's finished (checked each frame in extractRenderState).
     public void requestClose() {
         closing = true;
+        slideAnim.setEasing(Easing.Method.EASE_IN_CUBIC);
     }
 
     public void cancelClose() {
         closing = false;
+        slideAnim.setEasing(Easing.Method.EASE_OUT_CUBIC);
     }
 
     public ClickGuiScreen() {
@@ -164,7 +173,11 @@ public class ClickGuiScreen extends Screen {
 
         // Claim ESC ourselves instead of letting Screen's default handling close us instantly --
         // request the slide-up and let extractRenderState() finish the actual close once it's done.
-        if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+        // Except while a BindButton is capturing a keypress: Esc there means "cancel this bind
+        // capture", not "close the whole GUI" -- claiming it here unconditionally used to close
+        // the GUI before BindButton.keyPressed ever got a chance to see the Esc at all. Fall
+        // through to the normal frame dispatch below instead so it reaches the button.
+        if (keyCode == GLFW.GLFW_KEY_ESCAPE && !eu.client.gui.impl.BindButton.isAnyListening()) {
             requestClose();
             return true;
         }
@@ -198,6 +211,15 @@ public class ClickGuiScreen extends Screen {
             frame.keyPressed(keyCode, scanCode, modifiers);
         }
         pingBypassFrame.keyPressed(keyCode, scanCode, modifiers);
+
+        // Esc reaches here only via the bind-cancel fallthrough above (isAnyListening() was true).
+        // vanilla Screen.keyPressed() unconditionally calls onClose() on Esc regardless of who
+        // else handled it -- calling super here closed the GUI right after BindButton had just
+        // cancelled the bind capture, undoing the whole point of the fallthrough. Esc is fully
+        // handled by us either way (requestClose() above, or the bind-cancel branch in
+        // BindButton.keyPressed reached via the frame dispatch just above), so never hand it to
+        // vanilla's own close handling.
+        if (keyCode == GLFW.GLFW_KEY_ESCAPE) return true;
         return super.keyPressed(event);
     }
 

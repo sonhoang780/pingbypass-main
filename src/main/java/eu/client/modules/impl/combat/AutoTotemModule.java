@@ -39,15 +39,21 @@ public class AutoTotemModule extends Module {
 
     @SubscribeEvent
     public void onPlayerPop(PlayerPopEvent event) {
-        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
+        if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
         if (event.getPlayer() == mc.player && !EUClient.MODULE_MANAGER.getModule(SuicideModule.class).isToggled()) {
-            ticks = 0;
+            // Don't zero the cooldown outright: a totem pop is server-initiated (the server
+            // consumes it and sends its own slot-content correction back). Firing a fresh swap
+            // before that confirmation lands races the server's own packet and corrupts the
+            // container's carried-item state -- shows up as the offhand slot flickering forever
+            // and the whole inventory becoming unusable. Only ever shorten an already-longer wait
+            // down to the same round-trip floor onPlayerUpdate uses after every swap, never skip it.
+            ticks = Math.min(ticks, 2 + EUClient.SERVER_MANAGER.getPingDelay());
         }
     }
 
     @SubscribeEvent
     public void onPlayerUpdate(PlayerUpdateEvent event) {
-        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
+        if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
         if (ticks > 0 && tickAbort.getValue()) {
             ticks--;
             return;
@@ -85,7 +91,7 @@ public class AutoTotemModule extends Module {
 
     @SubscribeEvent
     public void onTick(TickEvent event) {
-        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
+        if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
         if (mc.player == null || mc.level == null) return;
         totemCount = mc.player.getInventory().countItem(Items.TOTEM_OF_UNDYING);
     }

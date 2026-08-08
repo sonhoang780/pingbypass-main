@@ -41,6 +41,9 @@ import net.minecraft.core.Direction;
 import net.minecraft.util.Mth;
 import net.minecraft.world.phys.Vec3;
 
+import eu.client.utils.graphics.EspShader;
+
+import java.awt.Color;
 import java.text.DecimalFormat;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -124,6 +127,26 @@ public class AutoCrystalModule extends Module {
     public NumberSetting iconRadius = new NumberSetting("IconRadius", "The difference between the outer circle and the inner circle.", new BooleanSetting.Visibility(icon, true), 2.0f, 0.0f, 5.0f);
     public ColorSetting iconColor = new ColorSetting("IconColor", "The color that will be used for the crystal icon rendering.", new BooleanSetting.Visibility(icon, true), ColorUtils.getDefaultColor());
 
+    // Animated ESP shaders ported from Sydney-Legacy's "Shaderz" module. Sydney kept these on a
+    // separate hidden CORE module with a per-mode speed slider each (GradSpeed/RainSpeed/GarmSpeed/
+    // ...), every one of them the exact same 0.1-10 multiplier feeding the exact same `time` uniform
+    // -- nine sliders for one number. Collapsed into a single Speed here and hung off the existing
+    // Render category, where every other AutoCrystal render dial already lives, rather than adding a
+    // whole module for settings that only AutoCrystal reads.
+    private static final String[] SHADER_MODES = EspShader.MODES;
+    private static final String[] SHADER_ACTIVE_MODES = java.util.Arrays.copyOfRange(SHADER_MODES, 1, SHADER_MODES.length);
+
+    public ModeSetting shader = new ModeSetting("Shader", "The animated shader that will be drawn on the target position instead of a flat color.", new CategorySetting.Visibility(renderCategory), "None", SHADER_MODES);
+    public NumberSetting shaderSpeed = new NumberSetting("ShaderSpeed", "Speed", "The speed at which the shader animates.", new ModeSetting.Visibility(shader, SHADER_ACTIVE_MODES), 1.0f, 0.1f, 10.0f);
+    public NumberSetting shaderOpacity = new NumberSetting("ShaderOpacity", "Opacity", "The opacity of the shader rendering.", new ModeSetting.Visibility(shader, SHADER_ACTIVE_MODES), 100, 0, 100);
+    public BooleanSetting shaderDistanceScaling = new BooleanSetting("ShaderDistanceScaling", "DistanceScaling", "Scales the shader pattern by your distance to the position.", new ModeSetting.Visibility(shader, SHADER_ACTIVE_MODES), false);
+    public NumberSetting shaderStep = new NumberSetting("ShaderStep", "Step", "The size of the gradient bands.", new ModeSetting.Visibility(shader, "Gradient"), 50.0f, 0.1f, 200.0f);
+    public ColorSetting shaderColor1 = new ColorSetting("ShaderColor1", "The first gradient color.", new ModeSetting.Visibility(shader, "Gradient"), new ColorSetting.Color(new Color(255, 0, 255, 255), false, false));
+    public ColorSetting shaderColor2 = new ColorSetting("ShaderColor2", "The second gradient color.", new ModeSetting.Visibility(shader, "Gradient"), new ColorSetting.Color(new Color(255, 0, 0, 255), false, false));
+    public ColorSetting shaderColor3 = new ColorSetting("ShaderColor3", "The third gradient color.", new ModeSetting.Visibility(shader, "Gradient"), new ColorSetting.Color(new Color(0, 255, 0, 255), false, false));
+    public ColorSetting shaderColor4 = new ColorSetting("ShaderColor4", "The fourth gradient color.", new ModeSetting.Visibility(shader, "Gradient"), new ColorSetting.Color(new Color(0, 0, 255, 255), false, false));
+    public ColorSetting shaderGlowColor = new ColorSetting("ShaderGlowColor", "GlowColor", "The color that the glow shader will be tinted with.", new ModeSetting.Visibility(shader, "Glowing"), new ColorSetting.Color(new Color(255, 0, 255, 255), false, false));
+
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     // executor's queue is unbounded and nothing here ever cancels/drains it -- if a task ever
     // takes longer than the tick interval (GC pause, toggling off mid-task then back on
@@ -145,7 +168,6 @@ public class AutoCrystalModule extends Module {
     private final Timer placeTimer = new Timer();
     private final Timer facePlaceTimer = new Timer();
     private final Timer loopTimer = new Timer();
-    private final Timer cpsLogTimer = new Timer();
     // Raw monotonic counters (never TTL-cleared, unlike attackedCrystals/placedCrystals) --
     // ping*2 as the map cleanup TTL means TTL=0 whenever ping reads 0 (e.g. before the first
     // real keepalive round-trip completes early in a session), which empties those maps
@@ -165,6 +187,7 @@ public class AutoCrystalModule extends Module {
     private PlaceTarget placeTarget = null;
     private PlaceTarget mineTarget = null;
 
+
     private String calculationTime = "0.00ms";
     private int calculationCount = 0;
     @Getter private String calculationDamage = "0.00";
@@ -175,6 +198,17 @@ public class AutoCrystalModule extends Module {
     private int highestID = -100000;
     private int kickTicks = 0;
 
+    // Ported from Sydney-Legacy: getPlayers() rebuilt the FULL player list (mc.level.players()
+    // iteration + isAlive + distance + FRIEND_MANAGER string lookup per player) from scratch on
+    // every call -- and it's called up to 3x per tick here (attack calc, place calc, and again for
+    // blockDestruction's mineTarget calc), all within the same tick where the world state hasn't
+    // meaningfully changed. Cache for a short TTL (50ms, same as Sydney -- short enough that a
+    // player actually moving/dying/leaving range is still picked up within a couple of ticks, long
+    // enough to collapse those redundant rebuilds into one per real update).
+    private List<Player> cachedPlayers = new ArrayList<>();
+    private long lastPlayerCacheTime = 0L;
+    private static final long PLAYER_CACHE_DURATION = 50L;
+
     // SwapBack (Switch=Normal only): captured the FIRST time we switch away from a non-crystal item
     // and left alone on every placement after that -- placeCrystals() reads the CURRENT selected slot
     // as "previousSlot" each call, which after the first switch would just be the crystal slot itself,
@@ -183,7 +217,7 @@ public class AutoCrystalModule extends Module {
 
     @SubscribeEvent
     public void onPlayerUpdate(PlayerUpdateEvent event) {
-        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
+        if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
         if (mc.player == null || mc.level == null) return;
 
         // ping*2 alone has no floor -- at low/near-zero ping (e.g. a VPS colocated with the
@@ -214,6 +248,30 @@ public class AutoCrystalModule extends Module {
 
         crystalsPerSecond = crystalCounter.getCount();
 
+        if (gameLoop.getValue()) return;
+
+        run();
+    }
+
+    // The actual calc-trigger used to sit in onPlayerUpdate above, right where the TTL cleanup
+    // is -- but WorldManager.getReservedPlacements() is what stops this module and a placement
+    // module (SelfFill/Surround/...) whack-a-moling the same cell, and that only works if the
+    // OTHER module has already reserved its cell for the tick before this one reads it. Both
+    // this module and Surround/SelfFill subscribe to the SAME PlayerUpdateEvent -- with the calc
+    // submitted (async) from INSIDE that handler, the background thread could start reading
+    // getReservedPlacements() while OTHER modules' own PlayerUpdateEvent handlers for this same
+    // tick hadn't run yet (dispatch order between modules isn't something either side controls),
+    // seeing an empty/stale set and picking the exact cell Surround was about to reserve --
+    // reported as Surround's render position flickering nonstop despite the reservation check
+    // existing. UpdateMovementEvent fires later, from the player entity's own tick, strictly
+    // after every module's PlayerUpdateEvent handler for this tick has already run -- moving the
+    // submission here (not the attack/place EXECUTION further below, unrelated) guarantees any
+    // reservation made this tick is visible before the read.
+    @SubscribeEvent
+    public void onUpdateMovement(UpdateMovementEvent event) {
+        if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
+        if (mc.player == null || mc.level == null) return;
+
         Runnable runnable = () -> {
             long startTime = System.nanoTime();
 
@@ -241,15 +299,11 @@ public class AutoCrystalModule extends Module {
         } else {
             runnable.run();
         }
-
-        if (gameLoop.getValue()) return;
-
-        run();
     }
 
     @SubscribeEvent
     public void onGameLoop(GameLoopEvent event) {
-        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
+        if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
         if (mc.player == null || mc.level == null) return;
         if (!gameLoop.getValue()) return;
         if (!loopTimer.hasTimeElapsed(loopDelay.getValue().longValue()))
@@ -296,7 +350,7 @@ public class AutoCrystalModule extends Module {
 
     @SubscribeEvent
     public void onUpdateMovement$POST(UpdateMovementEvent.Post event) {
-        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
+        if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
         if (mc.player == null || mc.level == null) return;
 
         if (attackRunnable != null) attackRunnable.run();
@@ -305,7 +359,7 @@ public class AutoCrystalModule extends Module {
 
     @SubscribeEvent
     public void onEntitySpawn(EntitySpawnEvent event) {
-        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
+        if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
         if (mc.player == null || mc.level == null) return;
 
         if (!attack.getValue() || !instant.getValue()) return;
@@ -334,7 +388,7 @@ public class AutoCrystalModule extends Module {
 
     @SubscribeEvent
     public void onDestroyBlock(DestroyBlockEvent event) {
-        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
+        if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
         if (mc.player == null || mc.level == null) return;
 
         kickTicks = 0;
@@ -396,7 +450,7 @@ public class AutoCrystalModule extends Module {
 
     @SubscribeEvent
     public void onPacketReceive(PacketReceiveEvent event) {
-        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
+        if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
         if (mc.player == null || mc.level == null) return;
 
         if (event.getPacket() instanceof ClientboundAddEntityPacket packet) {
@@ -416,13 +470,13 @@ public class AutoCrystalModule extends Module {
 
     @SubscribeEvent
     public void onPlayerDeath(PlayerDeathEvent event) {
-        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
+        if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
         kickTicks = 0;
     }
 
     @SubscribeEvent
     public void onClientConnect(ClientConnectEvent event) {
-        if (eu.client.pingbypass.PingBypassFlags.isClientDeferringToProxy()) return;
+        if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
         highestID = -100000;
     }
 
@@ -461,6 +515,9 @@ public class AutoCrystalModule extends Module {
         crystalCounter.reset();
 
         highestID = -100000;
+
+        cachedPlayers.clear();
+        lastPlayerCacheTime = 0L;
     }
 
     @Override
@@ -471,8 +528,14 @@ public class AutoCrystalModule extends Module {
     private void attackCrystals() {
         EndCrystal overrideCrystal = null;
 
+        // obstructions accumulates EVERY blocked candidate scanned, not just whatever's in the
+        // way of the spot we actually ended up placing at -- if a clear position was found
+        // elsewhere (getPosition() != null, meaning we already have our own crystal down and
+        // ready to detonate), a leftover obstruction from some other, unrelated candidate spot
+        // must not hijack the attack away from our own placed crystal. Only treat obstructions
+        // as attack-worthy when they're the reason NO placement could be made at all.
         PlaceTarget pt = this.placeTarget;
-        boolean flag = pt != null && pt.obstructions != null && !pt.obstructions.isEmpty();
+        boolean flag = pt != null && pt.getPosition() == null && pt.obstructions != null && !pt.obstructions.isEmpty();
         for (Entity entity : flag ? pt.obstructions : mc.level.entitiesForRendering()) {
             if (!(entity instanceof EndCrystal crystal)) continue;
             if (!crystal.isAlive()) continue;
@@ -498,16 +561,17 @@ public class AutoCrystalModule extends Module {
         }
 
         Entity entity = mc.level.getEntity(crystal.getId());
-        if (entity == null) return;
+        String bailReason = null;
+        if (entity == null) bailReason = "entity-gone";
+        else if (!(entity instanceof EndCrystal)) bailReason = "not-end-crystal";
+        else if (!((EndCrystal) entity).isAlive()) bailReason = "dead";
+        else if (inhibit.getValue() && attackedCrystals.containsKey(entity.getId())) bailReason = "inhibit";
+        else if (entity.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > Mth.square(attackRange.getValue().doubleValue())) bailReason = "range";
+        else if (!mc.level.getWorldBorder().isWithinBounds(entity.blockPosition())) bailReason = "border";
+        else if (!WorldUtils.canSee(entity) && (raytrace.getValue() || entity.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > Mth.square(attackWallsRange.getValue().doubleValue())))
+            bailReason = "cannot-see";
 
-        if (!(entity instanceof EndCrystal endCrystal)) return;
-        if (!endCrystal.isAlive()) return;
-        if (inhibit.getValue() && attackedCrystals.containsKey(entity.getId())) return;
-        if (endCrystal.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > Mth.square(attackRange.getValue().doubleValue())) return;
-        if (!mc.level.getWorldBorder().isWithinBounds(endCrystal.blockPosition())) return;
-        if (!WorldUtils.canSee(endCrystal) && (raytrace.getValue() || endCrystal.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > Mth.square(attackWallsRange.getValue().doubleValue())))
-            return;
-
+        if (bailReason != null) return;
         attackRunnable = () -> {
             if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
 
@@ -664,6 +728,17 @@ public class AutoCrystalModule extends Module {
 
         int calculations = 0;
 
+        // Self-origin nearest-first WITH a break-on-first-lethal early exit (matching the
+        // pre-port 1.21.4 implementation) kept picking whichever candidate happened to be
+        // scanned first that merely cleared the target's HP -- against a target that's easy to
+        // one-shot from almost anywhere nearby (low HP, or just not enough armor), that's very
+        // often a spot right next to the PLAYER rather than anywhere near the actual target, since
+        // the scan starts at self and radiates outward. A softer "overkill margin" threshold on
+        // the break helped somewhat but didn't fix the actual defect: the break exits before ever
+        // comparing against the genuinely best candidate. Scans the full candidate set now (no
+        // early exit) and keeps only the single highest-damage one -- this runs off the async
+        // executor thread already (not the render thread), so the extra candidates cost latency,
+        // not FPS.
         for (int i = 0; i < EUClient.WORLD_MANAGER.getRadius(Math.max(placeRange.getValue().doubleValue(), placeWallsRange.getValue().doubleValue())); i++) {
             BlockPos position = mc.player.blockPosition().offset(EUClient.WORLD_MANAGER.getOffset(i));
 
@@ -674,9 +749,27 @@ public class AutoCrystalModule extends Module {
 
             if (!WorldUtils.canSee(position) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue()))) continue;
 
+            // A placement module (SelfFill/Surround/...) reserved a cell this tick, meaning it's
+            // actively trying to place a real block there. A crystal here (2x2x2 hitbox, spans the
+            // block it sits on plus one block up and inflates 1 block horizontally) blocks the
+            // server's own placement raytrace even without directly overlapping the target cell --
+            // and since this module never voluntarily gives up an optimal spot, without this check
+            // it whack-a-moles that cell forever against destroyCrystals. Skip the candidate outright.
+            AABB crystalBox = new AABB(position.getX() - 1, position.getY() + 1, position.getZ() - 1, position.getX() + 2, position.getY() + 3, position.getZ() + 2);
+            if (EUClient.WORLD_MANAGER.getReservedPlacements().stream().anyMatch(reserved -> crystalBox.intersects(new AABB(reserved)))) continue;
+
             if (mc.level.getEntities((Entity) null, new AABB(position.offset(0, 1, 0)), entity -> true).stream().anyMatch(entity -> entity.isAlive() && !(entity instanceof ExperienceOrb) && !(entity instanceof EndCrystal))) continue;
 
-            List<Entity> obstructingCrystals = mc.level.getEntities((Entity) null, new AABB(position.offset(0, 1, 0)), entity -> true).stream().filter(entity -> entity instanceof EndCrystal crystal && crystal.tickCount >= (20 - attackSpeed.getValue().intValue()) + 15).toList();
+            // A crystal WE just placed here needs a moment to actually land its hit before we
+            // treat it as "in the way" and attack it ourselves (the tickCount grace period, keyed
+            // off attackSpeed). Any OTHER crystal already sitting here isn't waiting on anything
+            // and should count as an obstruction immediately -- otherwise calculatePlacements kept
+            // skipping this position for the whole grace window every cycle, repeatedly searching
+            // for (and often failing to find) somewhere else instead of clearing what's actually
+            // blocking the best spot. Not PingBypass-specific -- this module and ServerAutoCrystal
+            // both had the same bug independently.
+            List<Entity> obstructingCrystals = mc.level.getEntities((Entity) null, new AABB(position.offset(0, 1, 0)), entity -> true).stream().filter(entity -> entity instanceof EndCrystal crystal
+                    && (!placedCrystals.containsKey(crystal.blockPosition().below()) || crystal.tickCount >= (20 - attackSpeed.getValue().intValue()) + 15)).toList();
 
             if (!EUClient.MODULE_MANAGER.getModule(SuicideModule.class).isToggled()) {
                 float selfDamage = DamageUtils.getCrystalDamage(mc.player, null, position, exception, ignoreTerrain.getValue());
@@ -684,7 +777,6 @@ public class AutoCrystalModule extends Module {
                 if (antiSuicide.getValue() && selfDamage > mc.player.getHealth() + mc.player.getAbsorptionAmount()) continue;
             }
 
-            boolean override = false;
             for (Player player : players) {
                 calculations++;
 
@@ -697,19 +789,12 @@ public class AutoCrystalModule extends Module {
                     break;
                 }
 
-                if (damage > optimalDamage || damage > player.getHealth() + player.getAbsorptionAmount()) {
+                if (damage > optimalDamage) {
                     optimalPosition = position;
                     optimalPlayer = player;
                     optimalDamage = damage;
-
-                    if (damage > player.getHealth() + player.getAbsorptionAmount()) {
-                        override = true;
-                        break;
-                    }
                 }
             }
-
-            if (override) break;
         }
 
         if (optimalPosition == null) return new PlaceTarget(null, null, obstructions, null, 0.0f, calculations);
@@ -785,12 +870,14 @@ public class AutoCrystalModule extends Module {
     }
 
     private List<Player> getPlayers() {
-        List<Player> players = new ArrayList<>();
         if (EUClient.MODULE_MANAGER.getModule(SuicideModule.class).isToggled()) {
-            players.add(mc.player);
-            return players;
+            return List.of(mc.player);
         }
 
+        long now = System.currentTimeMillis();
+        if (now - lastPlayerCacheTime < PLAYER_CACHE_DURATION) return cachedPlayers;
+
+        List<Player> players = new ArrayList<>();
         for (Player player : mc.level.players()) {
             if (player == mc.player) continue;
             if (!player.isAlive()) continue;
@@ -800,6 +887,8 @@ public class AutoCrystalModule extends Module {
             players.add(player);
         }
 
+        cachedPlayers = players;
+        lastPlayerCacheTime = now;
         return players;
     }
 

@@ -20,24 +20,31 @@ public class CriticalsModule extends Module {
         if (event.getTarget() == null || event.getTarget() instanceof EndCrystal) return;
 
         if (mc.player.onGround() || mc.player.getAbilities().flying || mode.getValue().equalsIgnoreCase("Grim") && !mc.player.isInLava() && !mc.player.isUnderWater()) {
-            switch (mode.getValue()) {
-                case "Packet" -> {
-                    mc.getConnection().send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY() + 0.05, mc.player.getZ(), false, mc.player.horizontalCollision));
-                    mc.getConnection().send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY(), mc.player.getZ(), false, mc.player.horizontalCollision));
-                    mc.getConnection().send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY() + 0.03, mc.player.getZ(), false, mc.player.horizontalCollision));
-                    mc.getConnection().send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY(), mc.player.getZ(), false, mc.player.horizontalCollision));
-                }
-                case "Strict" -> {
-                    mc.getConnection().send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY() + 0.11, mc.player.getZ(), false, mc.player.horizontalCollision));
-                    mc.getConnection().send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY() + 0.1100013579, mc.player.getZ(), false, mc.player.horizontalCollision));
-                    mc.getConnection().send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY() + 0.0000013579, mc.player.getZ(), false, mc.player.horizontalCollision));
-                }
-                case "Grim" -> {
-                    if (!mc.player.onGround()) {
-                        mc.getConnection().send(new ServerboundMovePlayerPacket.PosRot(mc.player.getX(), mc.player.getY() - 0.000001, mc.player.getZ(), mc.player.getYRot(), mc.player.getXRot(), false, mc.player.horizontalCollision));
+            // proxyEnhanced -- this can run on the proxy directly (isRunningOnProxy(), no
+            // separate ServerCriticals class). ProxyServerTickListener blacklists
+            // ServerboundMovePlayerPacket by default now (matches earthhack's Pb2SManager); wrap
+            // in allowSend so these deliberate sends still go through. No-op on the client (that
+            // listener only ever exists on the proxy JVM).
+            eu.client.pingbypass.server.ProxyServerTickListener.allowSend(() -> {
+                switch (mode.getValue()) {
+                    case "Packet" -> {
+                        mc.getConnection().send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY() + 0.05, mc.player.getZ(), false, mc.player.horizontalCollision));
+                        mc.getConnection().send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY(), mc.player.getZ(), false, mc.player.horizontalCollision));
+                        mc.getConnection().send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY() + 0.03, mc.player.getZ(), false, mc.player.horizontalCollision));
+                        mc.getConnection().send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY(), mc.player.getZ(), false, mc.player.horizontalCollision));
+                    }
+                    case "Strict" -> {
+                        mc.getConnection().send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY() + 0.11, mc.player.getZ(), false, mc.player.horizontalCollision));
+                        mc.getConnection().send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY() + 0.1100013579, mc.player.getZ(), false, mc.player.horizontalCollision));
+                        mc.getConnection().send(new ServerboundMovePlayerPacket.Pos(mc.player.getX(), mc.player.getY() + 0.0000013579, mc.player.getZ(), false, mc.player.horizontalCollision));
+                    }
+                    case "Grim" -> {
+                        if (!mc.player.onGround()) {
+                            mc.getConnection().send(new ServerboundMovePlayerPacket.PosRot(mc.player.getX(), mc.player.getY() - 0.000001, mc.player.getZ(), mc.player.getYRot(), mc.player.getXRot(), false, mc.player.horizontalCollision));
+                        }
                     }
                 }
-            }
+            });
 
             ((ClientPlayerEntityAccessor) mc.player).setLastOnGround(false);
             mc.player.crit(event.getTarget());

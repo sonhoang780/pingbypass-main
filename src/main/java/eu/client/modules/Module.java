@@ -166,7 +166,7 @@ public abstract class Module implements IMinecraft {
             animationOffset.setEasing(Easing.Method.EASE_OUT_CUBIC);
 
             if (notify && chatNotify.getValue()) {
-                EUClient.CHAT_MANAGER.message(ChatUtils.getPrimary() + name + ChatUtils.getSecondary() + ".toggled = " + ChatFormatting.GREEN + "true" + ChatUtils.getSecondary() + ";", "toggle-" + getName().toLowerCase());
+                EUClient.CHAT_MANAGER.message(ChatUtils.getPrimary() + name + ChatUtils.getSecondary() + " = " + ChatFormatting.GREEN + "true" + ChatUtils.getSecondary() + ";", "toggle-" + getName().toLowerCase());
             }
 
             onEnable();
@@ -178,7 +178,7 @@ public abstract class Module implements IMinecraft {
             onDisable();
 
             if (notify && chatNotify.getValue()) {
-                EUClient.CHAT_MANAGER.message(ChatUtils.getPrimary() + name + ChatUtils.getSecondary() + ".toggled = " + ChatFormatting.RED + "false" + ChatUtils.getSecondary() + ";", "toggle-" + getName().toLowerCase());
+                EUClient.CHAT_MANAGER.message(ChatUtils.getPrimary() + name + ChatUtils.getSecondary() + " = " + ChatFormatting.RED + "false" + ChatUtils.getSecondary() + ";", "toggle-" + getName().toLowerCase());
             }
         }
     }

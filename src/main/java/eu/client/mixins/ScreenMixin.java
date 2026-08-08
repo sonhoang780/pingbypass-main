@@ -2,6 +2,7 @@ package eu.client.mixins;
 
 import eu.client.EUClient;
 import eu.client.modules.impl.core.MenuModule;
+import eu.client.modules.impl.visuals.NoRenderModule;
 import eu.client.utils.IMinecraft;
 import eu.client.utils.color.ColorUtils;
 import eu.client.utils.graphics.Renderer2D;
@@ -30,6 +31,17 @@ public class ScreenMixin implements IMinecraft {
                 Renderer2D.renderQuad(context, i, 0, i + 1, 1, color);
             }
 
+            ci.cancel();
+            return;
+        }
+
+        // extractBackground() picks extractTransparentBackground() (the dark dimming gradient)
+        // whenever isInGameUi() is true -- inventory and every other screen opened while a world
+        // is loaded, as opposed to the pause/main menu's panorama+blur path. Skipping the whole
+        // method also skips extractDeferredSubtitles() at its tail, a minor, harmless side effect.
+        if (EUClient.MODULE_MANAGER.getModule(NoRenderModule.class).isToggled()
+                && EUClient.MODULE_MANAGER.getModule(NoRenderModule.class).background.getValue()
+                && ((Screen) (Object) this).isInGameUi()) {
             ci.cancel();
         }
     }

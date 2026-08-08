@@ -6,8 +6,10 @@ import eu.client.EUClient;
 import eu.client.events.SubscribeEvent;
 import eu.client.events.impl.KeyInputEvent;
 import eu.client.events.impl.MouseInputEvent;
+import eu.client.events.impl.TickEvent;
 import eu.client.settings.Setting;
 import eu.client.utils.IMinecraft;
+import eu.client.utils.input.KeyboardUtils;
 import org.reflections.Reflections;
 
 import java.lang.reflect.Field;
@@ -58,15 +60,30 @@ public class ModuleManager implements IMinecraft {
     @SubscribeEvent
     public void onKeyInput(KeyInputEvent event) {
         modules.stream()
-                .filter(m -> m.getBind() == event.getKey())
+                .filter(m -> m.getBind() == event.getKey() && m.bind.getMode().equals("Bind"))
                 .forEach(m -> m.setToggled(!m.isToggled()));
     }
 
     @SubscribeEvent
     public void onMouseInput(MouseInputEvent event) {
         modules.stream()
-                .filter(m -> m.getBind() == (-event.getButton() - 1))
+                .filter(m -> m.getBind() == (-event.getButton() - 1) && m.bind.getMode().equals("Bind"))
                 .forEach(m -> m.setToggled(!m.isToggled()));
+    }
+
+    // Hold: module toggled on only while the bind is physically held. ReverseHold: the inverse.
+    // Runs every tick instead of off press/release events since there's no release event for
+    // mouse buttons routed through EUClient's event bus, and polling is simplest for both anyway.
+    @SubscribeEvent
+    public void onTick(TickEvent event) {
+        for (Module module : modules) {
+            String mode = module.bind.getMode();
+            if (mode.equals("Bind") || module.getBind() == 0) continue;
+
+            boolean held = KeyboardUtils.isBindDown(module.getBind());
+            boolean shouldBeToggled = mode.equals("Hold") == held;
+            if (module.isToggled() != shouldBeToggled) module.setToggled(shouldBeToggled);
+        }
     }
 
     public List<Module> getModules(Module.Category category) {

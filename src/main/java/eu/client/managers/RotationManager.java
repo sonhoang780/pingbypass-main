@@ -56,17 +56,6 @@ public class RotationManager implements IMinecraft {
     @SubscribeEvent(priority = Integer.MAX_VALUE)
     public void onUpdateMovement(UpdateMovementEvent event) {
         if (rotation == null) return;
-        // On the proxy, don't modify mc.player's yaw/pitch — the client sends
-        // its own movement packets and we don't want the proxy's player entity
-        // to visibly rotate. "Normal" mode relies on that temporary yaw/pitch
-        // change riding along on the next movement packet, which never happens
-        // here, so it was a silent no-op -- send an equivalent rotation packet
-        // directly instead, same as "Packet" mode does.
-        if (eu.client.pingbypass.PingBypassFlags.proxyForwardingActive
-                && EUClient.PINGBYPASS_CONFIG != null && EUClient.PINGBYPASS_CONFIG.isServer()) {
-            packetRotate(rotation.getYaw(), rotation.getPitch());
-            return;
-        }
 
         prevYaw = mc.player.getYRot();
         prevPitch = mc.player.getXRot();
@@ -78,10 +67,6 @@ public class RotationManager implements IMinecraft {
     @SubscribeEvent(priority = Integer.MIN_VALUE)
     public void onUpdateMovement$POST(UpdateMovementEvent.Post event) {
         if (rotation == null) return;
-        if (eu.client.pingbypass.PingBypassFlags.proxyForwardingActive
-                && EUClient.PINGBYPASS_CONFIG != null && EUClient.PINGBYPASS_CONFIG.isServer()) {
-            return;
-        }
 
         mc.player.setYRot(prevYaw);
         mc.player.setXRot(prevPitch);
@@ -180,15 +165,20 @@ public class RotationManager implements IMinecraft {
 
     public void packetRotate(float yaw, float pitch) {
         if (serverYaw == yaw && serverPitch == pitch) return;
-        // Under raw-input forwarding, the proxy's own LocalPlayer (driven by ServerInputService)
-        // is the sole source of movement/rotation once connected -- its own mc.getConnection()
-        // is a real connection to the backend server, same as a normal client, so there is no
-        // dumb-pipe-forwarded client packet left to race with (see PbPlayHandler.handleMovePlayer
-        // and ClientPlayerEntityMixin for the corresponding cancellation on the client side).
-        mc.getConnection().send(new ServerboundMovePlayerPacket.PosRot(
-                EUClient.POSITION_MANAGER.getServerX(), EUClient.POSITION_MANAGER.getServerY(),
-                EUClient.POSITION_MANAGER.getServerZ(), yaw, pitch,
-                EUClient.POSITION_MANAGER.isServerOnGround(), mc.player.horizontalCollision));
+        // Same call on both sides -- mc.getConnection() on the proxy IS the real server
+        // connection (see ProxyServer.setServerConnection callers), so this needs no
+        // proxy-specific branch. POSITION_MANAGER mirrors mc.player's own coordinates on
+        // both sides too (the proxy's mc.player is kept positioned by PbPlayHandler).
+        // ProxyServerTickListener now blacklists ServerboundMovePlayerPacket by default (matches
+        // earthhack's Pb2SManager, see PbPlayHandler.handleMovePlayer0) -- this send needs the
+        // same explicit authorization, or the proxy silently drops every packet-rotate from
+        // AutoCrystal/other proxy-side aim modules. allowSend() is a no-op on the client (that
+        // listener is only ever subscribed on the proxy), so this is safe unconditionally.
+        eu.client.pingbypass.server.ProxyServerTickListener.allowSend(() ->
+                mc.getConnection().send(new ServerboundMovePlayerPacket.PosRot(
+                        EUClient.POSITION_MANAGER.getServerX(), EUClient.POSITION_MANAGER.getServerY(),
+                        EUClient.POSITION_MANAGER.getServerZ(), yaw, pitch,
+                        EUClient.POSITION_MANAGER.isServerOnGround(), mc.player.horizontalCollision)));
     }
 
     public boolean inRenderTime() {
@@ -201,8 +191,14 @@ public class RotationManager implements IMinecraft {
         if(delta > 180) delta -= 380;
         else if(delta < -180) delta += 360;
 
-        float yaw = Mth.lerp(Easing.toDelta(lastRenderTime, 1000), from, from + delta);
-        float pitch = Mth.lerp(Easing.toDelta(lastRenderTime, 1000), prevRenderPitch, rotation == null ? mc.player.getXRot() : getServerPitch());
+        // Was 1000ms -- a full second to visually catch up to a silent rotation, way slower than
+        // vanilla's own body/head turn (which settles within a tick or two, ~50-100ms at 20 TPS).
+        // Purely cosmetic (own player's THIRD-PERSON MODEL only, see LivingEntityRendererMixin --
+        // never touches the real getYRot()/packets/game logic), but 1000ms made silent rotation
+        // visibly lag behind the actual (instant) aim for a full second, reading as "the model is
+        // still turning" long after the shot/attack already landed.
+        float yaw = Mth.lerp(Easing.toDelta(lastRenderTime, 100), from, from + delta);
+        float pitch = Mth.lerp(Easing.toDelta(lastRenderTime, 100), prevRenderPitch, rotation == null ? mc.player.getXRot() : getServerPitch());
         prevRenderYaw = yaw;
         prevRenderPitch = pitch;
 

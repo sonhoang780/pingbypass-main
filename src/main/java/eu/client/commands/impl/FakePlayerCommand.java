@@ -5,7 +5,10 @@ import eu.client.commands.Command;
 import eu.client.commands.RegisterCommand;
 import eu.client.modules.impl.miscellaneous.FakePlayerModule;
 
-@RegisterCommand(name = "togglefp", aliases = {"fp"}, description = "Toggles the FakePlayer module (spawns it in, or despawns it if already active).", syntax = "")
+// FakePlayerModule already copies mc.player's pose/equipment/health on spawn (onEnable ->
+// restoreFrom/saveWithoutId+load) -- no args needed, just toggle. "fakeplayer" is a direct alias so
+// ".fakeplayer" alone spawns/despawns, same as homovore's, in addition to "togglefp"/"fp".
+@RegisterCommand(name = "togglefp", aliases = {"fp", "fakeplayer"}, description = "Spawns in a fake player copying your current pose, or despawns it if already active.", syntax = "")
 public class FakePlayerCommand extends Command {
     @Override
     public void execute(String[] args) {

@@ -44,7 +44,11 @@ public class DamageUtils implements IMinecraft {
     }
 
     public static float getCrystalDamage(Entity entity, AABB box, BlockPos position, BlockPos exception, boolean ignoreTerrain) {
-        return getDamage(entity, box, Vec3.atCenterOf(position).add(0, 1, 0), 6.0f, exception, ignoreTerrain);
+        // Vec3d.ofCenter(pos, 1) in 1.21.4 = (x+0.5, y+1, z+0.5) -- ported as
+        // atCenterOf(pos).add(0,1,0) = (x+0.5, y+1.5, z+0.5), 0.5 block too high (double-counted
+        // the center's own +0.5 Y). Wrong explosion origin height skewed exposure/distance calc,
+        // causing bogus point-blank "lethal" candidates (e.g. placing behind self).
+        return getDamage(entity, box, new Vec3(position.getX() + 0.5, position.getY() + 1, position.getZ() + 0.5), 6.0f, exception, ignoreTerrain);
     }
 
     public static float getDamage(Entity entity, AABB box, Vec3 vec3d, float power, BlockPos exception, boolean ignoreTerrain) {

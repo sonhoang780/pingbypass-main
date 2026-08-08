@@ -2,17 +2,25 @@ package eu.client.mixins;
 
 import com.llamalad7.mixinextras.injector.ModifyExpressionValue;
 import com.llamalad7.mixinextras.sugar.Local;
+import com.mojang.blaze3d.pipeline.RenderTarget;
+import com.mojang.blaze3d.resource.GraphicsResourceAllocator;
 import com.mojang.blaze3d.systems.RenderSystem;
 import eu.client.EUClient;
 import eu.client.events.impl.RenderWorldEvent;
+import eu.client.mixins.accessors.LevelRendererAccessor;
 import eu.client.modules.impl.visuals.NoRenderModule;
 import eu.client.utils.graphics.Renderer2D;
+import eu.client.utils.graphics.EspShader;
 import eu.client.utils.graphics.Renderer3D;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.renderer.LevelRenderer;
+import net.minecraft.client.renderer.LevelTargetBundle;
+import net.minecraft.client.renderer.PostChain;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
 import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.resources.Identifier;
 import org.joml.Matrix4fc;
 import org.joml.Matrix4f;
 import net.minecraft.world.item.ItemStack;
@@ -26,6 +34,63 @@ public abstract class GameRendererMixin {
     @Inject(method = "renderLevel", at = @At("HEAD"))
     private void renderWorld$HEAD(DeltaTracker tickCounter, CallbackInfo info) {
         Renderer3D.prepare();
+    }
+
+    // Runs our own outline post-chain manually, once, right before vanilla's own
+    // doEntityOutline() blends whatever's in entityOutlineTarget onto the screen. By this point
+    // both the world silhouette (captured during renderLevel, left unprocessed --
+    // WorldRendererMixin's redirect blocked vanilla's own in-FrameGraph run of this same chain)
+    // AND the hand silhouette (flushed by ItemInHandRendererMixin.euclient$flushHandOutline,
+    // which runs between renderLevel and here) are sitting in the same target, so one pass
+    // resolves both together -- same reasoning WorldRendererMixin's comment covers for why it
+    // must NOT also run there (would double-process the world part).
+    @Inject(method = "render(Lnet/minecraft/client/DeltaTracker;Z)V", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/LevelRenderer;doEntityOutline()V"))
+    private void euclient$resolveOutline(DeltaTracker tracker, boolean tick, CallbackInfo ci) {
+        Identifier variant = eu.client.modules.impl.visuals.ShadersModule.pickActiveOutlineChain();
+        if (variant == null) return;
+
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.levelRenderer == null) return;
+        RenderTarget outline = ((LevelRendererAccessor) mc.levelRenderer).euclient$getEntityOutlineTarget();
+        if (outline == null) return;
+
+        // Post-chain JSON references "minecraft:main" (not "minecraft:entity_outline") as its
+        // in/out target id -- PostChain.process(target, alloc) binds ONLY MAIN_TARGET_ID to the
+        // given RenderTarget, and addToFrame throws if the chain references any target id not in
+        // that single-entry bundle. "minecraft:entity_outline" would throw here; the label is
+        // arbitrary, only the id needs to match what process() actually binds.
+        PostChain chain = mc.getShaderManager().getPostChain(variant, LevelTargetBundle.MAIN_TARGETS);
+        if (chain == null) return;
+
+        // The one per-frame write the animated shader modes need: the post-chain's own uniform
+        // values are baked at JSON load, so an animated Time has to be pushed into the pass's
+        // GpuBuffer directly, right before the chain runs. No-op-equivalent (Effect 0) when the
+        // Shader mode is None, which keeps the flat-color path byte-for-byte as it was.
+        EspShader.writeOutlineSettings(chain, eu.client.modules.impl.visuals.ShadersModule.shaderSettings());
+        chain.process(outline, GraphicsResourceAllocator.UNPOOLED);
+    }
+
+    // StarGlow -- SkyRendererMixin redirects the ACTUAL star draw call (not a whole-screen
+    // threshold guess) into StarCapture's isolated target this frame. Blur it in place (star_glow
+    // chain, own identifier/buffer, not shared with anything), then composite it onto the real
+    // screen via RenderTarget.blitAndBlendToTexture -- the SAME alpha-blend pipeline
+    // (ENTITY_OUTLINE_BLIT) vanilla's own doEntityOutline() uses, verified via .mcref. No
+    // brightness/chroma approximation anywhere in this path.
+    @Inject(method = "render(Lnet/minecraft/client/DeltaTracker;Z)V", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/LevelRenderer;doEntityOutline()V"))
+    private void euclient$resolveStarGlow(DeltaTracker tracker, boolean tick, CallbackInfo ci) {
+        eu.client.modules.impl.visuals.AtmosphereModule atmosphere = EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.visuals.AtmosphereModule.class);
+        if (!atmosphere.isToggled() || !atmosphere.starGlow.getValue()) return;
+
+        RenderTarget starTarget = eu.client.utils.graphics.StarCapture.get();
+        if (starTarget == null) return;
+
+        Minecraft mc = Minecraft.getInstance();
+        PostChain chain = mc.getShaderManager().getPostChain(Identifier.fromNamespaceAndPath("euclient", "star_glow"), LevelTargetBundle.MAIN_TARGETS);
+        if (chain == null) return;
+
+        EspShader.writeStarGlowSettings(chain, atmosphere.starGlowIntensity.getValue().floatValue());
+        chain.process(starTarget, GraphicsResourceAllocator.UNPOOLED);
+        starTarget.blitAndBlendToTexture(mc.getMainRenderTarget().getColorTextureView());
     }
 
     // PORT: in 26.1.2 view-bob (bobHurt/bobView) is composed into the PROJECTION matrix
@@ -50,6 +115,7 @@ public abstract class GameRendererMixin {
 
         Renderer3D.draw(Renderer3D.QUADS, Renderer3D.DEBUG_LINES, false);
         Renderer3D.draw(Renderer3D.SHINE_QUADS, Renderer3D.SHINE_DEBUG_LINES, true);
+        EspShader.draw(Renderer3D.SHADER_QUADS, Renderer3D.SHADER_DEBUG_LINES);
 
         EUClient.EVENT_HANDLER.post(new RenderWorldEvent.Post(noBobStack, tickDelta));
 
@@ -59,6 +125,7 @@ public abstract class GameRendererMixin {
         // prepare() wiped it at the start of the next frame and never actually rendered. Flush again.
         Renderer3D.draw(Renderer3D.QUADS, Renderer3D.DEBUG_LINES, false);
         Renderer3D.draw(Renderer3D.SHINE_QUADS, Renderer3D.SHINE_DEBUG_LINES, true);
+        EspShader.draw(Renderer3D.SHADER_QUADS, Renderer3D.SHADER_DEBUG_LINES);
 
         // Modules that draw world-space text via the vanilla font (mc.font.drawInBatch) queue
         // into the shared MultiBufferSource instead of drawing immediately -- unlike our own

@@ -11,6 +11,12 @@ public class BindSetting extends Setting {
     private int value;
     private final int defaultValue;
 
+    // Bind: toggles the module on press (the only behavior before this). Hold: module is toggled
+    // on only while the bind is physically held down, off otherwise. ReverseHold: the inverse --
+    // toggled on normally, off only while the bind is held.
+    public static final String[] MODES = new String[]{"Bind", "Hold", "ReverseHold"};
+    private String mode = "Bind";
+
     public BindSetting(String name, String description, int value) {
         super(name, name, description, new Setting.Visibility());
         this.value = value;
@@ -37,10 +43,23 @@ public class BindSetting extends Setting {
 
     public void resetValue() {
         value = defaultValue;
+        mode = "Bind";
     }
 
     public void setValue(int value) {
         this.value = value;
+        EUClient.EVENT_HANDLER.post(new SettingChangeEvent(this));
+    }
+
+    public void cycleMode() {
+        int index = (java.util.Arrays.asList(MODES).indexOf(mode) + 1) % MODES.length;
+        mode = MODES[index];
+        EUClient.EVENT_HANDLER.post(new SettingChangeEvent(this));
+    }
+
+    public void setMode(String mode) {
+        if (!java.util.Arrays.asList(MODES).contains(mode)) return;
+        this.mode = mode;
         EUClient.EVENT_HANDLER.post(new SettingChangeEvent(this));
     }
 

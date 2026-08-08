@@ -25,9 +25,12 @@ public class FontManager implements IMinecraft {
     private FontRenderer fontRenderer;
 
     private boolean useCustomFont() {
-        return EUClient.MODULE_MANAGER.getModule(FontModule.class).isToggled()
-                && EUClient.MODULE_MANAGER.getModule(FontModule.class).customFont.getValue()
-                && fontRenderer != null;
+        // Must also check Global: the real chat/EditBox text (GuiRenderStateMixin) only switches
+        // to the custom font when Global is on, so measuring/drawing here without the same check
+        // used custom-font metrics against vanilla-rendered text whenever Global was off --
+        // misaligned suggestion overlays (widths never matched what was actually on screen).
+        FontModule module = EUClient.MODULE_MANAGER.getModule(FontModule.class);
+        return module.isToggled() && module.customFont.getValue() && module.global.getValue() && fontRenderer != null;
     }
 
     private boolean shadowEnabled() {
@@ -129,7 +132,16 @@ public class FontManager implements IMinecraft {
 
     public int getWidth(String text) {
         if (useCustomFont()) {
-            return (int) fontRenderer.getTextWidth(text) + EUClient.MODULE_MANAGER.getModule(FontModule.class).widthOffset.getValue().intValue();
+            // WidthOffset must NOT leak into the reported width -- with Global on, Font.width()
+            // (TextRendererMixin) IS this method, and vanilla uses that measured width for every
+            // layout decision (chat suggestion ghost-text position, tooltip/popup sizing, centered
+            // labels...), all computed against where the glyphs are ACTUALLY drawn (submitGlyphs,
+            // which never applied this offset). Baking a fake few pixels into just the measurement
+            // desynced every one of those from the real rendered text, compounding worse the more
+            // times a widget re-measures a growing substring (reported: suggestion text drifting
+            // further right than the typed text it's supposed to continue). WidthOffset is a
+            // render-position nudge, not a real width delta -- it never belonged here.
+            return (int) fontRenderer.getTextWidth(text);
         } else {
             return mc.font.width(text);
         }

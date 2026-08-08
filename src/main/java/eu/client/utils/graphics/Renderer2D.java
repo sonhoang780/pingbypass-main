@@ -109,6 +109,23 @@ public class Renderer2D implements IMinecraft {
     // World / HUD (immediate-mode) primitives
     // ------------------------------------------------------------------
 
+    // Immediate-mode counterpart to renderQuad() -- that one is retained (queues state for
+    // GuiRenderer to batch-flush later in the frame), which is normally exactly what you want,
+    // but is unusable for anything that has to land in a scratch RenderTarget THIS instant (e.g.
+    // CozyGlowCapture's blur-capture window) since the override that redirects output would
+    // already be cleared by the time a retained draw actually flushes.
+    public static void renderImmediateQuad(PoseStack matrices, float left, float top, float right, float bottom, Color color) {
+        Matrix4f matrix = matrices.last().pose();
+        int c = color.getRGB();
+        BufferBuilder buffer = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
+        buffer.addVertex(matrix, left, top, 0.0f).setColor(c);
+        buffer.addVertex(matrix, left, bottom, 0.0f).setColor(c);
+        buffer.addVertex(matrix, right, bottom, 0.0f).setColor(c);
+        buffer.addVertex(matrix, right, top, 0.0f).setColor(c);
+        MeshData mesh = buffer.build();
+        if (mesh != null) RenderTypes.debugQuads().draw(mesh);
+    }
+
     public static void renderCircle(PoseStack matrices, float x, float y, float radius, Color color) {
         Matrix4f matrix = matrices.last().pose();
         int c = color.getRGB();

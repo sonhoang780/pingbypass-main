@@ -10,6 +10,7 @@ import eu.client.utils.system.Timer;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.throwableitemprojectile.ThrownEnderpearl;
 import net.minecraft.network.protocol.game.ClientboundEntityEventPacket;
+import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.core.Vec3i;
@@ -27,6 +28,39 @@ public class WorldManager implements IMinecraft {
     @Getter @Setter private float timerMultiplier = 1.0f;
 
     @Getter private final Timer placeTimer = new Timer();
+
+    // Cells that a block-placement module (SelfFill/Surround/...) wants to place in THIS tick.
+    // AutoCrystal reads this before picking a crystal spot so it stops re-filling a position
+    // another module is actively trying to place a block into -- without this, AutoCrystal wins
+    // every tick (PlayerUpdateEvent fires before its UpdateMovementEvent.Post placement) and the
+    // two modules whack-a-mole the same cell forever. Cleared and repopulated every tick.
+    private final Set<BlockPos> reservedPlacements = ConcurrentHashMap.newKeySet();
+
+    public void reservePlacement(BlockPos pos) {
+        reservedPlacements.add(pos);
+    }
+
+    public boolean isReserved(BlockPos pos) {
+        return reservedPlacements.contains(pos);
+    }
+
+    public Set<BlockPos> getReservedPlacements() {
+        return reservedPlacements;
+    }
+
+    // Instant retry on confirmed crystal death, keyed by the attacked crystal's entity id --
+    // waiting for the caller's own next tick (PlayerUpdateEvent, once per client tick) to retry a
+    // blocked placement is still a full tick of dead time. This fires the moment the SERVER
+    // confirms the crystal is actually gone (ClientboundRemoveEntitiesPacket), which is the
+    // earliest possible signal short of predicting it -- shrinks the race window against an enemy
+    // re-placing a crystal on the same cell (crystal-aura-style) to whatever's left of that RTT
+    // instead of a full extra client tick, though it still can't outright WIN that race if their
+    // ping is lower: both sides are bounded by their own round-trip to the server either way.
+    private final Map<Integer, Runnable> pendingCrystalRetries = new ConcurrentHashMap<>();
+
+    public void onCrystalAttacked(int entityId, Runnable retry) {
+        pendingCrystalRetries.put(entityId, retry);
+    }
 
     public WorldManager() {
         EUClient.EVENT_HANDLER.subscribe(this);
@@ -61,6 +95,11 @@ public class WorldManager implements IMinecraft {
 
     @SubscribeEvent
     public void onTick(TickEvent event) {
+        // Cleared here (fires at Minecraft.tick() HEAD, before PlayerUpdateEvent/UpdateMovementEvent
+        // both fire from the player entity's own tick later this same tick) so each tick starts
+        // fresh and a reservation from N ticks ago can't linger and block a cell forever.
+        reservedPlacements.clear();
+
         if (mc.level == null) return;
 
         for (UUID uuid : new ArrayList<>(poppedTotems.keySet())) {
@@ -95,6 +134,13 @@ public class WorldManager implements IMinecraft {
             poppedTotems.put(player.getUUID(), ++pops);
 
             EUClient.EVENT_HANDLER.post(new PlayerPopEvent(player, pops));
+        }
+
+        if (!pendingCrystalRetries.isEmpty() && event.getPacket() instanceof ClientboundRemoveEntitiesPacket removePacket) {
+            for (int id : removePacket.getEntityIds()) {
+                Runnable retry = pendingCrystalRetries.remove(id);
+                if (retry != null) retry.run();
+            }
         }
     }
 

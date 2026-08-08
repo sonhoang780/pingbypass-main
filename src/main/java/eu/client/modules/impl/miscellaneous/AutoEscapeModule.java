@@ -8,10 +8,8 @@ import eu.client.modules.RegisterModule;
 import eu.client.settings.impl.BooleanSetting;
 import eu.client.settings.impl.NumberSetting;
 import eu.client.utils.minecraft.InventoryUtils;
-import eu.client.utils.minecraft.NetworkUtils;
 import eu.client.utils.system.Timer;
 import net.minecraft.core.BlockPos;
-import net.minecraft.network.protocol.game.ServerboundUseItemPacket;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.Items;
 
@@ -22,12 +20,21 @@ public class AutoEscapeModule extends Module {
     public BooleanSetting autoDisable = new BooleanSetting("AutoDisable", "Disables the module after it escapes once.", false);
 
     // Chorus fruit is NOT instant -- it's a Consumable with a 1.6s eat animation (same as food); the
-    // teleport only fires via its onConsume effect once that duration finishes server-side. Switching
-    // slots (as the old one-shot version did, immediately after the single use packet) interrupts an
-    // in-progress consume, so the eat never actually completed and the "escaped" message was a lie --
-    // player stayed trapped, cooldown expired, and the whole broken cycle just repeated forever. Now a
-    // real tick-driven state machine: send the use packet once, touch NOTHING else about the held
-    // item for the full 1.6s, then swap back only after the consume has actually had time to finish.
+    // teleport only fires via its onConsume effect once that duration finishes server-side. A
+    // real tick-driven state machine: fire the use once, touch NOTHING else about the held item
+    // for the full 1.6s, then swap back only after the consume has actually had time to finish.
+    //
+    // The use itself goes through mc.gameMode.useItem(player, hand) -- vanilla's REAL interaction
+    // path -- instead of hand-rolling a ServerboundUseItemPacket + startUsingItem() pair. That
+    // hand-rolled version skipped useItem()'s own ensureHasSentCarriedItem() call (which resends
+    // ServerboundSetCarriedItemPacket if the player's selected slot and MultiPlayerGameMode's own
+    // cached carriedIndex have drifted) and itemStack.use(...)'s client-side execution. Without
+    // it, MultiPlayerGameMode.tick() -- which ALSO calls ensureHasSentCarriedItem() every single
+    // tick on its own -- could resend a redundant SetCarriedItem race-adjacent to our deferred use
+    // packet whenever nothing else suppressed that per-tick call; a screen being open pauses that
+    // normal tick-driven input path, which is exactly why it only ever worked "by luck" with a GUI
+    // open. useItem() does its own switch-then-use sequencing atomically in the right order, so
+    // there's no need to defer the use to a separate tick at all anymore.
     private static final long EAT_DURATION_MS = 1600L;
 
     private final Timer timer = new Timer();
@@ -59,12 +66,19 @@ public class AutoEscapeModule extends Module {
         if (slot == -1) return;
 
         previousSlot = mc.player.getInventory().getSelectedSlot();
+        if (slot != previousSlot) InventoryUtils.switchSlot("Normal", slot, previousSlot);
 
-        InventoryUtils.switchSlot("Normal", slot, previousSlot);
-        NetworkUtils.sendSequencedPacket(sequence -> new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, sequence, mc.player.getYRot(), mc.player.getXRot()));
-
+        mc.gameMode.useItem(mc.player, InteractionHand.MAIN_HAND);
         eating = true;
         eatingSince = System.currentTimeMillis();
+    }
+
+    // MinecraftClientMixin.euclient$dontReleaseFakedUse reads this: vanilla's own handleKeybinds()
+    // auto-cancels any in-progress item use whose real right-click key isn't physically held down,
+    // which is always true here since useItem() gets called programmatically -- it needs to know
+    // "this cancel-check is about OUR fake use, let it ride" instead of auto-releasing it.
+    public boolean isEating() {
+        return eating;
     }
 
     @Override

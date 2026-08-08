@@ -13,12 +13,16 @@ import java.util.Set;
 public class PbModuleManager {
     /**
      * Names of client Module classes that have been migrated to a PbModule submodule here
-     * (ServerAutoCrystal, ServerAutoTotem, ServerSurround, ...). The client-side Module.setToggled
+     * (ServerAutoCrystal, ServerAutoTotem). The client-side Module.setToggled
      * uses this to decide whether to relay a toggle to the proxy even though these modules are
      * no longer proxyEnhanced (that flag now only gates the not-yet-migrated modules still on
      * ProxyModuleManager). Update this set as more modules migrate.
      */
-    public static final Set<String> MIGRATED_MODULE_NAMES = Set.of("AutoCrystal", "AutoTotem", "Surround", "SpeedMine", "AutoTrap");
+    // Surround/AutoTrap removed -- neither runs anything on the proxy anymore (matches earthhack:
+    // no proxy-side port existed for either), so there's nothing on the proxy that needs their
+    // toggle state. SpeedMine stays: no PbModule submodule, but its own client/proxy dual
+    // execution (see SpeedMineModule.isProxyActive()) still needs the proxy to know if it's on.
+    public static final Set<String> MIGRATED_MODULE_NAMES = Set.of("AutoCrystal", "AutoTotem", "SpeedMine");
 
     private final List<PbModule> modules = new ArrayList<>();
 

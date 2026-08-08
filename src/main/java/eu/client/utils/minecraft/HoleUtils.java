@@ -171,6 +171,43 @@ public class HoleUtils implements IMinecraft {
         return positions;
     }
 
+    // Loosened (2026-08-06): used to hard-reject a hole entirely unless EVERY wall was one of the
+    // 4 classic blast-resistant blocks (bedrock/obsidian/respawn anchor/ender chest) -- fine for
+    // PvP-safe crystal holing, but far too strict for general "walk into a hole" use (example-addon's
+    // own HoleSnap port only ever required a wall to be solid at all, isBlock(): non-empty collision
+    // shape, no block-type restriction). Now any solid block counts as a valid wall; the safety
+    // classification (still BEDROCK/OBSIDIAN/MIXED when every wall happens to qualify, same as
+    // before) downgrades to NONE the moment any wall is just an ordinary solid block, instead of
+    // rejecting the whole hole.
+    private static HoleSafety classifyWalls(BlockPos position, Vec3i[] offsets) {
+        HoleSafety safety = null;
+        boolean allBlastProof = true;
+
+        for (Vec3i offset : offsets) {
+            BlockPos pos = position.offset(offset);
+            var block = mc.level.getBlockState(pos).getBlock();
+            boolean bedrock = block.equals(Blocks.BEDROCK);
+            boolean otherBlastProof = block.equals(Blocks.OBSIDIAN) || block.equals(Blocks.RESPAWN_ANCHOR) || block.equals(Blocks.ENDER_CHEST);
+
+            if (!bedrock && !otherBlastProof) {
+                allBlastProof = false;
+                if (mc.level.getBlockState(pos).getCollisionShape(mc.level, pos).isEmpty()) return null;
+                continue;
+            }
+
+            if (bedrock) {
+                if (safety == HoleSafety.OBSIDIAN) safety = HoleSafety.MIXED;
+                else if (safety != HoleSafety.MIXED) safety = HoleSafety.BEDROCK;
+            } else {
+                if (safety == HoleSafety.BEDROCK) safety = HoleSafety.MIXED;
+                else if (safety != HoleSafety.MIXED) safety = HoleSafety.OBSIDIAN;
+            }
+        }
+
+        if (!allBlastProof) return HoleSafety.NONE;
+        return safety == null ? HoleSafety.OBSIDIAN : safety;
+    }
+
     public static Hole getSingleHole(BlockPos position, double height) {
         return getSingleHole(position, height, true);
     }
@@ -180,24 +217,8 @@ public class HoleUtils implements IMinecraft {
         if (!mc.level.getBlockState(position.above()).getBlock().equals(Blocks.AIR) && reachable) return null;
         if (!mc.level.getBlockState(position.above().above()).getBlock().equals(Blocks.AIR) && reachable) return null;
 
-        HoleSafety safety = null;
-        for (Vec3i offset : singleOffsets) {
-            if (!(mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.BEDROCK) || mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.OBSIDIAN) || mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.RESPAWN_ANCHOR) || mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.ENDER_CHEST))) {
-                return null;
-            }
-
-            if (mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.BEDROCK)) {
-                if (safety == HoleSafety.OBSIDIAN) safety = HoleSafety.MIXED;
-                else if (safety != HoleSafety.MIXED) safety = HoleSafety.BEDROCK;
-            }
-
-            if (mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.OBSIDIAN) || mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.RESPAWN_ANCHOR) || mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.ENDER_CHEST)) {
-                if (safety == HoleSafety.BEDROCK) safety = HoleSafety.MIXED;
-                else if (safety != HoleSafety.MIXED) safety = HoleSafety.OBSIDIAN;
-            }
-        }
-
-        if (safety == null) safety = HoleSafety.OBSIDIAN;
+        HoleSafety safety = classifyWalls(position, singleOffsets);
+        if (safety == null) return null;
 
         return new Hole(new AABB(position.getX(), position.getY(), position.getZ(), position.getX() + 1, position.getY() + height, position.getZ() + 1), HoleType.SINGLE, safety);
     }
@@ -216,51 +237,22 @@ public class HoleUtils implements IMinecraft {
         HoleSafety safety = null;
 
         if (x) {
-            boolean valid = true;
-            for (Vec3i offset : doubleXOffsets) {
-                if (!(mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.BEDROCK) || mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.OBSIDIAN) || mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.RESPAWN_ANCHOR) || mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.ENDER_CHEST))) {
-                    valid = false;
-                    break;
-                }
-
-                if (mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.BEDROCK)) {
-                    if (safety == HoleSafety.OBSIDIAN) safety = HoleSafety.MIXED;
-                    else if (safety != HoleSafety.MIXED) safety = HoleSafety.BEDROCK;
-                }
-
-                if (mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.OBSIDIAN) || mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.RESPAWN_ANCHOR) || mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.ENDER_CHEST)) {
-                    if (safety == HoleSafety.BEDROCK) safety = HoleSafety.MIXED;
-                    else if (safety != HoleSafety.MIXED) safety = HoleSafety.OBSIDIAN;
-                }
+            HoleSafety s = classifyWalls(position, doubleXOffsets);
+            if (s != null) {
+                box = new AABB(position.getX(), position.getY(), position.getZ(), position.getX() + 2, position.getY() + height, position.getZ() + 1);
+                safety = s;
             }
-
-            if (valid) box = new AABB(position.getX(), position.getY(), position.getZ(), position.getX() + 2, position.getY() + height, position.getZ() + 1);
         }
 
         if (z && box == null) {
-            boolean valid = true;
-            for (Vec3i offset : doubleZOffsets) {
-                if (!(mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.BEDROCK) || mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.OBSIDIAN) || mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.RESPAWN_ANCHOR) || mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.ENDER_CHEST))) {
-                    valid = false;
-                    break;
-                }
-
-                if (mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.BEDROCK)) {
-                    if (safety == HoleSafety.OBSIDIAN) safety = HoleSafety.MIXED;
-                    else if (safety != HoleSafety.MIXED) safety = HoleSafety.BEDROCK;
-                }
-
-                if (mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.OBSIDIAN) || mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.RESPAWN_ANCHOR) || mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.ENDER_CHEST)) {
-                    if (safety == HoleSafety.BEDROCK) safety = HoleSafety.MIXED;
-                    else if (safety != HoleSafety.MIXED) safety = HoleSafety.OBSIDIAN;
-                }
+            HoleSafety s = classifyWalls(position, doubleZOffsets);
+            if (s != null) {
+                box = new AABB(position.getX(), position.getY(), position.getZ(), position.getX() + 1, position.getY() + height, position.getZ() + 2);
+                safety = s;
             }
-
-            if (valid) box = new AABB(position.getX(), position.getY(), position.getZ(), position.getX() + 1, position.getY() + height, position.getZ() + 2);
         }
 
         if (box == null) return null;
-        if (safety == null) safety = HoleSafety.OBSIDIAN;
 
         return new Hole(box, HoleType.DOUBLE, safety);
     }
@@ -279,30 +271,14 @@ public class HoleUtils implements IMinecraft {
         if (!mc.level.getBlockState(position.offset(new Vec3i(1, 0, 1)).above()).getBlock().equals(Blocks.AIR)) return null;
         if (!mc.level.getBlockState(position.offset(new Vec3i(1, 0, 1)).above().above()).getBlock().equals(Blocks.AIR)) return null;
 
-        HoleSafety safety = null;
-        for (Vec3i offset : quadOffsets) {
-            if (!(mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.BEDROCK) || mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.OBSIDIAN) || mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.RESPAWN_ANCHOR) || mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.ENDER_CHEST))) {
-                return null;
-            }
-
-            if (mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.BEDROCK)) {
-                if (safety == HoleSafety.OBSIDIAN) safety = HoleSafety.MIXED;
-                else if (safety != HoleSafety.MIXED) safety = HoleSafety.BEDROCK;
-            }
-
-            if (mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.OBSIDIAN) || mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.RESPAWN_ANCHOR) || mc.level.getBlockState(position.offset(offset)).getBlock().equals(Blocks.ENDER_CHEST)) {
-                if (safety == HoleSafety.BEDROCK) safety = HoleSafety.MIXED;
-                else if (safety != HoleSafety.MIXED) safety = HoleSafety.OBSIDIAN;
-            }
-        }
-
-        if (safety == null) safety = HoleSafety.OBSIDIAN;
+        HoleSafety safety = classifyWalls(position, quadOffsets);
+        if (safety == null) return null;
 
         return new Hole(new AABB(position.getX(), position.getY(), position.getZ(), position.getX() + 2, position.getY() + height, position.getZ() + 2), HoleType.QUAD, safety);
     }
 
     public record Hole(AABB box, HoleType type, HoleSafety safety) {}
     public enum HoleType { SINGLE, DOUBLE, QUAD }
-    public enum HoleSafety { OBSIDIAN, MIXED, BEDROCK }
+    public enum HoleSafety { OBSIDIAN, MIXED, BEDROCK, NONE }
 }
 

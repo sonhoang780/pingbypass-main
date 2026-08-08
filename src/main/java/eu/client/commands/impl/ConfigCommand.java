@@ -14,7 +14,22 @@ public class ConfigCommand extends Command {
     @Override
     public List<String> getSuggestions(String[] args) {
         if (args.length == 0) return List.of("load", "save", "reload", "current");
+        if (args.length == 1 && (args[0].equalsIgnoreCase("load") || args[0].equalsIgnoreCase("save"))) {
+            return savedConfigNames();
+        }
         return List.of();
+    }
+
+    private List<String> savedConfigNames() {
+        java.io.File dir = new java.io.File(EUClient.MOD_NAME + "/Configs");
+        java.io.File[] files = dir.listFiles((d, name) -> name.endsWith(".json"));
+        if (files == null) return List.of();
+
+        return java.util.Arrays.stream(files)
+                .map(java.io.File::getName)
+                .map(name -> name.substring(0, name.length() - ".json".length()))
+                .sorted()
+                .toList();
     }
 
     @Override

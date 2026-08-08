@@ -27,6 +27,7 @@ import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.objectweb.asm.Opcodes;
 
 @Mixin(LocalPlayer.class)
 public abstract class ClientPlayerEntityMixin extends AbstractClientPlayer {
@@ -53,21 +54,47 @@ public abstract class ClientPlayerEntityMixin extends AbstractClientPlayer {
         EUClient.EVENT_HANDLER.post(new UpdateMovementEvent.Post());
     }
 
-    // PORT: sendMovementPackets was inlined into tick()/sendPosition() -- the passenger-rotation
-    // send path in tick() itself is left alone (not covered by the old feature either); this wraps
-    // the on-foot movement-send path (sendPosition), which reads getYRot/getXRot both to build the
-    // outgoing packet and to refresh the yRotLast/xRotLast change-detection cache.
-    @WrapOperation(method = "sendPosition", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/player/LocalPlayer;getYRot()F"))
-    private float sendPosition$getYRot(LocalPlayer instance, Operation<Float> original) {
+    // PORT REGRESSION FIX. 1.21.4 wrapped the FIELD read `lastYaw` at ordinal 0 -- i.e. ONLY the
+    // change-detection baseline in `getYaw() - lastYaw`, replacing it with the last yaw actually
+    // PUT ON THE WIRE, so "did my look change since the server last heard about it" is measured
+    // against the server's view instead of the local cache. The port instead wrapped
+    // `getYRot()`/`getXRot()` in sendPosition with no ordinal, which hits ALL THREE uses: the
+    // delta computation, the packet payload itself, and the `yRotLast = getYRot()` refresh. Net
+    // effect while ANY rotation is queued:
+    //   deltaYRot = serverYaw - yRotLast, and yRotLast was itself last set to serverYaw
+    //             => delta is always 0 => `rot` is false => a Pos-only packet is sent
+    //   and even when something else forced a rotation packet, its payload was serverYaw
+    //             (the PREVIOUS packet's yaw), never rotation.getYaw().
+    // So RotationManager's yaw swap (applied to the real mc.player for the whole
+    // UpdateMovementEvent -> UpdateMovementEvent.Post window, which encloses sendPosition) was
+    // correctly putting the spoofed yaw on mc.player, and this mixin then threw it away: NO silent
+    // rotation from ANY module has been reaching the server since the port. Everything downstream
+    // that assumes "the server now believes I'm facing X" (SprintModule's Grim/GrimStrict/RageStrict
+    // yaw compensation, AutoCrystal's Rotate=Normal, KillAura, SpeedMine) was silently a no-op on
+    // the wire while still altering local state -- exactly the movement/rotation desync a real
+    // prediction-based anticheat sets you back for.
+    // 26.1.2's sendPosition reads yRotLast/xRotLast once each (the delta) before writing them back,
+    // so ordinal 0 is the read, same as 1.21.4's lastYaw.
+    @WrapOperation(method = "sendPosition", at = @At(value = "FIELD", target = "Lnet/minecraft/client/player/LocalPlayer;yRotLast:F", opcode = Opcodes.GETFIELD, ordinal = 0))
+    private float sendPosition$yRotLast(LocalPlayer instance, Operation<Float> original) {
         if (EUClient.ROTATION_MANAGER.getRotation() != null) return EUClient.ROTATION_MANAGER.getServerYaw();
         return original.call(instance);
     }
 
-    @WrapOperation(method = "sendPosition", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/player/LocalPlayer;getXRot()F"))
-    private float sendPosition$getXRot(LocalPlayer instance, Operation<Float> original) {
+    @WrapOperation(method = "sendPosition", at = @At(value = "FIELD", target = "Lnet/minecraft/client/player/LocalPlayer;xRotLast:F", opcode = Opcodes.GETFIELD, ordinal = 0))
+    private float sendPosition$xRotLast(LocalPlayer instance, Operation<Float> original) {
         if (EUClient.ROTATION_MANAGER.getRotation() != null) return EUClient.ROTATION_MANAGER.getServerPitch();
         return original.call(instance);
     }
+
+    // NOTE for Sprint "Grim" (omni-sprint vs GrimAC): there is deliberately NO wire input-key fake
+    // here any more. 26.1.2's LocalPlayer.tick() calls super.tick() (-> aiStep -> ClientInput.tick())
+    // BEFORE it builds ServerboundPlayerInputPacket from this.input.keyPresses, so the single write
+    // KeyboardInputMixin already makes at the tail of KeyboardInput.tick() is what ends up on the
+    // wire -- and is the same object vanilla's physics reads. A second, independent fake at packet-
+    // send time (what the previous attempt did) can only ever drift from the first one.
+    // The sendPosition wire-rotation fix above is what carries Grim's faked YAW, unchanged: Grim
+    // queues into ROTATION_MANAGER like every other aim module and inherits it for free.
 
     @ModifyExpressionValue(method = "modifyInput", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/player/LocalPlayer;isUsingItem()Z"))
     private boolean tickMovement$isUsingItem(boolean original) {
@@ -77,13 +104,20 @@ public abstract class ClientPlayerEntityMixin extends AbstractClientPlayer {
 
     @Inject(method = "move", at = @At("HEAD"), cancellable = true)
     private void move(MoverType movementType, Vec3 movement, CallbackInfo info) {
-        // Under raw-input forwarding, the client never moves locally at all -- the proxy's
-        // own LocalPlayer (driven by ServerInputService) is the sole source of movement.
-        if (eu.client.pingbypass.PingBypassFlags.rawInputForwardingActive
-                && EUClient.PINGBYPASS_CONFIG != null && !EUClient.PINGBYPASS_CONFIG.isServer()) {
+        // Matches earthhack's PbMoveListener (cancels MoveEvent whenever PingBypass.isConnected(),
+        // i.e. server && connected -- proxy side only): the ghost player here is teleported
+        // straight from the client's own forwarded packets (PbPlayHandler.handleMovePlayer) and
+        // must never run its own physics/collision on top of that -- doing so fights the teleport
+        // every tick (gravity/friction applied from wherever the last teleport left off), corrupting
+        // the position the proxy then reports to the real server. That's the rubberbanding/can't-jump
+        // bug: previously nothing here suppressed the ghost's own move() at all, despite the stale
+        // comment at the top of PbPlayHandler claiming it was suppressed.
+        if (eu.client.pingbypass.PingBypassFlags.proxyForwardingActive
+                && EUClient.PINGBYPASS_CONFIG != null && EUClient.PINGBYPASS_CONFIG.isServer()) {
             info.cancel();
             return;
         }
+
         PlayerMoveEvent event = new PlayerMoveEvent(movementType, movement);
         EUClient.EVENT_HANDLER.post(event);
 
@@ -100,25 +134,18 @@ public abstract class ClientPlayerEntityMixin extends AbstractClientPlayer {
 
     @Inject(method = "sendPosition", at = @At("HEAD"), cancellable = true)
     private void sendMovementPackets(CallbackInfo info) {
-        // When proxy forwarding is active on the SERVER (proxy), cancel sendMovementPackets.
-        // The client's movement packets are forwarded by PbPlayHandler.onPlayerMove.
-        // Without this cancel, the proxy would send its OWN movement to the server
-        // (conflicting with the forwarded client packets).
-        if (eu.client.pingbypass.PingBypassFlags.proxyForwardingActive
-                && EUClient.PINGBYPASS_CONFIG != null && EUClient.PINGBYPASS_CONFIG.isServer()) {
-            info.cancel();
-            return;
-        }
-        // On the CLIENT side: under raw-input forwarding, the client never moves locally
-        // (see `move` above), so there is nothing meaningful to send -- the proxy's own
-        // LocalPlayer sends real movement packets to the backend server itself.
-        if (eu.client.pingbypass.PingBypassFlags.rawInputForwardingActive
-                && EUClient.PINGBYPASS_CONFIG != null && !EUClient.PINGBYPASS_CONFIG.isServer()) {
-            info.cancel();
-            return;
-        }
-        // Otherwise (dumb-pipe mode): the client sends movement packets to the proxy
-        // normally, and the proxy forwards them to the real server.
+        // Same path on both sides. On the CLIENT, this sends the real player's own movement
+        // packet to the proxy as always. On the PROXY, mc.player is the ghost that
+        // PbPlayHandler.handleMovePlayer() keeps positioned from the client's own packets --
+        // this now generates the proxy's OWN fresh movement packet from that position each
+        // tick and sends it straight to the real server (mc.getConnection() on the proxy IS
+        // the real server connection, see ProxyServer.setServerConnection callers), matching
+        // earthhack's MotionUpdateHelper.invokeUpdateWalkingPlayer() -- rather than dumb-piping
+        // the client's raw packet bytes through. This is also the hook point for proxy-side
+        // aim modules: the WrapOperation getYRot/getXRot below already substitutes
+        // RotationManager's queued rotation into whatever packet gets built here, for both
+        // sides, so a module's rotation is applied before the send regardless of which side
+        // is running it.
         SendMovementEvent event = new SendMovementEvent();
         EUClient.EVENT_HANDLER.post(event);
         if (event.isCancelled()) {
@@ -155,14 +182,6 @@ public abstract class ClientPlayerEntityMixin extends AbstractClientPlayer {
 
     @Inject(method = "swing", at = @At("HEAD"), cancellable = true)
     private void swingHand(InteractionHand hand, CallbackInfo info) {
-        // Under raw-input forwarding, the client never attacks locally -- the ATTACK key
-        // is replayed on the proxy instead (see ClientPlayerInteractionManagerMixin.attack),
-        // whose own swing() call is the sole source of the swing packet.
-        if (eu.client.pingbypass.PingBypassFlags.rawInputForwardingActive
-                && EUClient.PINGBYPASS_CONFIG != null && !EUClient.PINGBYPASS_CONFIG.isServer()) {
-            info.cancel();
-            return;
-        }
         if (EUClient.MODULE_MANAGER.getModule(SwingModule.class).isToggled()) {
             if (!EUClient.MODULE_MANAGER.getModule(SwingModule.class).hand.getValue().equals("None")) {
                 switch (EUClient.MODULE_MANAGER.getModule(SwingModule.class).hand.getValue()) {

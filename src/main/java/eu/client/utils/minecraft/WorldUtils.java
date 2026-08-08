@@ -53,15 +53,25 @@ public class WorldUtils implements IMinecraft {
     public static Set<Block> RIGHT_CLICKABLE_BLOCKS = Sets.newHashSet(Blocks.CHEST, Blocks.TRAPPED_CHEST, Blocks.ENDER_CHEST, Blocks.WHITE_SHULKER_BOX, Blocks.ORANGE_SHULKER_BOX, Blocks.MAGENTA_SHULKER_BOX, Blocks.LIGHT_BLUE_SHULKER_BOX, Blocks.YELLOW_SHULKER_BOX, Blocks.LIME_SHULKER_BOX, Blocks.PINK_SHULKER_BOX, Blocks.GRAY_SHULKER_BOX, Blocks.LIGHT_GRAY_SHULKER_BOX, Blocks.CYAN_SHULKER_BOX, Blocks.PURPLE_SHULKER_BOX, Blocks.BLUE_SHULKER_BOX, Blocks.BROWN_SHULKER_BOX, Blocks.GREEN_SHULKER_BOX, Blocks.RED_SHULKER_BOX, Blocks.BLACK_SHULKER_BOX, Blocks.ANVIL, Blocks.BELL, Blocks.OAK_BUTTON, Blocks.ACACIA_BUTTON, Blocks.BIRCH_BUTTON, Blocks.DARK_OAK_BUTTON, Blocks.JUNGLE_BUTTON, Blocks.SPRUCE_BUTTON, Blocks.STONE_BUTTON, Blocks.COMPARATOR, Blocks.REPEATER, Blocks.OAK_FENCE_GATE, Blocks.SPRUCE_FENCE_GATE, Blocks.BIRCH_FENCE_GATE, Blocks.JUNGLE_FENCE_GATE, Blocks.DARK_OAK_FENCE_GATE, Blocks.ACACIA_FENCE_GATE, Blocks.BREWING_STAND, Blocks.DISPENSER, Blocks.DROPPER, Blocks.LEVER, Blocks.NOTE_BLOCK, Blocks.JUKEBOX, Blocks.BEACON, Blocks.BLACK_BED, Blocks.BLUE_BED, Blocks.BROWN_BED, Blocks.CYAN_BED, Blocks.GRAY_BED, Blocks.GREEN_BED, Blocks.LIGHT_BLUE_BED, Blocks.LIGHT_GRAY_BED, Blocks.LIME_BED, Blocks.MAGENTA_BED, Blocks.ORANGE_BED, Blocks.PINK_BED, Blocks.PURPLE_BED, Blocks.RED_BED, Blocks.WHITE_BED, Blocks.YELLOW_BED, Blocks.FURNACE, Blocks.OAK_DOOR, Blocks.SPRUCE_DOOR, Blocks.BIRCH_DOOR, Blocks.JUNGLE_DOOR, Blocks.ACACIA_DOOR, Blocks.DARK_OAK_DOOR, Blocks.CAKE, Blocks.ENCHANTING_TABLE, Blocks.DRAGON_EGG, Blocks.HOPPER, Blocks.REPEATING_COMMAND_BLOCK, Blocks.COMMAND_BLOCK, Blocks.CHAIN_COMMAND_BLOCK, Blocks.CRAFTING_TABLE, Blocks.ACACIA_TRAPDOOR, Blocks.BIRCH_TRAPDOOR, Blocks.DARK_OAK_TRAPDOOR, Blocks.JUNGLE_TRAPDOOR, Blocks.OAK_TRAPDOOR, Blocks.SPRUCE_TRAPDOOR, Blocks.CAKE, Blocks.ACACIA_SIGN, Blocks.ACACIA_WALL_SIGN, Blocks.BIRCH_SIGN, Blocks.BIRCH_WALL_SIGN, Blocks.DARK_OAK_SIGN, Blocks.DARK_OAK_WALL_SIGN, Blocks.JUNGLE_SIGN, Blocks.JUNGLE_WALL_SIGN, Blocks.OAK_SIGN, Blocks.OAK_WALL_SIGN, Blocks.SPRUCE_SIGN, Blocks.SPRUCE_WALL_SIGN, Blocks.CRIMSON_SIGN, Blocks.CRIMSON_WALL_SIGN, Blocks.WARPED_SIGN, Blocks.WARPED_WALL_SIGN, Blocks.BLAST_FURNACE, Blocks.SMOKER, Blocks.CARTOGRAPHY_TABLE, Blocks.GRINDSTONE, Blocks.LECTERN, Blocks.LOOM, Blocks.STONECUTTER, Blocks.SMITHING_TABLE);
     private static final ItemStack NETHERITE_PICKAXE = new ItemStack(Items.NETHERITE_PICKAXE);
 
-    public static void placeBlock(BlockPos position, Direction direction, InteractionHand hand, boolean rotate, boolean crystalDestruction) {
-        placeBlock(position, direction, hand, rotate, crystalDestruction, false);
+    public static boolean placeBlock(BlockPos position, Direction direction, InteractionHand hand, boolean rotate, boolean crystalDestruction) {
+        return placeBlock(position, direction, hand, rotate, crystalDestruction, false);
     }
 
-    public static void placeBlock(BlockPos position, Direction direction, InteractionHand hand, boolean rotate, boolean crystalDestruction, boolean render) {
-        placeBlock(position, direction, hand, null, rotate, crystalDestruction, render);
+    public static boolean placeBlock(BlockPos position, Direction direction, InteractionHand hand, boolean rotate, boolean crystalDestruction, boolean render) {
+        return placeBlock(position, direction, hand, null, rotate, crystalDestruction, render);
     }
 
-    public static void placeBlock(BlockPos position, Direction direction, InteractionHand hand, Runnable runnable, boolean rotate, boolean crystalDestruction, boolean render) {
+    // Returns false when the placement packet was SKIPPED this call (a crystal sat where we were
+    // about to place, so we only sent the attack packet instead) -- true when the actual
+    // place packet went out. Attacking then immediately placing in the SAME call sent the place
+    // packet before the server had any chance to process the crystal's death, so the server's own
+    // isUnobstructed check still saw the (about to die, but not dead YET) crystal's hitbox in the
+    // way and rejected the placement outright -- matches the reported "AutoCrystal drops a crystal
+    // near my SelfTrap/Surround spot and I can never place there" (SelfTrap especially: it only
+    // ever attempts once, so that single same-tick race was a guaranteed permanent failure, not
+    // just an occasional flicker). Skipping the place packet here forces the caller to retry on
+    // its OWN next tick, by which point the server has actually removed the crystal.
+    public static boolean placeBlock(BlockPos position, Direction direction, InteractionHand hand, Runnable runnable, boolean rotate, boolean crystalDestruction, boolean render) {
         Vec3 vec3d = position.getCenter();
         BlockPos offsetPosition;
 
@@ -73,11 +83,26 @@ public class WorldUtils implements IMinecraft {
             vec3d = vec3d.add(direction.getStepX() / 2.0, direction.getStepY() / 2.0, direction.getStepZ() / 2.0);
         }
 
+        // Publish this cell as wanted BEFORE anything else runs this tick -- AutoCrystal reads
+        // WorldManager.isReserved() when picking its own placement spot, so it stops re-filling a
+        // cell a placement module is actively trying to use instead of winning the whack-a-mole
+        // every tick (PlayerUpdateEvent, which placement modules run on, fires before AutoCrystal's
+        // own UpdateMovementEvent.Post placement).
+        EUClient.WORLD_MANAGER.reservePlacement(position);
+
         float prevYaw = EUClient.ROTATION_MANAGER.getServerYaw();
         float prevPitch = EUClient.ROTATION_MANAGER.getServerPitch();
 
         if (rotate) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(vec3d.x, vec3d.y, vec3d.z));
-        if (crystalDestruction) destroyCrystals(position);
+        if (crystalDestruction) {
+            Direction finalDirection = direction;
+            // Retry the instant the server confirms the blocking crystal is actually dead
+            // (WorldManager listens for ClientboundRemoveEntitiesPacket) instead of only waiting
+            // for the caller's own next tick -- shrinks the re-place race window against an enemy
+            // contesting the same cell.
+            Runnable retry = () -> placeBlock(position, finalDirection, hand, runnable, rotate, crystalDestruction, render);
+            if (destroyCrystals(position, mc.player.getEyePosition(), vec3d, retry)) return false;
+        }
         if (runnable != null) runnable.run();
 
         boolean sprint = mc.player.isSprinting();
@@ -119,6 +144,8 @@ public class WorldUtils implements IMinecraft {
                 }
             }
         }
+
+        return true;
     }
 
     public static boolean isPlaceable(BlockPos position) {
@@ -135,15 +162,55 @@ public class WorldUtils implements IMinecraft {
         return mc.level.getEntities((Entity) null, new AABB(position), entity -> true).stream().noneMatch(entity -> !(entity instanceof EndCrystal) && !(entity instanceof ExperienceOrb));
     }
 
-    public static void destroyCrystals(BlockPos position) {
-        List<Entity> surroundingCrystals = mc.level.getEntities((Entity) null, new AABB(position), entity -> true).stream().filter(entity -> entity instanceof EndCrystal).toList();
-        if (surroundingCrystals.isEmpty()) return;
+    public static boolean destroyCrystals(BlockPos position) {
+        return destroyCrystals(position, null, null, null);
+    }
 
+    // Checking only whether a crystal overlaps the TARGET position's own cell (the original
+    // check) missed the actual failure mode reported live: the block never places even though
+    // nothing sits on the target cell itself, because vanilla's server-side useItemOn handling
+    // does its OWN raytrace from the player's eye to the claimed hit point and rejects the
+    // interaction if that ray doesn't cleanly reach it -- a crystal standing ANYWHERE between the
+    // eye and the target (not necessarily overlapping the target cell) blocks that raytrace and
+    // gets the placement silently dropped server-side, with no client-visible error (the render-
+    // preview ghost box, which is purely a client-side prediction added at the end of this SAME
+    // method regardless of server acceptance, still shows -- exactly the reported "render hiện
+    // nhưng không đặt được"). Search a box spanning the whole eye->target ray (when given) instead
+    // of just the target cell, and only actually attack crystals whose hitbox the ray passes
+    // through (AABB.clip), not just any crystal that happens to be somewhere nearby.
+    private static boolean destroyCrystals(BlockPos position, Vec3 from, Vec3 to, Runnable retry) {
+        AABB searchArea = from != null && to != null ? new AABB(from, to).inflate(0.5) : new AABB(position);
+
+        List<Entity> surroundingCrystals;
+        try {
+            // placeBlock (and this) can run straight off SurroundModule.onPacketReceive, which
+            // fires ON THE NETTY IO THREAD -- our packet-receive mixin posts the event before
+            // vanilla's own dispatch hands off to the main thread. mc.level.getEntities() walks
+            // EntitySection's live (non-thread-safe) ArrayLists; the main thread concurrently
+            // spawning/despawning entities during that walk throws ConcurrentModificationException
+            // and used to take the whole connection down. It's a transient timing collision, not
+            // real corruption -- treat it as "nothing found this attempt" and let the caller's own
+            // retry-on-next-confirm mechanism (see placeBlock) try again a moment later.
+            surroundingCrystals = mc.level.getEntities((Entity) null, searchArea, entity -> entity instanceof EndCrystal
+                    && (from == null || to == null || new AABB(position).intersects(entity.getBoundingBox()) || entity.getBoundingBox().clip(from, to).isPresent()));
+        } catch (java.util.ConcurrentModificationException exception) {
+            return false;
+        }
+        if (surroundingCrystals.isEmpty()) return false;
+
+        // Attack ALL of them, not just the first -- a hole ring commonly has 2+ crystals
+        // obstructing at once, and stopping after one meant only clearing a single crystal per
+        // tick while AutoCrystal could place several. Rotate at each crystal before its attack
+        // packet (rotation-checking anticheat drops attacks sent while looking at the block
+        // instead of the entity) -- the block-facing rotation from the caller gets re-applied on
+        // the retry tick once the crystal is actually gone.
         for (Entity entity : surroundingCrystals) {
+            EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(entity.getX(), entity.getEyeY(), entity.getZ()));
             mc.player.connection.send(new ServerboundAttackPacket(entity.getId()));
             mc.player.connection.send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
-            break;
+            if (retry != null) EUClient.WORLD_MANAGER.onCrystalAttacked(entity.getId(), retry);
         }
+        return true;
     }
 
     public static Vec3 getHitVector(BlockPos position, Direction direction) {

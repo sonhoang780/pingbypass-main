@@ -20,10 +20,12 @@ import net.minecraft.client.gui.render.TextureSetup;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.renderer.rendertype.RenderSetup;
 import net.minecraft.client.renderer.rendertype.RenderType;
+import net.minecraft.client.renderer.state.gui.GuiRenderState;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.util.FormattedCharSequence;
 import org.joml.Matrix3x2f;
+import org.joml.Matrix3x2fc;
 import org.joml.Matrix4f;
 
 import java.awt.*;
@@ -96,6 +98,17 @@ public class FontRenderer implements Closeable, IMinecraft {
     }
 
     public void drawText(GuiGraphicsExtractor context, FormattedCharSequence text, float x, float y, int color, boolean dropShadow) {
+        submitGlyphs(context.guiRenderState, new Matrix3x2f(context.pose()), context.scissorStack.peek(), text, x, y, color, dropShadow);
+    }
+
+    // Shared by the two GUI entry points: drawText(GuiGraphicsExtractor, ...) above (our own
+    // ClickGui/HUD text, called with useCustomFont() already true) and GuiRenderStateMixin (the
+    // "Global" vanilla-wide hook -- GuiGraphicsExtractor.text(...) AND ActiveTextCollector's real
+    // implementation, i.e. chat and every vanilla Screen widget/tooltip, both funnel into
+    // GuiRenderState.addText(GuiTextRenderState) as their one common choke point, verified via
+    // javap; TextRendererMixin's Font.drawInBatch hook never fires for either since neither calls
+    // it -- drawInBatch is world-space/direct text only in this renderer generation).
+    public void submitGlyphs(GuiRenderState guiRenderState, Matrix3x2fc pose, ScreenRectangle scissor, FormattedCharSequence text, float x, float y, int color, boolean dropShadow) {
         ensureScale();
 
         if (EUClient.MODULE_MANAGER != null && EUClient.MODULE_MANAGER.getModule(FontModule.class).isToggled()) {
@@ -107,8 +120,6 @@ public class FontRenderer implements Closeable, IMinecraft {
         if (pages.isEmpty()) return;
 
         float inv = 1.0f / this.multiplier;
-        Matrix3x2f pose = new Matrix3x2f(context.pose());
-        ScreenRectangle scissor = context.scissorStack.peek();
 
         for (Map.Entry<GlyphMap, ObjectList<DrawEntry>> entry : pages.entrySet()) {
             GlyphMap map = entry.getKey();
@@ -146,7 +157,7 @@ public class FontRenderer implements Closeable, IMinecraft {
             }
 
             TextureSetup ts = TextureSetup.singleTexture(map.getTexture().getTextureView(), map.getTexture().getSampler());
-            context.guiRenderState.addGuiElement(new GuiQuadRenderState(ts, pose, xs, ys, cols, us, vs, scissor));
+            guiRenderState.addGuiElement(new GuiQuadRenderState(ts, new Matrix3x2f(pose), xs, ys, cols, us, vs, scissor));
         }
     }
 

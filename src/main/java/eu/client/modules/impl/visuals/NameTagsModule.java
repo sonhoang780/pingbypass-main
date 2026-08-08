@@ -45,6 +45,7 @@ public class NameTagsModule extends Module {
     public BooleanSetting totemPops = new BooleanSetting("TotemPops", "Renders the amount of totems that the player has popped.", true);
     public BooleanSetting antiBot = new BooleanSetting("AntiBot", "Prevents bots from having nametags rendered for them.", false);
     public BooleanSetting euCheck = new BooleanSetting("EUCheck", "Adds an indicator next to the name of other users..", true);
+    public BooleanSetting self = new BooleanSetting("Self", "Also renders a nametag above your own player.", false);
 
     public BooleanSetting items = new BooleanSetting("Items", "Renders the items that the player is wearing or holding.", true);
     public BooleanSetting enchantments = new BooleanSetting("Enchantments", "Renders the enchantments of the player's items.", false);
@@ -62,7 +63,15 @@ public class NameTagsModule extends Module {
         MultiBufferSource.BufferSource vertexConsumers = mc.renderBuffers().bufferSource();
 
         for (Player player : mc.level.players().stream().sorted(Comparator.comparing(p -> -mc.player.distanceTo(p))).toList()) {
-            if (player == mc.player) continue;
+            // First person puts the camera basically AT this anchor (head + ~2 blocks) -- pitching
+            // up swings the camera's forward vector straight through the near-degenerate billboard
+            // and flashes the tag into view right in front of the lens. Self only makes sense in
+            // 3rd person (where you can actually see your own head to look "at") -- EXCEPT Freecam
+            // detaches the actual camera position without touching mc.options.getCameraType()
+            // (still reports FIRST_PERSON), so that check alone wrongly hid self's nametag even
+            // while Freecam had the camera floating well away from the degenerate near-anchor case.
+            boolean freecam = EUClient.MODULE_MANAGER.getModule(FreecamModule.class).isToggled();
+            if (player == mc.player && (!self.getValue() || (mc.options.getCameraType().isFirstPerson() && !freecam))) continue;
             if (antiBot.getValue() && EntityUtils.isBot(player)) continue;
             if (!Renderer3D.isFrustumVisible(player.getBoundingBox())) continue;
 
@@ -191,6 +200,19 @@ public class NameTagsModule extends Module {
             }
 
             matrices.popPose();
+
+            // Renderer3D.QUADS/DEBUG_LINES (used by the border Fill/Outline above) is ONE shared,
+            // frame-global, no-depth-test list -- everything queued into it this frame draws
+            // together in a SINGLE call, in insertion order, painter's-algorithm style (last in
+            // wins wherever boxes overlap on screen). Self's nametag sits right where the 3rd-
+            // person camera pivots, so it's far more likely to screen-overlap a nearby player's
+            // own nametag than anyone else's ever is -- and sharing that one draw call is what let
+            // the two boxes bleed into each other (one losing its background, showing the other's
+            // instead). Flushing+clearing right after each player's own box guarantees it draws as
+            // its own isolated call, so it can never blend with the next player's.
+            Renderer3D.draw(Renderer3D.QUADS, Renderer3D.DEBUG_LINES, false);
+            Renderer3D.QUADS.clear();
+            Renderer3D.DEBUG_LINES.clear();
         }
     }
 

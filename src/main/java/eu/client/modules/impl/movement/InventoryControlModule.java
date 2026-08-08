@@ -21,6 +21,10 @@ import net.minecraft.world.item.CreativeModeTab;
 public class InventoryControlModule extends Module {
     public BooleanSetting movement = new BooleanSetting("Movement", "Allows you to control movement.", true);
     public BooleanSetting portals = new BooleanSetting("Portals", "Allows you to interact with GUIs while inside of a portal.", true);
+    // Hold shift + left-click and drag across slots to shift-click (quick-move) every item the
+    // cursor passes over, instead of having to shift-click each slot individually. Handled in
+    // HandledScreenMixin -- this setting is just the toggle it reads.
+    public BooleanSetting dragClick = new BooleanSetting("DragClick", "Hold shift + left-click and drag over slots to move each item you pass over.", true);
 
     @SubscribeEvent
     public void onTick(TickEvent event) {

@@ -9,7 +9,6 @@ import eu.client.modules.RegisterModule;
 import eu.client.settings.impl.BooleanSetting;
 import eu.client.settings.impl.ModeSetting;
 import eu.client.settings.impl.NumberSetting;
-import eu.client.utils.minecraft.DamageUtils;
 import eu.client.utils.minecraft.EntityUtils;
 import eu.client.utils.minecraft.InventoryUtils;
 import net.minecraft.world.level.block.Blocks;
@@ -27,9 +26,28 @@ public class AutoArmorModule extends Module {
     public BooleanSetting preserve = new BooleanSetting("Preserve", "Preserve low health armor to avoid it from breaking.", false);
     public NumberSetting preserveHealth = new NumberSetting("PreserveHealth", "The minimum health of armor to preserve it.", 20.0f, 10.0f, 50.0f);
     public BooleanSetting elytra = new BooleanSetting("Elytra", "Equips an elytra instead of a chestplate.", false);
+    // Set to toggle Elytra without opening the ClickGui -- same Bind mechanism modules use
+    // (BindSetting + KeyInputEvent/MouseInputEvent), just wired to this one setting instead of
+    // the whole module's toggle.
+    public eu.client.settings.impl.BindSetting elytraBind = new eu.client.settings.impl.BindSetting("ElytraBind", "Keybind that toggles Elytra on/off.", 0);
     public BooleanSetting smartElytra = new BooleanSetting("SmartElytra", "Chooses when to enable elytra in a more convenient way.", false);
-    
+
+    // Per-piece protection preference: "Prot" ranks by the Protection enchant level, "Blast"
+    // ranks by Blast Protection specifically -- getProtectionAmount() weighs ALL protection-type
+    // enchants together into one blended score, which doesn't let you e.g. prefer a Blast Prot
+    // chestplate over a higher combined-score Protection one for crystal PvP specifically.
+    public ModeSetting headMode = new ModeSetting("HeadMode", "Which protection enchant Head armor is ranked by.", "Prot", new String[]{"Blast", "Prot"});
+    public ModeSetting chestMode = new ModeSetting("ChestMode", "Which protection enchant Chest armor is ranked by.", "Prot", new String[]{"Blast", "Prot"});
+    public ModeSetting legsMode = new ModeSetting("LegsMode", "Which protection enchant Legs armor is ranked by.", "Prot", new String[]{"Blast", "Prot"});
+    public ModeSetting feetMode = new ModeSetting("FeetMode", "Which protection enchant Feet armor is ranked by.", "Prot", new String[]{"Blast", "Prot"});
+
     private int ticks = 0;
+
+    @SubscribeEvent
+    public void onElytraBind(KeyInputEvent event) {
+        if (shouldRunOnProxy() || getNull()) return;
+        if (elytraBind.getValue() != 0 && event.getKey() == elytraBind.getValue() && elytraBind.getMode().equals("Bind")) elytra.setValue(!elytra.getValue());
+    }
 
     @SubscribeEvent
     public void onKeyInput(KeyInputEvent event) {
@@ -54,7 +72,16 @@ public class AutoArmorModule extends Module {
             if (InventoryUtils.inInventoryScreen()) return;
 
             update(EquipmentSlot.HEAD, 5);
-            if (!(elytraPriority.getValue() && mc.player.getInventory().getItem(38).getItem() == Items.ELYTRA) || elytra.getValue()) update(EquipmentSlot.CHEST, 6);
+            // Was "!(elytraPriority && slot38==ELYTRA) || elytra.getValue()" -- with elytraPriority
+            // on and an elytra already worn (equipped by a PREVIOUS press), turning elytra OFF made
+            // this false || false = skip update() entirely, so AutoArmor never even looked at
+            // swapping back to a chestplate (reported: pressing the elytra bind a second time did
+            // nothing). The only case that should actually SKIP the update is "already exactly what
+            // we want" (elytra wanted, priority on, already worn) -- an optimization to not re-run
+            // the compare/swap loop on an already-correct elytra, not a blanket "elytra worn -> hands
+            // off the chest slot" rule. Every other case (including elytra OFF) has to run update()
+            // so its own elytra.getValue() branch can pick the chestplate path instead.
+            if (!(elytra.getValue() && elytraPriority.getValue() && mc.player.getInventory().getItem(38).getItem() == Items.ELYTRA)) update(EquipmentSlot.CHEST, 6);
             update(EquipmentSlot.LEGS, 7);
             update(EquipmentSlot.FEET, 8);
         }
@@ -68,7 +95,7 @@ public class AutoArmorModule extends Module {
 
         int slot = type == EquipmentSlot.HEAD ? 39 : type == EquipmentSlot.CHEST ? 38 : type == EquipmentSlot.LEGS ? 37 : 36;
         int armor = flag ? elytraSlot : findArmor(type);
-        int best = flag ? compareElytra(38, armor) : compare(slot, armor, true);
+        int best = flag ? compareElytra(38, armor) : compare(slot, armor, true, type);
 
         if (armor != -1 && best != slot) {
             mc.gameMode.handleContainerInput(mc.player.inventoryMenu.containerId, x, 0, ContainerInput.PICKUP, mc.player);
@@ -79,11 +106,19 @@ public class AutoArmorModule extends Module {
         }
     }
 
-    private int compare(int x, int y, boolean swap) {
+    private int compare(int x, int y, boolean swap, EquipmentSlot type) {
         if (y == -1) return x;
         if (!isArmor(mc.player.getInventory().getItem(x))) return y;
 
-        if (DamageUtils.getProtectionAmount(mc.player.getInventory().getItem(x)) < DamageUtils.getProtectionAmount(mc.player.getInventory().getItem(y)))
+        String enchantId = switch (type) {
+            case HEAD -> headMode.getValue();
+            case CHEST -> chestMode.getValue();
+            case LEGS -> legsMode.getValue();
+            default -> feetMode.getValue();
+        };
+        enchantId = enchantId.equalsIgnoreCase("Blast") ? "blast_protection" : "protection";
+
+        if (getEnchantLevel(mc.player.getInventory().getItem(x), enchantId) < getEnchantLevel(mc.player.getInventory().getItem(y), enchantId))
             return y;
 
         if (preserve.getValue() && getDurability(x) < preserveHealth.getValue().floatValue())
@@ -114,7 +149,7 @@ public class AutoArmorModule extends Module {
             if (!isArmor(stack)) continue;
 
             if (getSlotType(stack).equals(type)) {
-                slot = compare(i, slot, false);
+                slot = compare(i, slot, false, type);
             }
         }
 
@@ -134,6 +169,14 @@ public class AutoArmorModule extends Module {
         return slot;
     }
 
+    private int getEnchantLevel(ItemStack stack, String enchantId) {
+        for (var enchantment : stack.getEnchantments().keySet()) {
+            if (enchantment.getRegisteredName().replace("minecraft:", "").equals(enchantId))
+                return stack.getEnchantments().getLevel(enchantment);
+        }
+        return 0;
+    }
+
     private float getDurability(int slot) {
         ItemStack stack = mc.player.getInventory().getItem(slot);
         return ((stack.getMaxDamage() - stack.getDamageValue()) * 100.0f) / stack.getMaxDamage();
@@ -145,6 +188,12 @@ public class AutoArmorModule extends Module {
     }
 
     private boolean isArmor(ItemStack itemStack) {
+        // Real root cause of "won't swap elytra->chestplate": EquipmentSlot.Type is a property of
+        // the SLOT (CHEST is always HUMANOID_ARMOR), not the item, so a worn Elytra read as real
+        // armor here. compare(currentlyWorn=elytra, candidate=chestplate) then tied 0 enchant
+        // levels vs 0 and fell through to "return x" (keep current), never swapping. Elytra isn't
+        // a HUMANOID_ARMOR-type item for our purposes here, regardless of which slot it occupies.
+        if (itemStack.getItem() == Items.ELYTRA) return false;
         var equippable = itemStack.get(DataComponents.EQUIPPABLE);
         return equippable != null && equippable.slot().getType() == EquipmentSlot.Type.HUMANOID_ARMOR;
     }
