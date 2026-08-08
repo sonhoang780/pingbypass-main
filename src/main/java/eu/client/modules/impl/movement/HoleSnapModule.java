@@ -521,6 +521,14 @@ public class HoleSnapModule extends Module {
             // strictly-above candidates (nothing here climbs multiple levels).
             if (position.getY() > mc.player.getY()) continue;
 
+            // getSingleHole/getDoubleHole/getQuadHole already guarantee the 2 blocks directly
+            // above the hole's own floor are open (room to stand once you're in it), but say
+            // nothing about what's ABOVE that -- an overhang sitting right on top of that still
+            // blocks jumping up INTO the hole from an adjacent lower position even though the hole
+            // itself reads as perfectly valid on its own. Skip candidates with something solid
+            // sitting on their own roof.
+            if (!mc.level.getBlockState(position.above(3)).canBeReplaced()) continue;
+
             HoleUtils.Hole singleHole = HoleUtils.getSingleHole(position, 1);
             if (singleHole != null) {
                 holes.add(singleHole);
