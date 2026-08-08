@@ -461,8 +461,15 @@ public class HUDModule extends Module {
         float chatOffset = informationChatOffset.getValue() ? this.chatOffset : 0;
 
         if (health.getValue()) {
-            String text = ColorUtils.getHealthColor(mc.player.getHealth() + mc.player.getAbsorptionAmount()) + new DecimalFormat("0").format(mc.player.getHealth() + mc.player.getAbsorptionAmount());
-            EUClient.FONT_MANAGER.drawTextWithOutline(event.getContext(), text, mc.getWindow().getGuiScaledWidth() / 2 - EUClient.FONT_MANAGER.getWidth(text) / 2, mc.getWindow().getGuiScaledHeight() / 2 + 16, Color.WHITE, Color.BLACK);
+            // Was embedding the ChatFormatting as a raw "§x" text prefix and always drawing with a
+            // hardcoded Color.WHITE -- drawTextWithOutline's custom-font path only strips control
+            // codes for its 4 outline copies (FontManager.drawTextWithOutline), not the main glyph
+            // draw, so the literal '§'+code characters got laid out as real (bogus/undefined) glyphs
+            // in front of the digits instead of being parsed into a color, rendering as a solid
+            // clump instead of "20". Compute the real Color directly and pass a plain digit string.
+            String text = new DecimalFormat("0").format(mc.player.getHealth() + mc.player.getAbsorptionAmount());
+            Color healthColor = new Color(ColorUtils.getHealthColor(mc.player.getHealth() + mc.player.getAbsorptionAmount()).getColor());
+            EUClient.FONT_MANAGER.drawTextWithOutline(event.getContext(), text, mc.getWindow().getGuiScaledWidth() / 2 - EUClient.FONT_MANAGER.getWidth(text) / 2, mc.getWindow().getGuiScaledHeight() / 2 + 16, healthColor, Color.BLACK);
         }
 
         if (potions.getValue()) {

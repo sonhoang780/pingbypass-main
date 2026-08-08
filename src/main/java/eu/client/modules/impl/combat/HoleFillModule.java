@@ -171,13 +171,22 @@ public class HoleFillModule extends Module {
 
     private List<BlockPos> getPositions(Player player) {
         List<BlockPos> positions = new ArrayList<>();
+
+        // Smart used to measure straight-line distance from the target's CURRENT position -- a
+        // target standing still right next to a hole and one about to walk past a hole 3 blocks
+        // further down their path scored identically ("gần" != "sắp chui vào"), and a target
+        // WALKING AWAY from a nearby hole still got it filled for no reason. Project a short
+        // lookahead along their current velocity instead, so the range check reflects where
+        // they're actually headed, not just where they happen to be standing this tick.
+        Vec3 anchor = player == null ? null : player.position().add(player.getDeltaMovement().scale(4.0));
+
         for (int i = 0; i < EUClient.WORLD_MANAGER.getRadius(range.getValue().doubleValue()); i++) {
             BlockPos position = mc.player.blockPosition().offset(EUClient.WORLD_MANAGER.getOffset(i));
             Vec3 vec3d = Vec3.atCenterOf(position);
 
             if (!mc.level.getBlockState(position).canBeReplaced()) continue;
             if (mc.player.distanceToSqr(vec3d) > Mth.square(range.getValue().doubleValue())) continue;
-            if (mode.getValue().equalsIgnoreCase("Smart") && player != null && player.distanceToSqr(vec3d) > Mth.square(smartRange.getValue().doubleValue())) continue;
+            if (mode.getValue().equalsIgnoreCase("Smart") && player != null && anchor.distanceToSqr(vec3d) > Mth.square(smartRange.getValue().doubleValue())) continue;
             if (safety.getValue() && !HoleUtils.isPlayerInHole(mc.player) && mc.player.distanceToSqr(vec3d) <= Mth.square(safetyRange.getValue().doubleValue())) continue;
             if (HoleUtils.getSingleHole(position, 1.0) == null && (!doubleHoles.getValue() || HoleUtils.getDoubleHole(position, 1.0) == null)) continue;
             if(webs.getValue() && selfWeb.getValue() && PositionUtils.getFlooredPosition(mc.player).equals(position) && HoleUtils.isPlayerInHole(mc.player)

@@ -44,16 +44,6 @@ public class CommandManager {
     public CommandManager() {
         EUClient.EVENT_HANDLER.subscribe(this);
 
-        // ModuleCommand registered (and merged into the dispatcher) FIRST: Brigadier's addChild
-        // MERGES same-named literal nodes, and the node registered LAST wins the merge (its
-        // executes()/children overwrite the earlier node's) -- so an explicit @RegisterCommand
-        // whose alias happens to match a module's own auto-command name (e.g. FakePlayerCommand's
-        // "fakeplayer" alias vs. ModuleCommand's own module.getName().toLowerCase() == "fakeplayer")
-        // needs to register SECOND to win. Registering explicit commands first (the old order) let
-        // ModuleCommand silently steal the node instead: ".fakeplayer" ran ModuleCommand's own
-        // bare-args branch (messageSyntax()) rather than FakePlayerCommand.execute().
-        EUClient.MODULE_MANAGER.getModules().forEach(m -> commands.add(new ModuleCommand(m)));
-
         try {
             for (Class<?> clazz : new Reflections("eu.client.commands.impl").getSubTypesOf(Command.class)) {
                 if (clazz.getAnnotation(RegisterCommand.class) == null) continue;
@@ -63,6 +53,25 @@ public class CommandManager {
             }
         } catch (NoSuchMethodException | InstantiationException | IllegalAccessException | InvocationTargetException exception) {
             EUClient.LOGGER.error("Failed to register the client's modules!", exception);
+        }
+
+        // Skip ModuleCommand for any module whose auto-name (module.getName().toLowerCase(), its
+        // ONLY alias -- see ModuleCommand's constructor) collides with an explicit @RegisterCommand
+        // (e.g. FakePlayerModule vs. FakePlayerCommand's "fakeplayer"), rather than relying on
+        // registration order to "win" the merge. Brigadier's CommandNode.addChild only overwrites
+        // the EXECUTE callback (.command) of an existing same-named node, never touches an existing
+        // child's OWN .suggests provider (verified in brigadier 1.3.10's addChild) -- so whichever
+        // node registered FIRST keeps its original suggestions forever regardless of order, even
+        // though the LATER command's execute() correctly wins. That's what let ".fakeplayer <tab>"
+        // run FakePlayerCommand.execute() (spawn) while still tab-completing ModuleCommand's own
+        // setting names (absorption, bind, health...) instead of remove/pop/swim.
+        java.util.Set<String> claimedAliases = new java.util.HashSet<>();
+        for (Command command : commands) {
+            claimedAliases.add(command.getName().toLowerCase());
+            for (String alias : command.getAliases()) claimedAliases.add(alias.toLowerCase());
+        }
+        for (var module : EUClient.MODULE_MANAGER.getModules()) {
+            if (!claimedAliases.contains(module.getName().toLowerCase())) commands.add(new ModuleCommand(module));
         }
 
         for (Command command : commands) {
@@ -92,12 +101,19 @@ public class CommandManager {
                         String partial = parts[parts.length - 1].toLowerCase();
                         String[] priorArgs = Arrays.copyOf(parts, parts.length - 1);
 
+                        // suggestionsBuilder is rooted at the START of the whole greedy "args" node
+                        // (right after the command literal), not at the last word being typed --
+                        // suggest() on it as-is replaces every already-typed word for this argument,
+                        // not just the partial one (".config save" + Tab on "ohare" wiped "save").
+                        // Offset a fresh builder to where the partial word actually starts so only
+                        // that word gets replaced, matching normal tab-complete behavior.
+                        var wordBuilder = suggestionsBuilder.createOffset(suggestionsBuilder.getStart() + remaining.length() - partial.length());
                         for (String option : command.getSuggestions(priorArgs)) {
                             if (option.toLowerCase().startsWith(partial)) {
-                                suggestionsBuilder.suggest(option);
+                                wordBuilder.suggest(option);
                             }
                         }
-                        return suggestionsBuilder.buildFuture();
+                        return wordBuilder.buildFuture();
                     })
                     .executes(ctx -> {
                         String args = StringArgumentType.getString(ctx, "args");

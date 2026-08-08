@@ -8,6 +8,7 @@ import eu.client.events.impl.UpdateMovementEvent;
 import eu.client.mixins.accessors.ClientPlayerEntityAccessor;
 import eu.client.modules.Module;
 import eu.client.modules.RegisterModule;
+import eu.client.settings.impl.BooleanSetting;
 import eu.client.settings.impl.ModeSetting;
 import eu.client.settings.impl.NumberSetting;
 import eu.client.utils.minecraft.MovementUtils;
@@ -100,6 +101,8 @@ public class SprintModule extends Module {
     // instantly the moment a movement key is pressed (and stops instantly on release, no slide).
     public ModeSetting mode = new ModeSetting("Mode", "The limits to when you can be sprinting.", "Rage", new String[]{"Legit", "Rage", "RageStrict", "Instant", "Grim"});
     public NumberSetting instantSpeed = new NumberSetting("InstantSpeed", "Per-tick horizontal speed to move at (blocks/tick) when Mode is Instant.", new ModeSetting.Visibility(mode, "Instant"), (float) MovementUtils.DEFAULT_SPEED, 0.05f, 0.6f);
+    public BooleanSetting instantWater = new BooleanSetting("Water", "Keeps applying the Instant speed override while in water.", new ModeSetting.Visibility(mode, "Instant"), true);
+    public BooleanSetting instantLava = new BooleanSetting("Lava", "Keeps applying the Instant speed override while in lava.", new ModeSetting.Visibility(mode, "Instant"), false);
 
     // Captured here (fires before UpdateMovementEvent) instead of read live inside
     // onUpdateMovement below -- RotationManager's "Normal"/silent-rotation queue (e.g. AutoCrystal's
@@ -147,7 +150,17 @@ public class SprintModule extends Module {
     public void onUpdateMovement(UpdateMovementEvent event) {
         if (mc.player == null) return;
 
-        if (mode.getValue().equalsIgnoreCase("Instant")) {
+        // Was setting the Instant speed override unconditionally off move-key state alone --
+        // shouldSprint()'s hunger/lava gates (SprintA/lava's own GrimAC checks) only ever stopped
+        // the SPRINTING FLAG, not this direct velocity write, so low hunger or being in lava still
+        // moved at full Instant speed. Same low-hunger threshold shouldSprint() uses (<=6, matches
+        // vanilla's own Player.canStartSprinting), plus dedicated Water/Lava toggles since Instant's
+        // homing velocity write ignores vanilla's swimming/lava drag entirely unlike normal sprint.
+        boolean instantAllowed = mc.player.getFoodData().getFoodLevel() > 6
+                && (instantLava.getValue() || !mc.player.isInLava())
+                && (instantWater.getValue() || !mc.player.isInWater());
+
+        if (mode.getValue().equalsIgnoreCase("Instant") && instantAllowed) {
             Vec2 move = mc.player.input.getMoveVector();
             Vec3 v = mc.player.getDeltaMovement();
 

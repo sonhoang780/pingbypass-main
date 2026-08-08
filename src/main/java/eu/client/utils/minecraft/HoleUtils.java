@@ -25,7 +25,6 @@ import java.util.stream.Collectors;
 
 public class HoleUtils implements IMinecraft {
     private static final Vec3i[] holeOffsets = new Vec3i[]{new Vec3i(0, -1, 0), new Vec3i(1, 0, 0), new Vec3i(-1, 0,0), new Vec3i(0, 0, 1), new Vec3i(0, 0, -1)};
-    private static final Vec3i[] fullTrapOffsets = new Vec3i[]{new Vec3i(1, 1, 0), new Vec3i(0, 1, 1), new Vec3i(-1, 1, 0), new Vec3i(0, 1, -1), new Vec3i(1, 2, 0), new Vec3i(0, 2, 0)};
 
     private static final Vec3i[] singleOffsets = {new Vec3i(-1, 0, 0), new Vec3i(1, 0, 0), new Vec3i(0, 0, -1), new Vec3i(0, 0, 1), new Vec3i(0, -1, 0)};
     private static final Vec3i[] doubleXOffsets = {new Vec3i(-1, 0, 0), new Vec3i(0, 0, -1), new Vec3i(0, 0, 1), new Vec3i(0, -1, 0), new Vec3i(2, 0, 0), new Vec3i(1, 0, -1), new Vec3i(1, 0, 1), new Vec3i(1, -1, 0)};
@@ -137,38 +136,119 @@ public class HoleUtils implements IMinecraft {
         return positions;
     }
 
+    // Was built off a SINGLE floored feet position, assuming the player always sits fully inside
+    // one 1x1 floor cell -- standing near the middle/edge of a 2x2 or 1x2 hole means the hitbox
+    // straddles TWO (or four) floor cells, and only the one PositionUtils.getFlooredPosition()
+    // happened to pick got its ring of walls covered. Whichever adjacent cell the hitbox also
+    // occupied was left with no trap positions at all, leaving that side of the hole open (the
+    // reported "không cover được hết khi đứng giữa ô 2x2/1x2"). Now walks every floor cell the
+    // player's own bounding box actually overlaps (same multi-cell detection getFeetPositions
+    // already does for isPlayerInHole) and unions the trap ring for each one.
     public static List<BlockPos> getTrapPositions(Player player, boolean partial, boolean head, boolean antiStep, boolean antiBomb, boolean strictDirection) {
-        List<BlockPos> positions = new ArrayList<>();
-        BlockPos position = PositionUtils.getFlooredPosition(player);
+        java.util.LinkedHashSet<BlockPos> positions = new java.util.LinkedHashSet<>();
+        HashSet<BlockPos> occupiedCells = getOccupiedFloorCells(player);
 
-        if (antiStep) {
-            positions.add(position.offset(1, 2, 0));
-            positions.add(position.offset(-1, 2, 0));
-            positions.add(position.offset(0, 2, 1));
-            positions.add(position.offset(0, 2, -1));
-        }
+        for (BlockPos position : occupiedCells) {
+            // The "staircase" side -- the y+1 wall block and the y+2 block on top of it that the
+            // roof (0,2,0) is anchored against -- used to be hardcoded to +X (fullTrapOffsets'
+            // (1,1,0)/(1,2,0), and the same pair in the partial offsets). That works for a player
+            // sitting inside ONE floor cell, where every horizontal neighbour is a real hole wall.
+            // Straddling a 2x2/1x2 hole makes +X the airspace ABOVE ANOTHER OCCUPIED FLOOR CELL:
+            // open hole interior with no solid neighbour in any direction, so getDirection() came
+            // back null, nothing was ever attempted (hence zero render preview) and -- because the
+            // roof at y+2 is only ever diagonal to the y+1 walls, never adjacent -- that cell's
+            // roof lost its only possible anchor too. Pick a side that actually faces a wall.
+            Direction wallDirection = null;
+            for (Direction dir : Direction.values()) {
+                if (!dir.getAxis().isHorizontal()) continue;
+                if (occupiedCells.contains(position.relative(dir))) continue;
+                if (wallDirection == null) wallDirection = dir;
+                if (WorldUtils.getDirection(position.relative(dir).above(), strictDirection) != null) {
+                    wallDirection = dir;
+                    break;
+                }
+            }
+            if (wallDirection == null) wallDirection = Direction.EAST;
 
-        if (antiBomb) {
-            positions.add(position.offset(0, 3, 0));
-        }
+            if (antiStep) {
+                addWallOffset(positions, occupiedCells, position, new Vec3i(1, 2, 0));
+                addWallOffset(positions, occupiedCells, position, new Vec3i(-1, 2, 0));
+                addWallOffset(positions, occupiedCells, position, new Vec3i(0, 2, 1));
+                addWallOffset(positions, occupiedCells, position, new Vec3i(0, 2, -1));
+            }
 
-        if (partial) {
-            BlockPos headPosition = position.offset(0, 2, 0);
-            if (WorldUtils.getDirection(headPosition, strictDirection) != null) {
+            if (antiBomb) {
+                positions.add(position.offset(0, 3, 0));
+            }
+
+            if (partial) {
+                BlockPos headPosition = position.offset(0, 2, 0);
+                if (WorldUtils.getDirection(headPosition, strictDirection) != null) {
+                    positions.add(headPosition);
+                    continue;
+                }
+
+                positions.add(position.relative(wallDirection).above());
+                positions.add(position.relative(wallDirection).above(2));
                 positions.add(headPosition);
-                return positions;
-            }
+            } else {
+                for (Direction dir : Direction.values()) {
+                    if (!dir.getAxis().isHorizontal()) continue;
+                    if (occupiedCells.contains(position.relative(dir))) continue;
+                    positions.add(position.relative(dir).above());
+                }
 
-            Vec3i[] offsets = new Vec3i[]{new Vec3i(1, 1, 0), new Vec3i(1, 2, 0), new Vec3i(0, 2, 0)};
-            for (Vec3i vec3i : offsets) positions.add(position.offset(vec3i));
-        } else {
-            for (Vec3i vec3i : fullTrapOffsets) {
-                if(!head && vec3i.getY()==2) continue;
-                positions.add(position.offset(vec3i));
+                if (head) {
+                    positions.add(position.relative(wallDirection).above(2));
+                    positions.add(position.offset(0, 2, 0));
+                }
             }
         }
 
-        return positions;
+        return new ArrayList<>(positions);
+    }
+
+    // Mirrors getFeetPositions' `!blacklist.contains(off)` skip: a horizontal offset (side wall)
+    // that lands over ANOTHER occupied floor cell is interior space above the player's own
+    // footprint, not a real wall -- there's no solid neighbor there (it's open air over the same
+    // hole), so getDirection() can never find a face and the position sat dead forever with no
+    // render/place attempt at all (the reported "miss block" gaps on a 2-wide stance). Pure
+    // vertical offsets (head/antiBomb, x=z=0) are never interior and always added.
+    private static void addWallOffset(java.util.Set<BlockPos> positions, HashSet<BlockPos> occupiedCells, BlockPos base, Vec3i vec3i) {
+        if (vec3i.getX() != 0 || vec3i.getZ() != 0) {
+            BlockPos floorBelow = base.offset(vec3i.getX(), 0, vec3i.getZ());
+            if (occupiedCells.contains(floorBelow)) return;
+        }
+        positions.add(base.offset(vec3i));
+    }
+
+    // Every floor-level BlockPos the player's own AABB actually overlaps -- 1 cell normally, up to
+    // 4 when straddling a 2x2/1x2 opening. Same collision-box union getFeetPositions' blacklist
+    // loop uses, factored out so getTrapPositions can cover all of them instead of just
+    // PositionUtils.getFlooredPosition()'s single pick.
+    private static HashSet<BlockPos> getOccupiedFloorCells(Player target) {
+        HashSet<BlockPos> cells = new HashSet<>();
+        BlockPos feetPos = PositionUtils.getFlooredPosition(target);
+        cells.add(feetPos);
+
+        for (Direction dir : Direction.values()) {
+            if (dir.getAxis().isVertical()) continue;
+
+            AABB box = target.getBoundingBox();
+            BlockPos off = feetPos.relative(dir);
+            // Cheap pre-check before the real overlap test: is the neighbouring cell even within
+            // the hitbox's horizontal footprint?
+            if (!(box.minX < off.getX() + 1 && box.maxX > off.getX() && box.minZ < off.getZ() + 1 && box.maxZ > off.getZ()))
+                continue;
+
+            for (int x = (int) Math.floor(box.minX); x < Math.ceil(box.maxX); x++) {
+                for (int z = (int) Math.floor(box.minZ); z < Math.ceil(box.maxZ); z++) {
+                    cells.add(new BlockPos(x, feetPos.getY(), z));
+                }
+            }
+        }
+
+        return cells;
     }
 
     // Loosened (2026-08-06): used to hard-reject a hole entirely unless EVERY wall was one of the
@@ -176,11 +256,18 @@ public class HoleUtils implements IMinecraft {
     // PvP-safe crystal holing, but far too strict for general "walk into a hole" use (example-addon's
     // own HoleSnap port only ever required a wall to be solid at all, isBlock(): non-empty collision
     // shape, no block-type restriction). Now any solid block counts as a valid wall; the safety
-    // classification (still BEDROCK/OBSIDIAN/MIXED when every wall happens to qualify, same as
-    // before) downgrades to NONE the moment any wall is just an ordinary solid block, instead of
-    // rejecting the whole hole.
+    // classification (still SAFE/UNSAFE when every wall happens to qualify, same as before)
+    // downgrades to NONE the moment any wall is just an ordinary solid block, instead of rejecting
+    // the whole hole.
+    //
+    // MIXED used to mean "walls are a mix of bedrock and another blast-proof block (obsidian/
+    // anchor/ender chest)" -- but that's still a fully blast-proof hole, just not pure bedrock, so
+    // 3 bedrock walls + 1 obsidian wall was reported as MIXED when it should just be UNSAFE (the
+    // weaker of the two tiers, same as an all-obsidian hole). SAFE only when EVERY wall is bedrock;
+    // any other blast-proof block anywhere downgrades the whole hole to UNSAFE. A wall that isn't
+    // blast-proof at all (but still solid) still forces NONE below, same as before.
     private static HoleSafety classifyWalls(BlockPos position, Vec3i[] offsets) {
-        HoleSafety safety = null;
+        boolean allBedrock = true;
         boolean allBlastProof = true;
 
         for (Vec3i offset : offsets) {
@@ -195,17 +282,11 @@ public class HoleUtils implements IMinecraft {
                 continue;
             }
 
-            if (bedrock) {
-                if (safety == HoleSafety.OBSIDIAN) safety = HoleSafety.MIXED;
-                else if (safety != HoleSafety.MIXED) safety = HoleSafety.BEDROCK;
-            } else {
-                if (safety == HoleSafety.BEDROCK) safety = HoleSafety.MIXED;
-                else if (safety != HoleSafety.MIXED) safety = HoleSafety.OBSIDIAN;
-            }
+            if (!bedrock) allBedrock = false;
         }
 
         if (!allBlastProof) return HoleSafety.NONE;
-        return safety == null ? HoleSafety.OBSIDIAN : safety;
+        return allBedrock ? HoleSafety.SAFE : HoleSafety.UNSAFE;
     }
 
     public static Hole getSingleHole(BlockPos position, double height) {
@@ -279,6 +360,6 @@ public class HoleUtils implements IMinecraft {
 
     public record Hole(AABB box, HoleType type, HoleSafety safety) {}
     public enum HoleType { SINGLE, DOUBLE, QUAD }
-    public enum HoleSafety { OBSIDIAN, MIXED, BEDROCK, NONE }
+    public enum HoleSafety { SAFE, UNSAFE, NONE }
 }
 

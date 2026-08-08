@@ -29,8 +29,11 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Constant;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.ModifyConstant;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(LivingEntity.class)
 public abstract class LivingEntityMixin extends Entity implements IMinecraft {
@@ -121,6 +124,50 @@ public abstract class LivingEntityMixin extends Entity implements IMinecraft {
     // integers (sqrt(2)x too fast on diagonals). Grim mode owns its own physics yaw end to end.
     @Unique private float euclient$grimYaw0;
     @Unique private boolean euclient$grimSwapped;
+
+    // FastClimb's Ignore (Speed = 0): ported from example-addon-master's IgnoreClimb --
+    // onClimbable() is the single real vanilla gate every climbable block (vines/ladders/
+    // scaffolding, all BlockTags.CLIMBABLE) is checked against before handleOnClimbable() applies
+    // any climb velocity/gravity override (verified via javap on LivingEntity, 26.1.2). Forcing it
+    // false makes the block collide like normal terrain -- no climb-assist velocity, no auto-stick
+    // -- instead of FastClimbModule zeroing the resulting delta post-physics (which left the
+    // player frozen floating in place rather than genuinely not climbing). Only the binary
+    // Ignore case uses this; partial speeds (0 < Speed < 1) still scale vanilla's own climb clamp
+    // in FastClimbModule.onUpdateMovement, since onClimbable() has to stay true for that clamp to
+    // exist at all.
+    @Inject(method = "onClimbable", at = @At("HEAD"), cancellable = true)
+    private void euclient$fastClimbIgnore(CallbackInfoReturnable<Boolean> cir) {
+        if ((Object) this != mc.player) return;
+        FastClimbModule fastClimb = EUClient.MODULE_MANAGER.getModule(FastClimbModule.class);
+        if (fastClimb.isToggled() && fastClimb.speed.getValue().floatValue() == 0.0f) cir.setReturnValue(false);
+    }
+
+    // FastClimb, 0 < Speed < 1: scale vanilla's OWN climb clamp constants (handleOnClimbable's
+    // +-0.15F horizontal/vertical bounds) instead of overwriting getDeltaMovement() after the
+    // fact -- "vẫn phải speed vanilla nhưng chậm hơn, không phải set deltamovement". Every literal
+    // 0.15F/-0.15F in that method scales together (both clamp bounds AND the vertical floor), so
+    // the result is genuinely vanilla's own climb physics running at a smaller cap, not a
+    // synthetic post-hoc multiply. 1.0 and 0.0 (Ignore, handled above) both skip this entirely.
+    //
+    // Only ONE @ModifyConstant, for +0.15F -- a second one targeting -0.15F crashed the whole game
+    // on launch (InjectionError: "0/1 succeeded, scanned 0 targets"): javac doesn't actually emit a
+    // separate -0.15F constant in this method, `Math.max(delta.y, -0.15F)` compiles to FNEG on the
+    // SAME 0.15F LDC at runtime, not its own literal in the constant pool. Scaling the one real
+    // constant already covers every runtime-negated use of it for free.
+    @ModifyConstant(method = "handleOnClimbable", constant = @Constant(floatValue = 0.15F))
+    private float euclient$fastClimbScale(float constant) {
+        return euclient$fastClimbFactor(constant);
+    }
+
+    @Unique
+    private float euclient$fastClimbFactor(float constant) {
+        if ((Object) this != mc.player) return constant;
+        FastClimbModule fastClimb = EUClient.MODULE_MANAGER.getModule(FastClimbModule.class);
+        if (!fastClimb.isToggled()) return constant;
+        float factor = fastClimb.speed.getValue().floatValue();
+        if (factor <= 0.0f || factor >= 1.0f) return constant;
+        return constant * factor;
+    }
 
     @Inject(method = "travel", at = @At("HEAD"))
     private void travel$grimHead(Vec3 movementInput, CallbackInfo info) {
