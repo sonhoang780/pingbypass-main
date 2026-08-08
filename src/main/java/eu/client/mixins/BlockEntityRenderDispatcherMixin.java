@@ -18,12 +18,11 @@ public class BlockEntityRenderDispatcherMixin implements IMinecraft {
     @Inject(method = "submit", at = @At("HEAD"), cancellable = true)
     private void euclient$submit(BlockEntityRenderState state, PoseStack matrices, SubmitNodeCollector collector, CameraRenderState cameraState, CallbackInfo info) {
         NoRenderModule noRender = EUClient.MODULE_MANAGER.getModule(NoRenderModule.class);
-        // Was checking != "None" -- the mode's actual values are Never/Distance/Always, so that
-        // check was always true and did nothing. Also inverted: Distance mode is meant to hide
-        // tile entities WITHIN the radius of the player (a "TileDistance 10" = don't render tile
-        // entities inside 10 blocks of me), not cull ones beyond it -- was doing the opposite.
+        // Distance mode: keep tile entities WITHIN tileDistance of the player rendering, cull
+        // everything past it (a "TileDistance 10" = only render tile entities within 10 blocks of
+        // me) -- previous sign cancelled the ones INSIDE the radius instead, i.e. the opposite.
         if (noRender.isToggled() && !noRender.tileEntities.getValue().equals("Never")) {
-            if (noRender.tileEntities.getValue().equals("Always") || (noRender.tileEntities.getValue().equals("Distance") && Math.sqrt(mc.player.distanceToSqr(state.blockPos.getX(), state.blockPos.getY(), state.blockPos.getZ())) < noRender.tileDistance.getValue().floatValue())) {
+            if (noRender.tileEntities.getValue().equals("Always") || (noRender.tileEntities.getValue().equals("Distance") && Math.sqrt(mc.player.distanceToSqr(state.blockPos.getX(), state.blockPos.getY(), state.blockPos.getZ())) > noRender.tileDistance.getValue().floatValue())) {
                 info.cancel();
             }
         }

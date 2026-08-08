@@ -35,6 +35,18 @@ public class EntityRendererMixin<T extends Entity, S extends EntityRenderState> 
         // post-chain -- reset every frame (an entity that stops matching, or the module getting
         // toggled off, must not keep whatever spec was set on a previous frame) then set for real
         // if it currently qualifies.
+        //
+        // No priority/exclusivity between these -- explicitly requested (2026-08-08): Shaders and
+        // Chams are meant to render SIMULTANEOUSLY on the same entity (Shaders' glass/prism shader
+        // pattern layered with Chams' own wireframe outline), not have one suppress the other. They
+        // don't actually compete for storage anyway: Chams writes into the real fill+outline
+        // capture below (IChamsCapture), Shaders writes into vanilla's own separate single-slot
+        // outlineColor field -- different fields, safe to both be active.
+        //
+        // PopChams no longer touches this at all for the LIVE player -- it spawns its own separate
+        // ghost entity (frozen at the popper's pose, see PopChamsModule) that flows through this
+        // SAME mixin naturally as its own distinct entity/capture, so it never has to fight Chams
+        // over the one live-entity slot either.
         ChamsModule chams = EUClient.MODULE_MANAGER.getModule(ChamsModule.class);
         IChamsCapture capture = (IChamsCapture) (Object) state;
         capture.euclient$setChams(false, 0, false, 0, false);
@@ -47,8 +59,9 @@ public class EntityRendererMixin<T extends Entity, S extends EntityRenderState> 
         }
 
         PopChamsModule popChams = EUClient.MODULE_MANAGER.getModule(PopChamsModule.class);
-        if (entity instanceof Player player && popChams.isActive(player)) {
-            state.outlineColor = popChams.getColor(player).getRGB() | 0xFF000000;
+        if (popChams.isToggled() && entity instanceof net.minecraft.client.player.RemotePlayer ghost && popChams.isGhost(ghost)) {
+            capture.euclient$setChams(popChams.shouldFill(), popChams.getFillColor(ghost).getRGB(),
+                    popChams.shouldOutline(), popChams.getOutlineColor(ghost).getRGB(), false);
         }
 
         ShadersModule shaders = EUClient.MODULE_MANAGER.getModule(ShadersModule.class);

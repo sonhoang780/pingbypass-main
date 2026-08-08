@@ -80,6 +80,14 @@ public class HoleSnapModule extends Module {
     // being stuck in place bouncing against the same wall indefinitely.
     private int jumpAttempts = 0;
     private AABB unreachableHole = null;
+    // Consecutive give-ups (see the jumpAttempts > 5 block) across DIFFERENT targets -- excluding
+    // one unreachable hole and immediately picking the next-nearest doesn't help when several
+    // candidates all require clearing the same too-tall wall (e.g. overlapping single/double/quad
+    // detections around the same physical gap), which just repeats the whole 5-attempt cycle on a
+    // "new" target forever with no visible progress. A hard circuit breaker regardless of the exact
+    // cause: give up on HoleSnap entirely after this many consecutive failures in a row.
+    private int giveUpCount = 0;
+    private static final int MAX_CONSECUTIVE_GIVE_UPS = 3;
     // Ticks since the current jump press started -- see the timeout comment in onPlayerMove.
     private int jumpWaitTicks = 0;
 
@@ -107,6 +115,7 @@ public class HoleSnapModule extends Module {
         jumpAttempts = 0;
         jumpWaitTicks = 0;
         unreachableHole = null;
+        giveUpCount = 0;
         EUClient.WORLD_MANAGER.setTimerMultiplier(timer.getValue().floatValue());
 
         // Step actively walks you across/out of holes -- Surround (fills the hole you're
@@ -170,54 +179,20 @@ public class HoleSnapModule extends Module {
         //   - already in one, Step on   -> target = a DIFFERENT hole (current one excluded,
         //                                  1x1x1 singles preferred), so Step actually moves you
         //   - not in one                -> target = nearest valid hole in range (unchanged)
-        if (hole == null) {
-            HoleUtils.Hole detected = currentHole();
+        if (hole == null && !pickTarget()) return;
 
-            // Still geometrically read as "in" the hole we just used (mid-jump/airborne, not
-            // actually out yet -- e.g. mashing Space and the HoleSnap bind together) doesn't count
-            // as "already in a hole" for target-selection purposes here, or the Step-off branch's
-            // "just recenter in current" shortcut snaps you straight back down into the hole you
-            // were trying to leave in the first place.
-            HoleUtils.Hole starting = (detected != null && lastUsedHole != null && detected.box().equals(lastUsedHole)) ? null : detected;
-
-            List<HoleUtils.Hole> holes;
-
-            if (starting != null && !step.getValue()) {
-                holes = List.of(starting);
-            } else if (starting != null) {
-                holes = prioritizeSingle(getHoles().stream().filter(h -> !h.box().equals(starting.box())).toList());
-            } else {
-                holes = getHoles();
-            }
-
-            // Hard-exclude the last hole actually used, UNLESS that's literally the only candidate
-            // left (fall back to it rather than doing nothing).
-            if (lastUsedHole != null) {
-                List<HoleUtils.Hole> filtered = holes.stream().filter(h -> !h.box().equals(lastUsedHole)).toList();
-                if (!filtered.isEmpty()) holes = filtered;
-            }
-
-            // Same for a target that just gave up on repeated jump attempts (see the jumpAttempts
-            // block above) -- UNLIKE lastUsedHole, never fall back to re-picking it: it's not just
-            // "boring to repeat", it's PROVEN unreachable (nothing about retrying changes that), so
-            // falling back to it here re-picked the exact same hole every time, walked back into
-            // the exact same wall, timed out the exact same way, forever -- the reported "vẫn
-            // không auto-disable, xung quanh cũng không có hole nào khác". No fallback: if nothing
-            // ELSE is reachable, there's genuinely nothing left to snap to.
-            if (unreachableHole != null) {
-                holes = holes.stream().filter(h -> !h.box().equals(unreachableHole)).toList();
-            }
-
-            if (holes.isEmpty()) {
-                // Nothing valid to snap to (e.g. every candidate got filtered out) -- don't sit
-                // toggled-on doing nothing forever.
-                setToggled(false);
-                return;
-            }
-
-            startingHole = starting;
-            hole = holes.get(0).box();
-            if (!hole.equals(lastUsedHole)) lastUsedHole = hole;
+        // Enemy filled the hole we're currently walking toward mid-approach -- without this,
+        // moveTowards() below just keeps aiming at now-solid ground forever (the "stuck, không vào
+        // được" report). Check every tick: if the target's no longer actually a hole, drop it and
+        // immediately re-pick THIS SAME tick instead of waiting out a jump-timeout against a wall
+        // that isn't even a hole anymore. Worst case (nothing else reachable) pickTarget's own
+        // holes.isEmpty() check disables the module, matching "không có hole thì tự động disable".
+        if (hole != null && !isHoleStillValid(hole)) {
+            unreachableHole = hole;
+            hole = null;
+            startingHole = null;
+            jumpAttempts = 0;
+            if (!pickTarget()) return;
         }
 
         // Epsilon, not exact double equality -- moveTowards' own closing-the-gap clamp lands you
@@ -251,8 +226,12 @@ public class HoleSnapModule extends Module {
             // which never touches deltaMovement.y for its jump either: it presses the REAL vanilla
             // jump key (mc.options.keyJump) and lets vanilla's own jumpFromGround()/aiStep() do it
             // through the normal input pipeline. Same mechanism here.
+            // Explicit request: with HoleSnap's own Step setting on, don't press the real jump key
+            // at all -- Step's hole-to-hole hopping already gets you across ledges its own way, a
+            // manual jump on top just fights it. Still counted as an "attempt" below though (just
+            // without the key press) -- a wall Step can't clear needs the SAME give-up handling.
             if (mc.player.horizontalCollision && mc.player.onGround() && !jumpPressed) {
-                mc.options.keyJump.setDown(true);
+                if (!step.getValue()) mc.options.keyJump.setDown(true);
                 jumpPressed = true;
                 jumpWaitTicks = 0;
                 jumpAttempts++;
@@ -264,6 +243,11 @@ public class HoleSnapModule extends Module {
                     unreachableHole = hole;
                     hole = null;
                     startingHole = null;
+
+                    if (++giveUpCount >= MAX_CONSECUTIVE_GIVE_UPS) {
+                        EUClient.CHAT_MANAGER.tagged("Gave up reaching a hole " + giveUpCount + " times in a row, disabling.", getName());
+                        setToggled(false);
+                    }
                     return;
                 }
             }
@@ -294,6 +278,7 @@ public class HoleSnapModule extends Module {
         // obstruction) -- the attempt counter only tracks CONSECUTIVE failures against the SAME
         // hole while stuck at its base, not overall jump usage.
         jumpAttempts = 0;
+        giveUpCount = 0;
 
         // Landed dead-center this exact tick -- moveTowards() (above) only ever ran while NOT
         // centered, so nothing has zeroed this tick's movement yet. Reflex-holding a movement key
@@ -324,6 +309,75 @@ public class HoleSnapModule extends Module {
         setToggled(false);
         hole = null;
         startingHole = null;
+    }
+
+    // Shared by both the initial "hole == null" pick and the mid-approach "target got filled,
+    // re-pick now" recovery -- factored out so the exclusion rules (lastUsedHole, unreachableHole)
+    // only live in one place. Returns false (and disables the module) when nothing valid is left.
+    private boolean pickTarget() {
+        HoleUtils.Hole detected = currentHole();
+
+        // Still geometrically read as "in" the hole we just used (mid-jump/airborne, not actually
+        // out yet -- e.g. mashing Space and the HoleSnap bind together) doesn't count as "already
+        // in a hole" for target-selection purposes here, or the Step-off branch's "just recenter
+        // in current" shortcut snaps you straight back down into the hole you were trying to leave.
+        HoleUtils.Hole starting = (detected != null && lastUsedHole != null && detected.box().equals(lastUsedHole)) ? null : detected;
+
+        List<HoleUtils.Hole> holes;
+        if (starting != null && !step.getValue()) {
+            holes = List.of(starting);
+        } else if (starting != null) {
+            holes = prioritizeSingle(getHoles().stream().filter(h -> !h.box().equals(starting.box())).toList());
+        } else {
+            holes = getHoles();
+        }
+
+        // Hard-exclude the last hole actually used, UNLESS that's literally the only candidate
+        // left (fall back to it rather than doing nothing).
+        if (lastUsedHole != null) {
+            List<HoleUtils.Hole> filtered = holes.stream().filter(h -> !h.box().equals(lastUsedHole)).toList();
+            if (!filtered.isEmpty()) holes = filtered;
+        }
+
+        // Same for a target that just gave up (jump-timeout OR just-got-filled) -- UNLIKE
+        // lastUsedHole, never fall back to re-picking it: it's proven unreachable/gone, so falling
+        // back here would re-pick the exact same hole every time, forever.
+        if (unreachableHole != null) {
+            holes = holes.stream().filter(h -> !h.box().equals(unreachableHole)).toList();
+        }
+
+        if (holes.isEmpty()) {
+            // Nothing valid to snap to -- don't sit toggled-on doing nothing forever.
+            setToggled(false);
+            return false;
+        }
+
+        startingHole = starting;
+        hole = holes.get(0).box();
+        if (!hole.equals(lastUsedHole)) lastUsedHole = hole;
+        return true;
+    }
+
+    // Re-checks whether a previously-picked target AABB is still actually a hole -- an enemy
+    // filling it mid-approach doesn't change the box's coordinates, only whether HoleUtils still
+    // detects a matching hole there.
+    private boolean isHoleStillValid(AABB box) {
+        BlockPos origin = BlockPos.containing(box.minX + 0.5, box.minY, box.minZ + 0.5);
+
+        HoleUtils.Hole single = HoleUtils.getSingleHole(origin, 1);
+        if (single != null && single.box().equals(box)) return true;
+
+        if (doubleHoles.getValue()) {
+            HoleUtils.Hole doubleHole = HoleUtils.getDoubleHole(origin, 1);
+            if (doubleHole != null && doubleHole.box().equals(box)) return true;
+        }
+
+        if (quadHoles.getValue()) {
+            HoleUtils.Hole quadHole = HoleUtils.getQuadHole(origin, 1);
+            if (quadHole != null && quadHole.box().equals(box)) return true;
+        }
+
+        return false;
     }
 
     // Is the player standing in a hole RIGHT NOW, regardless of range/Y filtering (those are for

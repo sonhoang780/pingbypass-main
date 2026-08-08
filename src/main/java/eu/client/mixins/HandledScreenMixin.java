@@ -35,14 +35,29 @@ public abstract class HandledScreenMixin extends Screen implements IMinecraft {
         super(title);
     }
 
-    @Inject(method = "extractRenderState", at = @At("TAIL"))
-    private void render(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta, CallbackInfo ci) {
+    // Was hooking extractRenderState's TAIL -- works for a plain AbstractContainerScreen (chests,
+    // ender chest...) but AbstractRecipeBookScreen (InventoryScreen, i.e. the player's own "E"
+    // inventory, crafting table...) OVERRIDES extractRenderState ENTIRELY and never calls
+    // super.extractRenderState() -- it calls extractContents/extractCarriedItem/extractTooltip
+    // directly itself instead, so the mixin-injected code inside AbstractContainerScreen's own
+    // extractRenderState body never ran for those screens (the reported "container gui thì hiện,
+    // mở inventory thuần thì không"). extractTooltip is the one call BOTH class hierarchies
+    // actually share, so hook that instead -- also lets the vanilla-tooltip suppression and our
+    // own draw live in one place instead of two separate injections.
+    //
+    // Vanilla's own item-name tooltip (queued via setTooltipForNextFrame) renders on a dedicated
+    // always-on-top stratum regardless of insertion order -- it painted directly over our box
+    // below (both anchor near the mouse, and ShulkerInfo's box is tall enough to overlap where the
+    // vanilla tooltip lands). Our box already includes the item's name, so cancel vanilla's
+    // redundant one for the same slot instead of fighting the stratum ordering.
+    @Inject(method = "extractTooltip", at = @At("HEAD"), cancellable = true)
+    private void euclient$shulkerInfo(GuiGraphicsExtractor context, int mouseX, int mouseY, CallbackInfo ci) {
         ShulkerInfoModule shulkerInfoModule = EUClient.MODULE_MANAGER.getModule(ShulkerInfoModule.class);
+        if (!shulkerInfoModule.isToggled()) return;
 
-        if(!shulkerInfoModule.isToggled()) return;
-
-        if(hoveredSlot != null && !hoveredSlot.getItem().isEmpty() && menu.getCarried().isEmpty() && shulkerInfoModule.hasItems(hoveredSlot.getItem())) {
+        if (hoveredSlot != null && !hoveredSlot.getItem().isEmpty() && menu.getCarried().isEmpty() && shulkerInfoModule.hasItems(hoveredSlot.getItem())) {
             shulkerInfoModule.renderInfo(context, mouseX, mouseY, hoveredSlot.getItem());
+            ci.cancel();
         }
     }
 

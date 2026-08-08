@@ -66,7 +66,10 @@ public class NumberButton extends Button {
         Renderer2D.renderQuad(context, getX() + getPadding() + 1, getY(), getX() + getPadding() + 2, getY() + getHeight() - 1, ClickGuiScreen.getButtonColor(getY(), 255));
 
         EUClient.FONT_MANAGER.drawTextWithShadow(context, listening ? (currentString + (selecting ? "" : EUClient.CLICK_GUI.isShowLine() ? "|" : "")) : setting.getTag(), getX() + getTextPadding() + 3, getY() + 2, Color.WHITE);
-        if(!listening) EUClient.FONT_MANAGER.drawTextWithShadow(context, ChatFormatting.GRAY + "" + setting.getValue(), getX()+ getWidth() - getTextPadding() - 1 - EUClient.FONT_MANAGER.getWidth(setting.getValue() + ""), getY() + 2, Color.WHITE);
+        if(!listening) {
+            String valueText = setting.isZeroIsIgnore() && setting.getValue().doubleValue() == 0.0 ? "Ignore" : setting.getValue() + "";
+            EUClient.FONT_MANAGER.drawTextWithShadow(context, ChatFormatting.GRAY + valueText, getX()+ getWidth() - getTextPadding() - 1 - EUClient.FONT_MANAGER.getWidth(valueText), getY() + 2, Color.WHITE);
+        }
     }
 
     @Override

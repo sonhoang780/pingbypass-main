@@ -168,7 +168,7 @@ public class Anchor extends Module {
 
         // Terrain holes have OBSIDIAN or BEDROCK safety level
         // If it's not hardened (made of terrain blocks), return true
-        return hole.safety() == HoleUtils.HoleSafety.OBSIDIAN ||
-               hole.safety() == HoleUtils.HoleSafety.BEDROCK;
+        return hole.safety() == HoleUtils.HoleSafety.UNSAFE ||
+               hole.safety() == HoleUtils.HoleSafety.SAFE;
     }
 }

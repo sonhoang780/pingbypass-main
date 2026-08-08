@@ -46,11 +46,12 @@ import java.util.List;
 public class SpeedMineModule extends Module {
     public ModeSetting switchMode = new ModeSetting("Switch", "The mode that will be used for automatically switching to the fastest item.", "Silent", InventoryUtils.SWITCH_MODES);
     public NumberSetting range = new NumberSetting("Range", "The maximum distance at which blocks will be mined.", 6.0, 0.0, 8.0);
-    public NumberSetting speed = new NumberSetting("Speed", "The speed at which the module will mine blocks.", 1.0, 0.7, 1.0);
+    public NumberSetting speed = new NumberSetting("Speed", "The speed at which the module will mine blocks.", 1.0, 0.6, 1.0);
     public ModeSetting rotate = new ModeSetting("Rotate", "Automatically rotates to the block when mining it.", "Packet", new String[]{"None", "Normal", "Packet"});
 
     public BooleanSetting auto = new BooleanSetting("Auto", "Automatically mines blocks deemed optimal for defeating your opponents.", false);
     public BooleanSetting cityOnly = new BooleanSetting("CityOnly", "Only mines the target's city positions.", new BooleanSetting.Visibility(auto, true), false);
+    public BooleanSetting bed = new BooleanSetting("Bed", "Also targets the 4 blocks beside the target's head, in case they anti-crystal with a bed up there.", new BooleanSetting.Visibility(auto, true), false);
     public BooleanSetting holeCheck = new BooleanSetting("HoleCheck", "Only mine the player in hole.", new BooleanSetting.Visibility(auto, true), false);
     public BooleanSetting switchReset = new BooleanSetting("SwitchReset", "Resets the mining when switching slots.", new ModeSetting.Visibility(switchMode, "None", "AltSwap", "AltPickup"), true);
     public BooleanSetting doubleMine = new BooleanSetting("Double", "Allows the mining of 2 blocks at the same time.", false);
@@ -58,7 +59,24 @@ public class SpeedMineModule extends Module {
     public BooleanSetting instant = new BooleanSetting("Instant", "Instantly mines blocks once they have been replaced.", false);
     public NumberSetting instantDelay = new NumberSetting("InstantDelay", "The amount of time that has to pass before instantly mining blocks.", new BooleanSetting.Visibility(instant, true), 0, 0, 20);
     public NumberSetting instantTimeout = new NumberSetting("InstantTimeout", "The amount of time that cancel instantly mine while no block to mine.", new BooleanSetting.Visibility(instant, true), 60, 0, 100);
+    // Instant already stays primed (see process()'s air-check) instead of tearing down once the
+    // position goes locally air, but it still WAITS for local confirmation the position is solid
+    // again before re-firing -- a real round-trip (target's own place packet -> server -> back to
+    // us) every single break. Async skips that confirmation entirely: fires the break burst blind,
+    // on the InstantDelay clock alone, whether the position looks air or solid locally. Most shots
+    // land on nothing (server no-ops a STOP_DESTROY_BLOCK with nothing destroying), but the one
+    // that lands exactly as the target's block appears costs zero extra latency instead of a full
+    // tick-plus-ping waiting to see it.
+    public BooleanSetting async = new BooleanSetting("Async", "Fires break packets blind on InstantDelay alone, without waiting to locally confirm the block exists.", new BooleanSetting.Visibility(instant, true), false);
     public BooleanSetting grim = new BooleanSetting("Grim", "Adds a bypass catered to the Grim anticheat.", false);
+    // Was dropped entirely during the 1.21.4 -> 26.1.2 port -- Instant relies on this to make the
+    // block go locally-air the INSTANT we fire the break packet, not whenever the server's own
+    // block-update packet round-trips back. Without it, mining==true (Instant deliberately never
+    // clears it) but the position's BlockState never locally changes, so process() just re-fires
+    // the same STOP_DESTROY_BLOCK/swing burst on the SAME stale block every tick instead of ever
+    // seeing canBeReplaced()==true and cancelling out to let the caller re-target -- i.e. Instant
+    // never actually reacts to a target re-placing the block, it just spams the old one.
+    public BooleanSetting clientRemove = new BooleanSetting("ClientRemove", "Removes the block client-side immediately for instant visual feedback.", true);
     public BooleanSetting strict = new BooleanSetting("Strict", "Waits for the server to tick you before switching back.", false);
     public BooleanSetting whileEating = new BooleanSetting("WhileEating", "Mines blocks while eating.", true);
     public WhitelistSetting whitelist = new WhitelistSetting("Whitelist", "Mines only the blocks that are on this list. If empty, every block will be mined.", WhitelistSetting.Type.BLOCKS);
@@ -243,6 +261,30 @@ public class SpeedMineModule extends Module {
                         }
                     }
                 };
+                // Bed: the enemy phasing their HEAD into a 2-tall gap isn't covered by `inside`
+                // (that's feet-level airgaps only, HoleUtils.getInsidePositions' offsets are all
+                // Y < feet) or `outside` (feet-level ring). Break the actual head-level block
+                // they're standing inside, plus one of the 4 NSWE blocks beside it -- their own
+                // anti-crystal bed, if that's what's there.
+                Runnable bed = () -> {
+                    if (!SpeedMineModule.this.bed.getValue()) return;
+
+                    BlockPos head = target.player().blockPosition().offset(0, 2, 0);
+                    List<BlockPos> headPositions = new ArrayList<>();
+                    if (!mc.level.getBlockState(head).canBeReplaced()) headPositions.add(head);
+                    for (Direction dir : Direction.Plane.HORIZONTAL) {
+                        BlockPos side = head.relative(dir);
+                        if (!mc.level.getBlockState(side).canBeReplaced()) headPositions.add(side);
+                    }
+
+                    for (BlockPos position : headPositions) {
+                        if (primary != null && secondary != null) break;
+                        if (isMining(position)) continue;
+                        if (isInvalid(position) || isOutOfRange(position)) continue;
+                        handle(position, 0);
+                    }
+                };
+
                 if (sequence.getValue().equals("Surround")) {
                     outside.run();
                     inside.run();
@@ -250,6 +292,7 @@ public class SpeedMineModule extends Module {
                     inside.run();
                     outside.run();
                 }
+                bed.run();
             }
         } else {
             BlockPos position = null;
@@ -491,6 +534,14 @@ public class SpeedMineModule extends Module {
         }
 
         if (!doubleMine.getValue()) positions.add(new Position(player.blockPosition().offset(0, 2, 0), false));
+
+        if (bed.getValue() && !doubleMine.getValue()) {
+            BlockPos head = player.blockPosition().offset(0, 2, 0);
+            for (Direction dir : Direction.Plane.HORIZONTAL) {
+                positions.add(new Position(head.relative(dir), false));
+            }
+        }
+
         return positions;
     }
 
@@ -685,8 +736,35 @@ public class SpeedMineModule extends Module {
             boolean secondary = getSecondary() != null && position.equals(getSecondary().getPosition());
             if (secondary) instantMine = false;
 
-            // Block is broken (air) — clean up and switch back to client's slot
+            // Block is broken (air) — clean up and switch back to client's slot. EXCEPT while
+            // instantMine is priming: that's exactly the tick right after ClientRemove marks our
+            // own break as air LOCALLY, before the target has rebuilt anything there yet -- tearing
+            // the Action down here (progress/attempts/instantMine all zeroed by cancel(), primary
+            // nulled by the caller) threw away the "already fully progressed" state that's the
+            // entire point of Instant, forcing a full re-mine from 0 the next time this position
+            // got targeted instead of an instant re-break the moment it solidifies again. Stay
+            // primed at full progress and idle here instead; only actually give up once nothing
+            // gets rebuilt for InstantTimeout (0 = never give up, matches the user just wanting
+            // max-aggression instant mining with no watchdog at all).
             if (mc.level.getBlockState(position).canBeReplaced()) {
+                if (instantMine) {
+                    long timeoutTicks = instantTimeout.getValue().longValue();
+                    boolean timedOut = timeoutTicks > 0 && instantTimer.hasTimeElapsed(timeoutTicks * 50L);
+                    if (!timedOut) {
+                        // Async: fire blind on the InstantDelay clock instead of idling here
+                        // waiting for the position to locally solidify again.
+                        if (async.getValue() && instantTimer.hasTimeElapsed(instantDelay.getValue().longValue() * 50L)) {
+                            Direction blindDirection = WorldUtils.getClosestDirection(position, true);
+                            int blindSlot = switchMode.getValue().equalsIgnoreCase("None") ? -1 : InventoryUtils.findFastestItem(this.state, InventoryUtils.HOTBAR_START, switchMode.getValue().equalsIgnoreCase("AltSwap") || switchMode.getValue().equalsIgnoreCase("AltPickup") ? InventoryUtils.INVENTORY_END : InventoryUtils.HOTBAR_END);
+                            if (blindSlot == -1) blindSlot = mc.player.getInventory().getSelectedSlot();
+                            fireBreakBurst(blindDirection, blindSlot, false);
+                            instantTimer.reset();
+                            attempts++;
+                        }
+                        return false;
+                    }
+                }
+
                 if (isProxyActive()) {
                     // Switch server back to the client's actual slot
                     serverSend(new ServerboundSetCarriedItemPacket(mc.player.getInventory().getSelectedSlot()));
@@ -745,75 +823,7 @@ public class SpeedMineModule extends Module {
                 if (progress >= getSpeed() && !state.canBeReplaced() && (whileEating.getValue() || !mc.player.isUsingItem())
                         && !(switchTouchesInventory && mc.player.isUsingItem())) {
                     if (!instantMine || instantTimer.hasTimeElapsed(instantDelay.getValue().longValue() * 50L)) {
-                        EUClient.EVENT_HANDLER.post(new DestroyBlockEvent(position));
-
-                        if (rotate.getValue().equalsIgnoreCase("Packet")) {
-                            if (isProxyActive()) {
-                                float[] rots = RotationUtils.getRotations(WorldUtils.getHitVector(position, direction));
-                                // Rot-only, same reason as the "Normal" branch above -- PosRot's
-                                // X/Y/Z here raced the client's own forwarded movement packets.
-                                serverSend(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.Rot(
-                                        rots[0], rots[1],
-                                eu.client.pingbypass.PingBypassFlags.clientOnGround,
-                                eu.client.pingbypass.PingBypassFlags.clientHorizontalCollision));
-                            } else {
-                                EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(WorldUtils.getHitVector(position, direction)));
-                            }
-                        }
-
-                        int previousSlot = mc.player.getInventory().getSelectedSlot();
-
-                        if (isProxyActive()) {
-                            // Use startSlot (captured in start(), before anything switched)
-                            // as the real "previous" slot to restore -- previousSlot above was
-                            // just read live, which by now is the pickaxe slot start() already
-                            // switched to, not what the player actually had selected.
-                            int realPreviousSlot = startSlot != -1 ? startSlot : previousSlot;
-                            int mineSlot = switchMode.getValue().equalsIgnoreCase("None") ? -1 : slot;
-
-                            // EUClient.EVENT_HANDLER.post(new DestroyBlockEvent(...)) above runs its
-                            // listeners SYNCHRONOUSLY -- AutoCrystalModule.onDestroyBlock is one of
-                            // them, and with Switch=Normal it selects the crystal slot and (by
-                            // design, see InventoryUtils' comment on switchBack's Normal no-op)
-                            // leaves it selected afterward. That happens BEFORE this code runs.
-                            // needSwitch used to be "mineSlot != realPreviousSlot" -- comparing the
-                            // slot config wanted against the slot the player originally had, with
-                            // no idea AutoCrystal had already reselected mid-event. Whenever those
-                            // two happened to already match (pickaxe == the player's normal
-                            // hotbar slot, a common setup), needSwitch came out false and NEITHER
-                            // re-assert-pickaxe nor restore-original ran at all -- leaving the
-                            // real server (and the mirror) stuck on the crystal slot forever. The
-                            // next mining tick then computed mining speed off a crystal instead of
-                            // a pickaxe, mining effectively never finished, DestroyBlockEvent never
-                            // fired again, and AutoCrystal never got triggered again either: place
-                            // exactly one crystal, then stall for good. Always re-assert the mining
-                            // slot here regardless of what it "should" already be -- it costs one
-                            // extra packet on the (rare) already-correct case, but is the only way
-                            // to be right after another module reselected mid-event.
-                            if (mineSlot != -1) {
-                                serverSend(new ServerboundSetCarriedItemPacket(mineSlot));
-                                mc.player.getInventory().setSelectedSlot(mineSlot);
-                            }
-
-                            serverSendSequenced(seq -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, position, direction, seq));
-                            if (grim.getValue()) serverSend(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, position.above(500), direction));
-                            serverSend(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
-
-                            if (mineSlot != -1) {
-                                serverSend(new ServerboundSetCarriedItemPacket(realPreviousSlot));
-                                mc.player.getInventory().setSelectedSlot(realPreviousSlot);
-                            }
-                        } else {
-                            InventoryUtils.switchSlot(switchMode.getValue(), slot, previousSlot);
-
-                            NetworkUtils.sendSequencedPacket(seq -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, position, direction, seq));
-                            if (grim.getValue()) mc.getConnection().send(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, position.above(500), direction));
-                            mc.getConnection().send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
-
-                            if (strict.getValue() || (doubleMine.getValue() && secondary)) switchAction = new SwitchAction(slot, previousSlot, System.currentTimeMillis());
-                            else if (switchAction == null) InventoryUtils.switchBack(switchMode.getValue(), slot, previousSlot);
-                        }
-
+                        fireBreakBurst(direction, slot, secondary);
                         if (!instantMine || secondary) mineTimer.reset();
                     }
 
@@ -846,6 +856,76 @@ public class SpeedMineModule extends Module {
             }
 
             return false;
+        }
+
+        // Extracted out of process()'s completion branch so Async's blind re-fire (see the
+        // air-check above) can send the exact same rotate/switch/STOP_DESTROY/grim/swing/
+        // clientRemove burst without duplicating it -- the two call sites used to drift out of
+        // sync being separate copies.
+        private void fireBreakBurst(Direction direction, int slot, boolean secondary) {
+            EUClient.EVENT_HANDLER.post(new DestroyBlockEvent(position));
+
+            if (rotate.getValue().equalsIgnoreCase("Packet")) {
+                if (isProxyActive()) {
+                    float[] rots = RotationUtils.getRotations(WorldUtils.getHitVector(position, direction));
+                    // Rot-only, same reason as the "Normal" branch in process() -- PosRot's X/Y/Z
+                    // here raced the client's own forwarded movement packets.
+                    serverSend(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.Rot(
+                            rots[0], rots[1],
+                            eu.client.pingbypass.PingBypassFlags.clientOnGround,
+                            eu.client.pingbypass.PingBypassFlags.clientHorizontalCollision));
+                } else {
+                    EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(WorldUtils.getHitVector(position, direction)));
+                }
+            }
+
+            int previousSlot = mc.player.getInventory().getSelectedSlot();
+
+            if (isProxyActive()) {
+                // Use startSlot (captured in start(), before anything switched) as the real
+                // "previous" slot to restore -- previousSlot above was just read live, which by
+                // now is the pickaxe slot start() already switched to, not what the player
+                // actually had selected.
+                int realPreviousSlot = startSlot != -1 ? startSlot : previousSlot;
+                int mineSlot = switchMode.getValue().equalsIgnoreCase("None") ? -1 : slot;
+
+                // EUClient.EVENT_HANDLER.post(new DestroyBlockEvent(...)) above runs its listeners
+                // SYNCHRONOUSLY -- AutoCrystalModule.onDestroyBlock is one of them, and with
+                // Switch=Normal it selects the crystal slot and (by design, see InventoryUtils'
+                // comment on switchBack's Normal no-op) leaves it selected afterward. That happens
+                // BEFORE this code runs. Always re-assert the mining slot here regardless of what
+                // it "should" already be -- it costs one extra packet on the (rare) already-correct
+                // case, but is the only way to be right after another module reselected mid-event.
+                if (mineSlot != -1) {
+                    serverSend(new ServerboundSetCarriedItemPacket(mineSlot));
+                    mc.player.getInventory().setSelectedSlot(mineSlot);
+                }
+
+                serverSendSequenced(seq -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, position, direction, seq));
+                if (grim.getValue()) serverSend(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, position.above(500), direction));
+                serverSend(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
+
+                if (mineSlot != -1) {
+                    serverSend(new ServerboundSetCarriedItemPacket(realPreviousSlot));
+                    mc.player.getInventory().setSelectedSlot(realPreviousSlot);
+                }
+            } else {
+                InventoryUtils.switchSlot(switchMode.getValue(), slot, previousSlot);
+
+                NetworkUtils.sendSequencedPacket(seq -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, position, direction, seq));
+                if (grim.getValue()) mc.getConnection().send(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, position.above(500), direction));
+                mc.getConnection().send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
+
+                if (strict.getValue() || (doubleMine.getValue() && secondary)) switchAction = new SwitchAction(slot, previousSlot, System.currentTimeMillis());
+                else if (switchAction == null) InventoryUtils.switchBack(switchMode.getValue(), slot, previousSlot);
+            }
+
+            // Remove block client-side so modules (and process()'s own top-of-loop
+            // canBeReplaced() check) see it as air immediately instead of waiting on the server's
+            // block-update round-trip.
+            if (clientRemove.getValue()) {
+                mc.level.removeBlock(position, false);
+            }
         }
 
         public void render(PoseStack matrices) {
@@ -967,6 +1047,20 @@ public class SpeedMineModule extends Module {
 
         private float getSpeed() {
             return getSecondary() != null && position.equals(getSecondary().getPosition()) ? 1.0f : speed.getValue().floatValue();
+        }
+
+        // For AutoCrystalModule's MineIgnore: approximates ticks left before this target breaks,
+        // using the SAME per-tick delta formula process() itself uses (WorldUtils.getMineSpeed off
+        // the currently-selected slot / the world's timer multiplier). Not exact -- delta can shift
+        // tick to tick if switchMode picks a different item, or if the timer multiplier changes --
+        // but close enough for a coarse "N ticks left" trigger threshold, and cheap (no scan).
+        public int getTicksRemaining() {
+            if (!mining) return Integer.MAX_VALUE;
+
+            float delta = WorldUtils.getMineSpeed(state, mc.player.getInventory().getSelectedSlot()) / EUClient.WORLD_MANAGER.getTimerMultiplier();
+            if (delta <= 0.0f) return Integer.MAX_VALUE;
+
+            return Math.max(0, Math.round((getSpeed() - progress) / delta));
         }
     }
 

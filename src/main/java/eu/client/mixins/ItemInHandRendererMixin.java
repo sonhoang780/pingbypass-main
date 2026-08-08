@@ -15,8 +15,6 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.ModifyArg;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 // ShadersModule's Outline auto-applying to the first-person view-model, no separate "Hands"
 // toggle -- ItemInHandRenderer only ever renders the LOCAL player's own hands/held item (other
@@ -30,10 +28,40 @@ import org.slf4j.LoggerFactory;
 // submitItem(..., tints, quads, foilType), where "tints" is baked-in per-quad color, not a
 // global recolor multiply) -- Fill for Hands would mean recoloring every submitted quad's
 // vertex color by hand, a separate and much bigger job. Left as a follow-up.
+//
+// A BetterChams-style OutlineBufferSource.getBuffer() redirect (spanning the whole
+// renderHandsWithItems window) was tried and REVERTED (2026-08-08): renderAllFeatures(), called at
+// the tail of that same method, is a DEFERRED flush for OTHER entities' queued feature geometry too
+// (capes, equipped items, etc via the same SubmitNodeStorage), not just this player's own hands --
+// there's no way to tell "this getBuffer call is for my hand" from "this getBuffer call is some
+// other entity's queued Chams silhouette flushing at the same moment" using only that coarse
+// in-this-method flag, so it hijacked other entities' Chams draws into the wrong place and made
+// world Chams disappear entirely. Reverted to just the outlineColor computation below -- narrower,
+// doesn't touch anything outside this player's own item submission.
 @Mixin(ItemInHandRenderer.class)
 public class ItemInHandRendererMixin {
-    private static final Logger LOGGER = LoggerFactory.getLogger("EUClient/Shaders");
+    private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger("EUClient/Shaders");
     private static long euclient$lastLog = 0L;
+    private static int euclient$logCount = 0;
+    private static String euclient$currentItem = "?";
+
+    // TEMP DIAGNOSTIC (2026-08-08): "tay này có thì tay kia mất" still reported after the
+    // OutlineBufferSource guard fix -- log which item/hand computed which color, to see if BOTH
+    // hands actually reach here with a real color each, or if one hand's @ModifyArg never fires /
+    // computes 0. Remove once root-caused.
+    @Inject(method = "renderItem", at = @At("HEAD"))
+    private void euclient$logRenderItem(net.minecraft.world.entity.LivingEntity mob, net.minecraft.world.item.ItemStack itemStack, net.minecraft.world.item.ItemDisplayContext type, PoseStack poseStack, SubmitNodeCollector collector, int light, CallbackInfo ci) {
+        euclient$currentItem = itemStack.isEmpty() ? "empty" : (itemStack.getItem() + "@" + type);
+    }
+
+    // Re-added (2026-08-08) alongside the OutlineBufferSource guard, not instead of it: the guard
+    // stops the CRASH (IllegalStateException aborting the flush), this flag+redirect is the actual
+    // BetterChams trick that forces hand geometry onto the outline target regardless of which
+    // internal path queued it. Read by OutlineBufferSourceMixin.
+    @Inject(method = "renderHandsWithItems", at = @At("HEAD"))
+    private void euclient$startHands(float partialTick, PoseStack pose, SubmitNodeCollector collector, LocalPlayer player, int light, CallbackInfo ci) {
+        eu.client.utils.mixins.HandsRenderState.renderingHands = true;
+    }
 
     @ModifyArg(
             method = "renderItem(Lnet/minecraft/world/entity/LivingEntity;Lnet/minecraft/world/item/ItemStack;Lnet/minecraft/world/item/ItemDisplayContext;Lcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/SubmitNodeCollector;I)V",
@@ -56,21 +84,30 @@ public class ItemInHandRendererMixin {
         // for the WORLD's shared outline chain -- hands only ever checked Shaders before, so
         // Chams/PopChams being on never touched the first-person view-model at all ("Chams không
         // hoạt động cho Hands").
+        int result = outlineColor;
+        String source = "none";
         if (shaders.isToggled() && shaders.isValidEntity(mc.player)) {
-            return shaders.getFillColor(mc.player);
+            result = shaders.getFillColor(mc.player);
+            source = "Shaders";
+        } else {
+            eu.client.modules.impl.visuals.ChamsModule chams = EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.visuals.ChamsModule.class);
+            if (chams.isToggled() && chams.players.getValue() && chams.hands.getValue()) {
+                result = chams.getHandsFillColor(mc.player);
+                source = "Chams";
+            } else {
+                eu.client.modules.impl.visuals.PopChamsModule popChams = EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.visuals.PopChamsModule.class);
+                if (popChams.isToggled()) {
+                    result = popChams.fillColor.getColor().getRGB() | 0xFF000000;
+                    source = "PopChams";
+                }
+            }
         }
 
-        eu.client.modules.impl.visuals.ChamsModule chams = EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.visuals.ChamsModule.class);
-        if (chams.isToggled() && chams.players.getValue() && chams.hands.getValue()) {
-            return chams.getHandsFillColor(mc.player);
-        }
+        long now = System.currentTimeMillis();
+        if (now - euclient$lastLog > 500) { euclient$lastLog = now; euclient$logCount = 0; }
+        if (euclient$logCount++ < 6) LOGGER.info("[HandsOutline] item={} source={} color={}", euclient$currentItem, source, Integer.toHexString(result));
 
-        eu.client.modules.impl.visuals.PopChamsModule popChams = EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.visuals.PopChamsModule.class);
-        if (popChams.isToggled()) {
-            return popChams.fillColor.getColor().getRGB() | 0xFF000000;
-        }
-
-        return outlineColor;
+        return result;
     }
 
     // Bobbing-desync root cause (verified via javap on GameRenderer/ItemInHandRenderer/
@@ -96,6 +133,8 @@ public class ItemInHandRendererMixin {
     // here every frame was the prior, reverted attempt's actual crash cause).
     @Inject(method = "renderHandsWithItems", at = @At("RETURN"))
     private void euclient$flushHandOutline(float partialTick, PoseStack pose, SubmitNodeCollector collector, LocalPlayer player, int light, CallbackInfo ci) {
+        eu.client.utils.mixins.HandsRenderState.renderingHands = false;
+
         Minecraft mc = Minecraft.getInstance();
         if (mc.levelRenderer == null) return;
         RenderTarget outline = ((LevelRendererAccessor) mc.levelRenderer).euclient$getEntityOutlineTarget();

@@ -78,9 +78,28 @@ public class AutoCrystalModule extends Module {
     public BooleanSetting yawStep = new BooleanSetting("YawStep", "Performs your rotations over multiple ticks.", new CategorySetting.Visibility(miscellaneousCategory), false);
     public NumberSetting yawStepThreshold = new NumberSetting("YawStepThreshold", "Threshold", "The threshold in order for yaw to be modified.", new BooleanSetting.Visibility(yawStep, true), 75, 1, 180);
     public BooleanSetting raytrace = new BooleanSetting("Raytrace", "Avoids attacking or placing any crystals through walls.", new CategorySetting.Visibility(miscellaneousCategory), false);
+    // Multitarget scans every candidate position against EVERY player in getPlayers() (see
+    // calculateCrystals/calculatePlacements) -- O(positions * players), and calculatePlacements
+    // deliberately doesn't early-exit (see the comment on that method), so cost scales close to
+    // linearly with player count. Async execution (see `asynchronous` below) keeps that off the
+    // render thread on a normal tick, but onDestroyBlock's own recompute (blockDestruction) can
+    // still land on it synchronously in the async-off fallback -- and either way, more targets is
+    // strictly more work somewhere. "All" keeps the existing behavior (best damage across every
+    // player); the other three collapse the player list to exactly one candidate before the
+    // position scan even starts, turning it back into O(positions) regardless of how many
+    // opponents are actually nearby.
+    public ModeSetting targetMode = new ModeSetting("Target", "Which player to target when multiple are in range -- narrowing this to one collapses the per-position player scan from O(players) to O(1), the actual fix for multitarget FPS drops.", new CategorySetting.Visibility(miscellaneousCategory), "All", new String[]{"All", "Nearest", "Farthest", "Health"});
     public NumberSetting extrapolation = new NumberSetting("Extrapolation", "Extrapolates the target's position to calculate positions ahead of time.", new CategorySetting.Visibility(miscellaneousCategory), 0, 0, 20);
     public NumberSetting enemyRange = new NumberSetting("EnemyRange", "The maximum distance at which enemies can be at.", new CategorySetting.Visibility(miscellaneousCategory), 10.0, 0.0, 24.0);
     public BooleanSetting chestBreak = new BooleanSetting("ChestBreak", "Prevents other players from getting obsidian from ender chests by destroying the dropped items.", new CategorySetting.Visibility(miscellaneousCategory), false);
+    // Pre-places a crystal on (or beside) whatever SpeedMine is currently mining, a few ticks
+    // before that block actually breaks, then detonates it the instant the block is gone -- so the
+    // explosion lands right as the support block disappears instead of racing calculatePlacements'
+    // full scan + normal place/attack timers AFTER the fact. Reads SpeedMineModule.getPrimary()'s
+    // own progress/speed directly (Action.getTicksRemaining()) rather than duplicating its mining
+    // math here.
+    public BooleanSetting mineIgnore = new BooleanSetting("MineIgnore", "Pre-places a crystal on the block SpeedMine is about to break, and detonates it the instant that block is gone.", new CategorySetting.Visibility(miscellaneousCategory), false);
+    public NumberSetting mineIgnoreTicks = new NumberSetting("MineIgnoreTicks", "Tick", "How many ticks before the block breaks to place the crystal.", new BooleanSetting.Visibility(mineIgnore, true), 3, 0, 10);
     public BooleanSetting asynchronous = new BooleanSetting("Asynchronous", "Performs calculations on separate threads.", new CategorySetting.Visibility(miscellaneousCategory), true);
     public BooleanSetting gameLoop = new BooleanSetting("GameLoop", "Runs the module on loop instead of ticks.", new CategorySetting.Visibility(miscellaneousCategory), false);
     public NumberSetting loopDelay = new NumberSetting("LoopDelay", "The delay that has to be waited out before running the module again.", new BooleanSetting.Visibility(gameLoop, true), 50, 0, 1000);
@@ -187,6 +206,13 @@ public class AutoCrystalModule extends Module {
     private PlaceTarget placeTarget = null;
     private PlaceTarget mineTarget = null;
 
+    // MineIgnore tracking: which SpeedMine target we've already pre-placed a crystal for, and where
+    // that crystal actually landed (may not be directly above minePos -- see mineIgnoreTick).
+    // Cleared whenever SpeedMine stops mining that exact block (target changed/cancelled) or once
+    // it breaks and the crystal's been detonated.
+    private BlockPos mineIgnoreMinedPos = null;
+    private BlockPos mineIgnorePlacedPos = null;
+
 
     private String calculationTime = "0.00ms";
     private int calculationCount = 0;
@@ -272,11 +298,18 @@ public class AutoCrystalModule extends Module {
         if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
         if (mc.player == null || mc.level == null) return;
 
+        mineIgnoreTick();
+
+        // Snapshot NOW, synchronously, on the main thread -- see the big comment on the
+        // (BlockPos, Set<BlockPos>) overload of calculatePlacements for why a live read from
+        // inside the async Runnable below is a race against WorldManager's per-tick clear().
+        Set<BlockPos> reservedPlacements = Set.copyOf(EUClient.WORLD_MANAGER.getReservedPlacements());
+
         Runnable runnable = () -> {
             long startTime = System.nanoTime();
 
             attackTarget = calculateCrystals();
-            placeTarget = calculatePlacements(null);
+            placeTarget = calculatePlacements(null, reservedPlacements);
 
             long calcNanos = System.nanoTime() - startTime;
             calculationTime = new DecimalFormat("0.00").format(calcNanos / 1000000.0) + "ms";
@@ -290,7 +323,7 @@ public class AutoCrystalModule extends Module {
                 BlockPos position = null;
 
                 if (module.getPrimary() != null && module.getPrimary().isMining()) position = module.getPrimary().getPosition();
-                if (position != null) mineTarget = calculatePlacements(position);
+                if (position != null) mineTarget = calculatePlacements(position, reservedPlacements);
             }
         };
 
@@ -393,6 +426,13 @@ public class AutoCrystalModule extends Module {
 
         kickTicks = 0;
 
+        // Independent of blockDestruction below -- MineIgnore pre-places on the block BEFORE it
+        // breaks (see mineIgnoreTick()), so by the time this fires the crystal's already down and
+        // waiting; all that's left is detonating it, immediately, no timer/switch/range gate (the
+        // whole point is landing the hit the instant the support block is gone, not racing the
+        // normal attack pipeline's own timers for it).
+        if (mineIgnore.getValue() && event.getPosition() != null && event.getPosition().equals(mineIgnoreMinedPos)) mineIgnoreDetonate();
+
         if (!blockDestruction.getValue()) return;
         if (!placeTimer.hasTimeElapsed(1000.0f - placeSpeed.getValue().floatValue() * 50.0f)) return;
 
@@ -407,7 +447,19 @@ public class AutoCrystalModule extends Module {
             return;
 
         PlaceTarget mineTarget = this.mineTarget == null ? null : this.mineTarget.clone();
-        if (mineTarget == null || (mineTarget.getPosition() != null && !minedPosition.equals(mineTarget.getException()))) mineTarget = calculatePlacements(minedPosition);
+        // calculatePlacements() is the full, non-early-exit radius x players scan (see the big
+        // comment on that method) -- fine off the async executor thread (onUpdateMovement already
+        // recomputes it there every tick when blockDestruction+asynchronous are both on), but
+        // DestroyBlockEvent fires on whatever thread SpeedMine's own block-breaking runs on (the
+        // main/render thread), repeatedly, every block broken. Recomputing it HERE too meant that
+        // cost landed on the render thread directly, scaling with target count -- reported as severe
+        // FPS drop with multiple real players nearby. Only fall back to a synchronous recompute when
+        // there genuinely isn't an async one already keeping this fresh.
+        boolean stale = mineTarget == null || (mineTarget.getPosition() != null && !minedPosition.equals(mineTarget.getException()));
+        // blockDestruction is already guaranteed true here (checked above) -- asynchronous is the
+        // only thing deciding whether onUpdateMovement is already keeping this.mineTarget fresh off
+        // this thread.
+        if (stale && !asynchronous.getValue()) mineTarget = calculatePlacements(minedPosition);
         if (mineTarget == null || mineTarget.getPosition() == null) {
             EUClient.RENDER_MANAGER.setRenderPosition(null);
             return;
@@ -668,7 +720,7 @@ public class AutoCrystalModule extends Module {
         if (!attack.getValue()) return null;
         if (shouldPause("Attack")) return null;
 
-        List<Player> players = getPlayers();
+        List<Player> players = selectTargets(getPlayers());
         if (players.isEmpty()) return null;
 
         EndCrystal optimalCrystal = null;
@@ -713,12 +765,26 @@ public class AutoCrystalModule extends Module {
     }
 
     private PlaceTarget calculatePlacements(BlockPos exception) {
+        return calculatePlacements(exception, EUClient.WORLD_MANAGER.getReservedPlacements());
+    }
+
+    // Split out so onUpdateMovement can hand this a SNAPSHOT of the reserved set instead of the
+    // live one. WorldManager.reservedPlacements is cleared every tick at Minecraft.tick() HEAD --
+    // if this whole method runs on the async executor thread (the default), it can execute an
+    // arbitrary amount of wall-clock time after being submitted, easily longer than one tick under
+    // real load (multitarget scans especially). By the time a live getReservedPlacements() read
+    // actually happens, the NEXT tick's clear() may have already wiped the exact reservation a
+    // placement module (Surround/SelfTrap/...) made THIS tick -- so this module would see an empty
+    // set and freely place a crystal on the cell the player is actively trying to place a real
+    // block into. Capturing the set synchronously, on the main thread, at submission time (before
+    // the async lambda ever runs) closes that race entirely.
+    private PlaceTarget calculatePlacements(BlockPos exception, Set<BlockPos> reservedPlacements) {
         if (!place.getValue()) return null;
 
         if (shouldPause("Place") || ((autoSwitch.getValue().equalsIgnoreCase("None") || InventoryUtils.findHotbar(Items.END_CRYSTAL) == -1) && (mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL)))
             return null;
 
-        List<Player> players = getPlayers();
+        List<Player> players = selectTargets(getPlayers());
         if (players.isEmpty()) return null;
 
         BlockPos optimalPosition = null;
@@ -756,7 +822,7 @@ public class AutoCrystalModule extends Module {
             // and since this module never voluntarily gives up an optimal spot, without this check
             // it whack-a-moles that cell forever against destroyCrystals. Skip the candidate outright.
             AABB crystalBox = new AABB(position.getX() - 1, position.getY() + 1, position.getZ() - 1, position.getX() + 2, position.getY() + 3, position.getZ() + 2);
-            if (EUClient.WORLD_MANAGER.getReservedPlacements().stream().anyMatch(reserved -> crystalBox.intersects(new AABB(reserved)))) continue;
+            if (reservedPlacements.stream().anyMatch(reserved -> crystalBox.intersects(new AABB(reserved)))) continue;
 
             if (mc.level.getEntities((Entity) null, new AABB(position.offset(0, 1, 0)), entity -> true).stream().anyMatch(entity -> entity.isAlive() && !(entity instanceof ExperienceOrb) && !(entity instanceof EndCrystal))) continue;
 
@@ -869,6 +935,116 @@ public class AutoCrystalModule extends Module {
         totalPlaces++;
     }
 
+    // Called synchronously every tick (onUpdateMovement, before the async scan is even submitted --
+    // this is O(1)/O(4), no need to defer it off-thread). Watches SpeedMine's primary target and
+    // pre-places a crystal on it once few enough ticks are left, then leaves it alone until either
+    // the target changes/stops (reset) or the block actually breaks (onDestroyBlock -> detonate).
+    private void mineIgnoreTick() {
+        if (!mineIgnore.getValue()) {
+            mineIgnoreMinedPos = null;
+            mineIgnorePlacedPos = null;
+            return;
+        }
+
+        SpeedMineModule.Action primary = EUClient.MODULE_MANAGER.getModule(SpeedMineModule.class).getPrimary();
+        if (primary == null || !primary.isMining()) {
+            mineIgnoreMinedPos = null;
+            mineIgnorePlacedPos = null;
+            return;
+        }
+
+        BlockPos minePos = primary.getPosition();
+        if (!minePos.equals(mineIgnoreMinedPos)) {
+            // A different block than whatever we were last tracking (new target, or SpeedMine
+            // moved on) -- start over. Deliberately doesn't touch a crystal already placed for the
+            // OLD target; that one's now unrelated and left for the normal attack pipeline.
+            mineIgnoreMinedPos = minePos;
+            mineIgnorePlacedPos = null;
+        }
+
+        if (mineIgnorePlacedPos != null) return; // already down for this target, just waiting on it to break
+        if (primary.getTicksRemaining() > mineIgnoreTicks.getValue().intValue()) return;
+
+        mineIgnoreTryPlace(minePos);
+    }
+
+    // Deliberately self-contained instead of routing through calculatePlacements/placeCrystals'
+    // (this.placeTarget) -- that field is also being overwritten by the async executor on its own
+    // schedule, and shoving a synthetic candidate into it here would just race that overwrite.
+    // Small enough to duplicate the handful of checks/switch-handling directly.
+    private void mineIgnoreTryPlace(BlockPos minePos) {
+        if (!placeTimer.hasTimeElapsed(1000.0f - placeSpeed.getValue().floatValue() * 50.0f)) return;
+
+        List<BlockPos> candidates = new ArrayList<>();
+        candidates.add(minePos.above()); // on top of the block itself, tried first
+        for (Direction direction : Direction.Plane.HORIZONTAL) candidates.add(minePos.relative(direction).above());
+
+        int slot = InventoryUtils.findHotbar(Items.END_CRYSTAL);
+        int previousSlot = mc.player.getInventory().getSelectedSlot();
+        if (!autoSwitch.getValue().equalsIgnoreCase("None") && slot == -1
+                && mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL)
+            return;
+
+        for (BlockPos candidate : candidates) {
+            BlockPos support = candidate.below();
+            if (mc.level.getBlockState(support).getBlock() != Blocks.OBSIDIAN && mc.level.getBlockState(support).getBlock() != Blocks.BEDROCK) continue;
+            if (!mc.level.getBlockState(candidate).isAir()) continue;
+            if (mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(candidate)) > Mth.square(placeRange.getValue().doubleValue())) continue;
+            if (!mc.level.getWorldBorder().isWithinBounds(candidate)) continue;
+            if (!WorldUtils.canSee(candidate) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(candidate)) > Mth.square(placeWallsRange.getValue().doubleValue()))) continue;
+            if (mc.level.getEntities((Entity) null, new AABB(candidate), entity -> true).stream().anyMatch(entity -> entity.isAlive() && !(entity instanceof ExperienceOrb) && !(entity instanceof EndCrystal))) continue;
+
+            AABB crystalBox = new AABB(candidate.getX() - 1, candidate.getY(), candidate.getZ() - 1, candidate.getX() + 2, candidate.getY() + 2, candidate.getZ() + 2);
+            if (EUClient.WORLD_MANAGER.getReservedPlacements().stream().anyMatch(reserved -> crystalBox.intersects(new AABB(reserved)))) continue;
+
+            if (!EUClient.MODULE_MANAGER.getModule(SuicideModule.class).isToggled()) {
+                float selfDamage = DamageUtils.getCrystalDamage(mc.player, null, candidate, null, ignoreTerrain.getValue());
+                if (selfDamage > maximumSelfDamage.getValue().floatValue()) continue;
+                if (antiSuicide.getValue() && selfDamage > mc.player.getHealth() + mc.player.getAbsorptionAmount()) continue;
+            }
+
+            if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.rotate(calculateRotations(Vec3.atCenterOf(candidate)), EUClient.ROTATION_MANAGER.getModulePriority(this));
+            if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(candidate)));
+
+            boolean switched = false;
+            if (mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
+                if (autoSwitch.getValue().equalsIgnoreCase("Normal") && swapBack.getValue() && savedSlot == -1) savedSlot = previousSlot;
+                InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
+                switched = true;
+            }
+
+            place(candidate);
+
+            if (switched) InventoryUtils.switchBack(autoSwitch.getValue(), slot, previousSlot);
+
+            mineIgnorePlacedPos = candidate;
+            return;
+        }
+    }
+
+    // "khi obsidian đó vỡ lập tức break cục crystal đó đi" -- no timer/range/canSee gate on
+    // purpose: the whole feature exists to land this hit the instant the support block is
+    // confirmed gone (onDestroyBlock fires on SpeedMine's own LOCAL break prediction, not a
+    // server round trip -- see DestroyBlockEvent's callsite), not to queue behind the normal
+    // attack pipeline's own pacing.
+    private void mineIgnoreDetonate() {
+        BlockPos placedPos = mineIgnorePlacedPos;
+        mineIgnoreMinedPos = null;
+        mineIgnorePlacedPos = null;
+        if (placedPos == null) return;
+
+        for (Entity entity : mc.level.entitiesForRendering()) {
+            if (!(entity instanceof EndCrystal crystal) || !crystal.isAlive()) continue;
+            if (!crystal.blockPosition().below().equals(placedPos)) continue;
+
+            if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.rotate(calculateRotations(Vec3.atCenterOf(crystal.blockPosition())), EUClient.ROTATION_MANAGER.getModulePriority(this));
+            if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
+
+            attack(crystal);
+            return;
+        }
+    }
+
     private List<Player> getPlayers() {
         if (EUClient.MODULE_MANAGER.getModule(SuicideModule.class).isToggled()) {
             return List.of(mc.player);
@@ -890,6 +1066,33 @@ public class AutoCrystalModule extends Module {
         cachedPlayers = players;
         lastPlayerCacheTime = now;
         return players;
+    }
+
+    // Narrows getPlayers()'s full in-range list down to the single best candidate for targetMode
+    // (or leaves it alone for "All"/a 0-1 length list) -- called at both scan sites so the
+    // O(positions) candidate loop only ever runs its inner player loop once per position instead of
+    // once per player. Doesn't touch cachedPlayers itself: other code (SuicideModule branch, the
+    // cache TTL) still wants the real full list, this is purely a per-call view of it.
+    private List<Player> selectTargets(List<Player> players) {
+        if (players.size() <= 1 || targetMode.getValue().equalsIgnoreCase("All")) return players;
+
+        Player best = null;
+        double bestScore = 0.0;
+
+        for (Player player : players) {
+            double score = switch (targetMode.getValue()) {
+                case "Nearest" -> -mc.player.distanceToSqr(player);
+                case "Farthest" -> mc.player.distanceToSqr(player);
+                default -> -(player.getHealth() + player.getAbsorptionAmount()); // "Health"
+            };
+
+            if (best == null || score > bestScore) {
+                best = player;
+                bestScore = score;
+            }
+        }
+
+        return List.of(best);
     }
 
     private boolean shouldPause(String process) {

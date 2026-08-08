@@ -14,6 +14,10 @@ public class NumberSetting extends Setting {
     // Drag rounding granularity (e.g. 100 so a 100..1000ms slider only stops on hundreds).
     // Defaults to 0, meaning "use the type's normal precision" (integer step 1, float/double step 0.01).
     private final Number step;
+    // When true, a value of 0 renders as "Ignore" in the GUI (e.g. FastClimb's Speed: 0 means
+    // "don't touch this climb speed" rather than "set it to zero"). Display-only -- the underlying
+    // value is still plain 0, modules read getValue() normally and treat 0 as their own no-op.
+    private final boolean zeroIsIgnore;
 
     public NumberSetting(String name, String description, Number value, Number minimum, Number maximum) {
         this(name, name, description, new Setting.Visibility(), value, minimum, maximum, 0);
@@ -32,12 +36,17 @@ public class NumberSetting extends Setting {
     }
 
     public NumberSetting(String name, String tag, String description, Setting.Visibility visibility, Number value, Number minimum, Number maximum, Number step) {
+        this(name, tag, description, visibility, value, minimum, maximum, step, false);
+    }
+
+    public NumberSetting(String name, String tag, String description, Setting.Visibility visibility, Number value, Number minimum, Number maximum, Number step, boolean zeroIsIgnore) {
         super(name, tag, description, visibility);
         this.value = value;
         this.defaultValue = value;
         this.minimum = minimum;
         this.maximum = maximum;
         this.step = step;
+        this.zeroIsIgnore = zeroIsIgnore;
     }
 
     public void setValue(Number value) {

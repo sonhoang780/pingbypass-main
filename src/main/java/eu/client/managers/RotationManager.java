@@ -163,8 +163,30 @@ public class RotationManager implements IMinecraft {
         packetRotate(rotations[0], rotations[1]);
     }
 
+    // Set whenever packetRotate actually sends a lie, read by ClientPlayNetworkHandlerMixin to
+    // decide whether an incoming server position/rotation sync packet needs its rotation fields
+    // thrown away. packetRotate has no "restore to real" follow-up of its own (Surround/SelfTrap
+    // fire-and-forget it once per target, not every tick like the queue-based rotate() modules do)
+    // -- if the real yaw genuinely isn't changing tick to tick (player standing still, precisely
+    // aiming), sendPosition's own delta==0 dedup means nothing ever re-reports the real yaw to
+    // correct the server's belief back. The server then keeps believing whatever was last faked
+    // until something else prompts a sync -- and ClientboundPlayerPositionPacket (sent by vanilla
+    // servers after knockback/damage among other things) echoes the player's OWN last-known
+    // rotation back as part of that sync, which vanilla's handler applies unconditionally to the
+    // real mc.player.setYRot()/setXRot() -- silently snapping the actual camera to whatever was
+    // last faked. Reported as "euclient forces me to look at my own SelfTrap/Surround target,"
+    // specifically only when standing still contesting a cell AND taking damage (exactly the two
+    // conditions above). 500ms mirrors homovore's own isSilentActive() window for the equivalent
+    // protection (MixinClientPlayNetworkHandler.onHandleMovePlayerPost).
+    private long lastPacketRotateTime = 0L;
+
+    public boolean isPacketRotateActive() {
+        return System.currentTimeMillis() - lastPacketRotateTime < 500L;
+    }
+
     public void packetRotate(float yaw, float pitch) {
         if (serverYaw == yaw && serverPitch == pitch) return;
+        lastPacketRotateTime = System.currentTimeMillis();
         // Same call on both sides -- mc.getConnection() on the proxy IS the real server
         // connection (see ProxyServer.setServerConnection callers), so this needs no
         // proxy-specific branch. POSITION_MANAGER mirrors mc.player's own coordinates on

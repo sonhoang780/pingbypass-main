@@ -135,6 +135,16 @@ public class FakePlayerModule extends Module {
         mc.player.saveWithoutId(valueOutput);
         player.load(net.minecraft.world.level.storage.TagValueInput.create(net.minecraft.util.ProblemReporter.DISCARDING, mc.level.registryAccess(), valueOutput.buildResult()));
 
+        // The NBT round-trip above restores the Inventory tag, but that's the STORAGE-side
+        // inventory -- the RENDER-facing equipment LivingEntity actually draws the model from
+        // (getItemBySlot/setItemSlot) isn't guaranteed to be populated just by loading Inventory
+        // back on a freshly constructed entity outside the normal server tick/sync path that
+        // usually keeps the two in step. Set it explicitly so the spawned model actually shows
+        // armor/held items instead of a bare-handed dummy.
+        for (net.minecraft.world.entity.EquipmentSlot slot : net.minecraft.world.entity.EquipmentSlot.values()) {
+            player.setItemSlot(slot, mc.player.getItemBySlot(slot).copy());
+        }
+
         mc.level.addEntity(player);
 
         player.tick();

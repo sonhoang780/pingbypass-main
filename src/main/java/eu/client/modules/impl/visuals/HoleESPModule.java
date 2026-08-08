@@ -35,17 +35,13 @@ public class HoleESPModule extends Module {
     public ModeSetting outline = new ModeSetting("Outline", "The mode for the outline rendering on the hole boxes.", "Normal", new String[]{"None", "Normal", "Gradient"});
     public NumberSetting outlineHeight = new NumberSetting("OutlineHeight", "The height of the outline rendering on the holes.", new ModeSetting.Visibility(outline, "Normal", "Gradient"), 1.0, -2.0, 2.0);
 
-    public CategorySetting bedrockColorsCategory = new CategorySetting("Bedrock", "The category that contains the settings for coloring of bedrock holes.");
-    public ColorSetting bedrockFillColor = new ColorSetting("BedrockFillColor", "Fill", "The color for the fill rendering on bedrock holes.", new CategorySetting.Visibility(bedrockColorsCategory), new ColorSetting.Color(new Color(0, 255, 0, ColorUtils.getDefaultFillColor().getColor().getAlpha()), false, false));
-    public ColorSetting bedrockOutlineColor = new ColorSetting("BedrockOutlineColor", "Outline", "The color for the outline rendering on bedrock holes.", new CategorySetting.Visibility(bedrockColorsCategory), new ColorSetting.Color(new Color(0, 255, 0, ColorUtils.getDefaultOutlineColor().getColor().getAlpha()), false, false));
+    public CategorySetting safeColorsCategory = new CategorySetting("Safe", "The category that contains the settings for coloring of safe (all-bedrock) holes.");
+    public ColorSetting safeFillColor = new ColorSetting("SafeFillColor", "Fill", "The color for the fill rendering on safe holes.", new CategorySetting.Visibility(safeColorsCategory), new ColorSetting.Color(new Color(0, 255, 0, ColorUtils.getDefaultFillColor().getColor().getAlpha()), false, false));
+    public ColorSetting safeOutlineColor = new ColorSetting("SafeOutlineColor", "Outline", "The color for the outline rendering on safe holes.", new CategorySetting.Visibility(safeColorsCategory), new ColorSetting.Color(new Color(0, 255, 0, ColorUtils.getDefaultOutlineColor().getColor().getAlpha()), false, false));
 
-    public CategorySetting mixedColorsCategory = new CategorySetting("Mixed", "The category that contains the settings for coloring of mixed holes.");
-    public ColorSetting mixedFillColor = new ColorSetting("MixedFillColor", "Fill", "The color for the fill rendering on mixed holes.", new CategorySetting.Visibility(mixedColorsCategory), new ColorSetting.Color(new Color(255, 255, 0, ColorUtils.getDefaultFillColor().getColor().getAlpha()), false, false));
-    public ColorSetting mixedOutlineColor = new ColorSetting("MixedOutlineColor", "Outline", "The color for the outline rendering on mixed holes.", new CategorySetting.Visibility(mixedColorsCategory), new ColorSetting.Color(new Color(255, 255, 0, ColorUtils.getDefaultOutlineColor().getColor().getAlpha()), false, false));
-
-    public CategorySetting obsidianColorsCategory = new CategorySetting("Obsidian", "The category that contains the settings for coloring of obsidian holes.");
-    public ColorSetting obsidianFillColor = new ColorSetting("ObsidianFillColor", "Fill", "The color for the fill rendering on obsidian holes.", new CategorySetting.Visibility(obsidianColorsCategory), new ColorSetting.Color(new Color(255, 0, 0, ColorUtils.getDefaultFillColor().getColor().getAlpha()), false, false));
-    public ColorSetting obsidianOutlineColor = new ColorSetting("ObsidianOutlineColor", "Outline", "The color for the outline rendering on obsidian holes.", new CategorySetting.Visibility(obsidianColorsCategory), new ColorSetting.Color(new Color(255, 0, 0, ColorUtils.getDefaultOutlineColor().getColor().getAlpha()), false, false));
+    public CategorySetting unsafeColorsCategory = new CategorySetting("Unsafe", "The category that contains the settings for coloring of unsafe (blast-proof but not pure bedrock) holes.");
+    public ColorSetting unsafeFillColor = new ColorSetting("UnsafeFillColor", "Fill", "The color for the fill rendering on unsafe holes.", new CategorySetting.Visibility(unsafeColorsCategory), new ColorSetting.Color(new Color(255, 0, 0, ColorUtils.getDefaultFillColor().getColor().getAlpha()), false, false));
+    public ColorSetting unsafeOutlineColor = new ColorSetting("UnsafeOutlineColor", "Outline", "The color for the outline rendering on unsafe holes.", new CategorySetting.Visibility(unsafeColorsCategory), new ColorSetting.Color(new Color(255, 0, 0, ColorUtils.getDefaultOutlineColor().getColor().getAlpha()), false, false));
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
@@ -122,9 +118,8 @@ public class HoleESPModule extends Module {
 
     private Color getFillColor(HoleUtils.Hole hole) {
         Color color = switch (hole.safety()) {
-            case BEDROCK -> bedrockFillColor.getColor();
-            case MIXED -> mixedFillColor.getColor();
-            default -> obsidianFillColor.getColor();
+            case SAFE -> safeFillColor.getColor();
+            default -> unsafeFillColor.getColor();
         };
         if(!fade.getValue()) return color;
 
@@ -133,9 +128,8 @@ public class HoleESPModule extends Module {
 
     private Color getOutlineColor(HoleUtils.Hole hole) {
         Color color = switch (hole.safety()) {
-            case BEDROCK -> bedrockOutlineColor.getColor();
-            case MIXED -> mixedOutlineColor.getColor();
-            default -> obsidianOutlineColor.getColor();
+            case SAFE -> safeOutlineColor.getColor();
+            default -> unsafeOutlineColor.getColor();
         };
         if(!fade.getValue()) return color;
 

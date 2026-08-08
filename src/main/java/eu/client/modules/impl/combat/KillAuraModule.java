@@ -167,7 +167,12 @@ public class KillAuraModule extends Module {
     private boolean isValidEntity(Entity entity) {
         if (players.getValue() && entity.getType() == EntityType.PLAYER) return true;
         if (hostiles.getValue() && entity.getType().getCategory() == MobCategory.MONSTER) {
-            if(!passives.getValue() && entity instanceof EnderMan enderman && !enderman.isAngry()) return false;
+            // Enderman technically implements NeutralMob (inherited isAngry() checks its
+            // persistent-anger timer), but Enderman never actually uses that system -- its real
+            // provoked/attacking state is isCreepy() (synced DATA_CREEPY). isAngry() was always
+            // false for every Enderman, so with Passives off KillAura silently skipped ALL of
+            // them, aggro'd or not.
+            if(!passives.getValue() && entity instanceof EnderMan enderman && !enderman.isCreepy()) return false;
             if(!passives.getValue() && entity instanceof ZombifiedPiglin piglin && !piglin.isAngry()) return false;
             return true;
         }
