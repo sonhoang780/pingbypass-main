@@ -79,13 +79,22 @@ public class HoleSnapModule extends Module {
     // attempt count, give up on THIS hole and let a different candidate get picked instead of
     // being stuck in place bouncing against the same wall indefinitely.
     private int jumpAttempts = 0;
-    private AABB unreachableHole = null;
-    // Consecutive give-ups (see the jumpAttempts > 5 block) across DIFFERENT targets -- excluding
-    // one unreachable hole and immediately picking the next-nearest doesn't help when several
-    // candidates all require clearing the same too-tall wall (e.g. overlapping single/double/quad
-    // detections around the same physical gap), which just repeats the whole 5-attempt cycle on a
-    // "new" target forever with no visible progress. A hard circuit breaker regardless of the exact
-    // cause: give up on HoleSnap entirely after this many consecutive failures in a row.
+    // A single AABB slot used to mean "just this one specific hole is excluded" -- fine for the
+    // jump-timeout case (naturally only ever fails on ONE target before falling back to try
+    // others), but isHoleReachable's mid-approach recheck can reject a DIFFERENT hole every single
+    // tick, and a single slot only ever remembers the MOST RECENT rejection. With 2+ genuinely
+    // blocked candidates on one side, that let the picker ping-pong back and forth between them
+    // forever (A rejected -> excluded, pick B -> B rejected -> excluded, A no longer excluded ->
+    // pick A again -> ...), never reaching holes.isEmpty() to actually disable (reported: "không
+    // đi được mà không disable HoleSnap"). Accumulates every rejection this attempt-session instead
+    // of remembering only the last one.
+    private final java.util.Set<AABB> unreachableHoles = new java.util.HashSet<>();
+    // Consecutive give-ups (jump-timeout OR isHoleReachable rejection) across DIFFERENT targets --
+    // excluding one unreachable hole and immediately picking the next-nearest doesn't help when
+    // several candidates all require clearing the same too-tall wall (e.g. overlapping single/
+    // double/quad detections around the same physical gap), which just repeats the whole cycle on
+    // a "new" target forever with no visible progress. A hard circuit breaker regardless of the
+    // exact cause: give up on HoleSnap entirely after this many consecutive failures in a row.
     private int giveUpCount = 0;
     private static final int MAX_CONSECUTIVE_GIVE_UPS = 3;
     // Ticks since the current jump press started -- see the timeout comment in onPlayerMove.
@@ -102,6 +111,16 @@ public class HoleSnapModule extends Module {
     // your own feet mid-transition.
     private final Deque<BlockPos> fillQueue = new ArrayDeque<>();
     private AABB pendingFillHole = null;
+    // Ticks spent waiting for the player to "leave" pendingFillHole's footprint -- by the time
+    // pendingFillHole gets set, the player is already frozen centered on the NEW hole (Step's own
+    // move is done, this tick's movement got cancelled same as any other centered landing), not
+    // still walking away from the old one. If the new hole is adjacent to or overlaps the old
+    // one's footprint, the player's frozen position never actually leaves it, and the contains()
+    // check below waited forever -- FillHole silently never ran (the reported "vài case nó không
+    // hoạt động"). Force it to start anyway past this timeout instead of waiting on a departure
+    // that may never happen.
+    private int fillWaitTicks = 0;
+    private static final int MAX_FILL_WAIT_TICKS = 20;
     // Cells already placed THIS fill run -- see the getDirection exceptions comment above.
     private final List<BlockPos> filledPositions = new ArrayList<>();
 
@@ -112,9 +131,10 @@ public class HoleSnapModule extends Module {
         fillQueue.clear();
         pendingFillHole = null;
         filledPositions.clear();
+        fillWaitTicks = 0;
         jumpAttempts = 0;
         jumpWaitTicks = 0;
-        unreachableHole = null;
+        unreachableHoles.clear();
         giveUpCount = 0;
         EUClient.WORLD_MANAGER.setTimerMultiplier(timer.getValue().floatValue());
 
@@ -147,8 +167,12 @@ public class HoleSnapModule extends Module {
         if (pendingFillHole != null) {
             // Only start backfilling once the player's feet have actually left the old hole's
             // footprint -- Step's move toward the NEW hole can take several ticks, during which
-            // the player is still technically standing in/over the old one.
-            if (pendingFillHole.contains(mc.player.getX(), pendingFillHole.minY + 0.5, mc.player.getZ())) return;
+            // the player is still technically standing in/over the old one. Capped: the player is
+            // already frozen centered on the NEW hole by the time this gets set, not still walking
+            // -- if the new hole is adjacent to/overlapping the old one, they'd never register as
+            // "left" at all, so give up waiting and fill anyway past MAX_FILL_WAIT_TICKS.
+            if (pendingFillHole.contains(mc.player.getX(), pendingFillHole.minY + 0.5, mc.player.getZ())
+                    && fillWaitTicks++ < MAX_FILL_WAIT_TICKS) return;
             if (!fillQueue.isEmpty()) {
                 fillNext();
                 return;
@@ -188,7 +212,7 @@ public class HoleSnapModule extends Module {
         // that isn't even a hole anymore. Worst case (nothing else reachable) pickTarget's own
         // holes.isEmpty() check disables the module, matching "không có hole thì tự động disable".
         if (hole != null && !isHoleStillValid(hole)) {
-            unreachableHole = hole;
+            unreachableHoles.add(hole);
             hole = null;
             startingHole = null;
             jumpAttempts = 0;
@@ -203,6 +227,31 @@ public class HoleSnapModule extends Module {
         // still until I press a movement key myself" (any key nudges X/Z off the stale cached value
         // enough to re-trigger moveTowards, which then DOES converge and immediately reads as
         // centered next pass).
+        // A raw Y-drift threshold ("player somehow got too high") doesn't actually reflect whether
+        // the target is reachable -- the real question is whether a real block is physically in the
+        // way. isHoleReachable walks the actual column between player and hole: if player is at/
+        // below the hole, an obstruction taller than one jump can clear (a real StepModule silently
+        // auto-climbing a whole staircase with horizontalCollision never once reading true, "kẹt
+        // luôn") means it's not reachable; if player ended up above the hole, any solid block
+        // sitting between them and the hole blocks a straight drop-in the same way.
+        if (!isHoleReachable(hole)) {
+            unreachableHoles.add(hole);
+            hole = null;
+            startingHole = null;
+            jumpAttempts = 0;
+
+            // Same circuit breaker the jump-timeout path uses -- a real geometric rejection like
+            // this is exactly the kind of "tried, genuinely can't reach it" failure that should
+            // count toward giving up entirely, not just toward excluding this one hole.
+            if (++giveUpCount >= MAX_CONSECUTIVE_GIVE_UPS) {
+                EUClient.CHAT_MANAGER.tagged("Gave up reaching a hole " + giveUpCount + " times in a row, disabling.", getName());
+                setToggled(false);
+                return;
+            }
+
+            if (!pickTarget()) return;
+        }
+
         boolean centered = Math.abs(mc.player.getX() - hole.getCenter().x) < 0.03
                 && Math.abs(mc.player.getY() - hole.minY) < 0.05
                 && Math.abs(mc.player.getZ() - hole.getCenter().z) < 0.03;
@@ -226,12 +275,23 @@ public class HoleSnapModule extends Module {
             // which never touches deltaMovement.y for its jump either: it presses the REAL vanilla
             // jump key (mc.options.keyJump) and lets vanilla's own jumpFromGround()/aiStep() do it
             // through the normal input pipeline. Same mechanism here.
-            // Explicit request: with HoleSnap's own Step setting on, don't press the real jump key
-            // at all -- Step's hole-to-hole hopping already gets you across ledges its own way, a
-            // manual jump on top just fights it. Still counted as an "attempt" below though (just
-            // without the key press) -- a wall Step can't clear needs the SAME give-up handling.
+            // This used to be `if (!step.getValue())` -- "with Step on don't press the real jump
+            // key at all, Step's hole-to-hole hopping already gets you across ledges its own way".
+            // It doesn't, and there is no such mechanism anywhere in this file: Step only changes
+            // WHICH hole gets targeted (pickTarget excludes `starting`), the locomotion is the
+            // exact same X/Z moveTowards push. And Step's target is BY CONSTRUCTION always on the
+            // far side of a lip -- you're standing one block down inside the current hole, so every
+            // horizontal direction is a solid wall at feet level and a 1-block rim is the minimum
+            // you have to cross to reach any other hole. maxUpStep is 0.6, so walking over it is
+            // physically impossible; the jump below is this module's ONLY way out of a hole.
+            // Suppressing it under Step therefore guaranteed Step could never move you anywhere:
+            // the player just ground against the wall of the hole they were already in for the
+            // ~200 ticks the jumpAttempts/giveUpCount accounting takes to time out attempts that
+            // were never actually attempted (the reported "Step bật mà nó đứng yên ở hole cũ,
+            // cũng không tự disable"). example-addon's HoleSnap (BlackOut port) states the same
+            // constraint outright and refuses to even try: "hole level with stance, needs Jump".
             if (mc.player.horizontalCollision && mc.player.onGround() && !jumpPressed) {
-                if (!step.getValue()) mc.options.keyJump.setDown(true);
+                mc.options.keyJump.setDown(true);
                 jumpPressed = true;
                 jumpWaitTicks = 0;
                 jumpAttempts++;
@@ -240,7 +300,7 @@ public class HoleSnapModule extends Module {
                     mc.options.keyJump.setDown(false);
                     jumpPressed = false;
                     jumpAttempts = 0;
-                    unreachableHole = hole;
+                    unreachableHoles.add(hole);
                     hole = null;
                     startingHole = null;
 
@@ -300,6 +360,7 @@ public class HoleSnapModule extends Module {
         // (no fill needed) we're done right now.
         if (fillHole.getValue() && step.getValue() && startingHole != null) {
             pendingFillHole = startingHole.box();
+            fillWaitTicks = 0;
             queueFillPositions(startingHole.box());
             hole = null;
             startingHole = null;
@@ -312,9 +373,16 @@ public class HoleSnapModule extends Module {
     }
 
     // Shared by both the initial "hole == null" pick and the mid-approach "target got filled,
-    // re-pick now" recovery -- factored out so the exclusion rules (lastUsedHole, unreachableHole)
+    // re-pick now" recovery -- factored out so the exclusion rules (lastUsedHole, unreachableHoles)
     // only live in one place. Returns false (and disables the module) when nothing valid is left.
     private boolean pickTarget() {
+        // A hole marked unreachable from wherever the player was standing THEN doesn't necessarily
+        // stay unreachable -- HoleSnap keeps moving (walking partway toward whatever it tries next)
+        // between rejections, and a wall that blocked line-of-sight-ish reachability from one spot
+        // can easily not block it anymore from another. Self-heal the blacklist against the
+        // player's CURRENT position every pick instead of excluding by identity forever.
+        unreachableHoles.removeIf(this::isHoleReachable);
+
         HoleUtils.Hole detected = currentHole();
 
         // Still geometrically read as "in" the hole we just used (mid-jump/airborne, not actually
@@ -339,11 +407,12 @@ public class HoleSnapModule extends Module {
             if (!filtered.isEmpty()) holes = filtered;
         }
 
-        // Same for a target that just gave up (jump-timeout OR just-got-filled) -- UNLIKE
-        // lastUsedHole, never fall back to re-picking it: it's proven unreachable/gone, so falling
-        // back here would re-pick the exact same hole every time, forever.
-        if (unreachableHole != null) {
-            holes = holes.stream().filter(h -> !h.box().equals(unreachableHole)).toList();
+        // Same for targets that gave up (jump-timeout, geometrically unreachable, OR just-got-
+        // filled) -- UNLIKE lastUsedHole, never fall back to re-picking one: it's proven unreachable/
+        // gone (as of the self-heal check above), so falling back here would re-pick the exact same
+        // dead hole every time, forever.
+        if (!unreachableHoles.isEmpty()) {
+            holes = holes.stream().filter(h -> !unreachableHoles.contains(h.box())).toList();
         }
 
         if (holes.isEmpty()) {
@@ -378,6 +447,55 @@ public class HoleSnapModule extends Module {
         }
 
         return false;
+    }
+
+    // Walks the actual block column between the player and a target hole instead of a raw Y-drift
+    // guess.
+    //   - Player at/below the hole: scan straight up the hole's own opening. A wall no taller than
+    //     one block above the player's own feet is exactly what the existing obstruction jump
+    //     already clears (see the horizontalCollision/jumpPressed block below) -- only a block
+    //     ABOVE that reach genuinely blocks it.
+    //   - Player above the hole: any solid block sitting between the hole's floor and the player
+    //     blocks a straight drop-in, reachable or not otherwise.
+    private boolean isHoleReachable(AABB box) {
+        int holeX = (int) Math.floor(box.getCenter().x);
+        int holeZ = (int) Math.floor(box.getCenter().z);
+        int holeY = (int) box.minY;
+        int playerY = mc.player.blockPosition().getY();
+
+        // Two separate columns can each independently block reaching the hole, so both need
+        // checking:
+        //   - the WALL the player has to clear stands BETWEEN them and the hole, not necessarily
+        //     above the hole's own opening at all (screenshot: "hole trước mặt... cách 1 bức tường
+        //     cao 3 block", still picked as valid by a version that only ever checked straight up
+        //     from the hole itself).
+        //   - the CEILING directly above the hole's own opening can independently block it too
+        //     (an overhang) even when the approach wall itself is perfectly climbable -- clearing
+        //     the wall doesn't help if there's nowhere to land once you're up there.
+        double dx = mc.player.getX() - box.getCenter().x;
+        double dz = mc.player.getZ() - box.getCenter().z;
+        int wallX = holeX + (Math.abs(dx) >= Math.abs(dz) ? (int) Math.signum(dx) : 0);
+        int wallZ = holeZ + (Math.abs(dx) >= Math.abs(dz) ? 0 : (int) Math.signum(dz));
+
+        return isColumnClear(wallX, wallZ, holeY, playerY) && isColumnClear(holeX, holeZ, holeY, playerY);
+    }
+
+    private boolean isColumnClear(int x, int z, int holeY, int playerY) {
+        if (playerY <= holeY) {
+            for (int y = holeY; y <= playerY + 3; y++) {
+                if (y > playerY + 1 && !mc.level.getBlockState(new BlockPos(x, y, z)).canBeReplaced()) {
+                    return false;
+                }
+            }
+        } else {
+            for (int y = holeY + 1; y < playerY; y++) {
+                if (!mc.level.getBlockState(new BlockPos(x, y, z)).canBeReplaced()) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     // Is the player standing in a hole RIGHT NOW, regardless of range/Y filtering (those are for
@@ -498,7 +616,10 @@ public class HoleSnapModule extends Module {
             // plain HoleSnap could only ever fall straight down into a lower hole -- no longer true
             // now that the obstruction jump is a REAL vanilla jump (mc.options.keyJump), which can
             // actually hop up INTO a same-level hole across a 1-block lip too. Only still exclude
-            // strictly-above candidates (nothing here climbs multiple levels).
+            // strictly-above candidates (nothing here climbs multiple levels) -- a +1 relaxation was
+            // tried and reverted per request; the real fix for "reachable hole one step up got
+            // filtered out" is isHoleReachable's own per-candidate column check downstream, not
+            // loosening this coarse cutoff.
             if (position.getY() > mc.player.getY()) continue;
 
             HoleUtils.Hole singleHole = HoleUtils.getSingleHole(position, 1);
