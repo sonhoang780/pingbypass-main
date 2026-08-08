@@ -275,12 +275,23 @@ public class HoleSnapModule extends Module {
             // which never touches deltaMovement.y for its jump either: it presses the REAL vanilla
             // jump key (mc.options.keyJump) and lets vanilla's own jumpFromGround()/aiStep() do it
             // through the normal input pipeline. Same mechanism here.
-            // Explicit request: with HoleSnap's own Step setting on, don't press the real jump key
-            // at all -- Step's hole-to-hole hopping already gets you across ledges its own way, a
-            // manual jump on top just fights it. Still counted as an "attempt" below though (just
-            // without the key press) -- a wall Step can't clear needs the SAME give-up handling.
+            // This used to be `if (!step.getValue())` -- "with Step on don't press the real jump
+            // key at all, Step's hole-to-hole hopping already gets you across ledges its own way".
+            // It doesn't, and there is no such mechanism anywhere in this file: Step only changes
+            // WHICH hole gets targeted (pickTarget excludes `starting`), the locomotion is the
+            // exact same X/Z moveTowards push. And Step's target is BY CONSTRUCTION always on the
+            // far side of a lip -- you're standing one block down inside the current hole, so every
+            // horizontal direction is a solid wall at feet level and a 1-block rim is the minimum
+            // you have to cross to reach any other hole. maxUpStep is 0.6, so walking over it is
+            // physically impossible; the jump below is this module's ONLY way out of a hole.
+            // Suppressing it under Step therefore guaranteed Step could never move you anywhere:
+            // the player just ground against the wall of the hole they were already in for the
+            // ~200 ticks the jumpAttempts/giveUpCount accounting takes to time out attempts that
+            // were never actually attempted (the reported "Step bật mà nó đứng yên ở hole cũ,
+            // cũng không tự disable"). example-addon's HoleSnap (BlackOut port) states the same
+            // constraint outright and refuses to even try: "hole level with stance, needs Jump".
             if (mc.player.horizontalCollision && mc.player.onGround() && !jumpPressed) {
-                if (!step.getValue()) mc.options.keyJump.setDown(true);
+                mc.options.keyJump.setDown(true);
                 jumpPressed = true;
                 jumpWaitTicks = 0;
                 jumpAttempts++;
