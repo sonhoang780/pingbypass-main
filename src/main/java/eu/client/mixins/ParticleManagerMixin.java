@@ -23,7 +23,12 @@ public class ParticleManagerMixin {
     // ClientExplosionTrackerMixin, which cancels the debris at its actual source instead.
     @Inject(method = "createParticle(Lnet/minecraft/core/particles/ParticleOptions;DDDDDD)Lnet/minecraft/client/particle/Particle;", at = @At("HEAD"), cancellable = true)
     private void addParticle(ParticleOptions parameters, double x, double y, double z, double velocityX, double velocityY, double velocityZ, CallbackInfoReturnable<Particle> info) {
-        if (EUClient.MODULE_MANAGER.getModule(NoRenderModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(NoRenderModule.class).explosions.getValue() && parameters.getType() == ParticleTypes.EXPLOSION) {
+        NoRenderModule noRender = EUClient.MODULE_MANAGER.getModule(NoRenderModule.class);
+        if (!noRender.isToggled()) return;
+
+        if (noRender.explosions.getValue() && parameters.getType() == ParticleTypes.EXPLOSION) {
+            info.cancel();
+        } else if (noRender.totemPop.getValue() && parameters.getType() == ParticleTypes.TOTEM_OF_UNDYING) {
             info.cancel();
         }
     }

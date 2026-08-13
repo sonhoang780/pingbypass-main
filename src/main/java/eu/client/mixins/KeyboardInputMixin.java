@@ -37,23 +37,52 @@ public class KeyboardInputMixin extends ClientInput {
         // as knownInput, while moveVector written here is literally what vanilla's physics uses.
         // One assignment, zero possibility of the wire and the local movement disagreeing.
         //
-        // Reported input is unconditionally PURE FORWARD. GrimAC's loopVectors pins forward to +1
-        // (and ignores knownInput.backward()) whenever player.isSprinting, so W / W+A / W+D are the
-        // only key combinations it can predict correctly for a sprinting player. SprintModule sets
-        // the reported yaw to realYaw + atan2(inputX, inputZ) on the same tick from the same key
-        // source, which makes pure forward at that yaw algebraically identical to the real input at
-        // the real yaw -- so nothing is lost by never reporting a strafe. moveVector is (0, 1)
-        // rather than a rounded/rotated vector for the same reason: KeyboardInput builds it as
-        // `new Vec2(strafe, forward).normalized()`, so an honest unit forward vector is exactly what
-        // Grim's own transformInputsToVector(strafe=0, forward=1) produces.
+        // Reported input is PURE FORWARD for non-diagonal real input, or FORWARD+strafe (matching
+        // whichever real strafe key is down) for a real diagonal -- see SprintModule.getGrimStrafe()
+        // and grimUpdate()'s derivation comment for exactly which and why. GrimAC's loopVectors pins
+        // forward to +1 (and ignores knownInput.backward()) whenever player.isSprinting, so those are
+        // the only reported key combinations it can predict correctly for a sprinting player.
+        // SprintModule sets the reported yaw from the same key source on the same tick so that
+        // whichever combo we report is algebraically identical, real-world, to the real input at the
+        // real yaw -- nothing is lost, and diagonal real input additionally picks up vanilla's own
+        // diagonal-without-turning speed bonus this way (same input SHAPE as the real keys, just
+        // possibly a different reported yaw).
+        //
+        // 2026-08-12 (REVERTED once, see git history): first attempt at extending the diagonal case
+        // to backward-diagonal too used a fixed always-report-right diagonal, and got the yaw
+        // compensation sign wrong -- broke straight W movement. Now side-aware (getGrimStrafe()) and
+        // numerically re-verified, see grimUpdate().
         //
         // jump/shift/sprint are carried through untouched -- Grim reads knownInput.jump()/shift()
         // for its own jump and sneak predictions, and those are genuinely unchanged by this mode.
+        // MovementFix, always on, for a rotation owned by anyone OTHER than Sprint Grim (AutoCrystal /
+        // SpeedMine / KillAura at Rotate=Normal). Must run every tick even when it declines, because
+        // computeMoveFix clears RotationManager's moveFixActive flag that LivingEntityMixin's physics
+        // yaw swap reads -- returning early here would leave it stale. It returns null (complete
+        // no-op, real WASD untouched) on a Sprint Grim tick, on a tick with no rotation at all, and on
+        // the sprinting-into-a-non-forward-octant case; see its doc for all three.
+        //
+        // Both fields are written, exactly like the Grim block below: moveVector is what vanilla
+        // physics moves by (at the spoofed yaw, courtesy of LivingEntityMixin) and keyPresses is
+        // verbatim what LocalPlayer.tick() puts in ServerboundPlayerInputPacket for GrimAC to predict
+        // from. Writing only one of the two was the previous implementation's central bug.
+        float[] fix = EUClient.ROTATION_MANAGER.computeMoveFix(-this.moveVector.x, this.moveVector.y);
+        if (fix != null) {
+            float right = fix[0], forward = fix[1];
+            this.keyPresses = new Input(forward > 0.0f, forward < 0.0f, right < 0.0f, right > 0.0f,
+                    this.keyPresses.jump(), this.keyPresses.shift(), this.keyPresses.sprint());
+            this.moveVector = new Vec2(-right, forward); // moveVector.x is the LEFT impulse
+        }
+
         SprintModule sprint = EUClient.MODULE_MANAGER == null ? null : EUClient.MODULE_MANAGER.getModule(SprintModule.class);
         if (sprint != null && sprint.isGrimCompensating()) {
-            this.keyPresses = new Input(true, false, false, false,
+            int strafe = sprint.getGrimStrafe();
+            this.keyPresses = new Input(true, false, strafe > 0, strafe < 0,
                     this.keyPresses.jump(), this.keyPresses.shift(), this.keyPresses.sprint());
-            this.moveVector = new Vec2(0.0f, 1.0f);
+            // (±1, 1) normalized -- 1/sqrt(2), spelled out to avoid depending on whichever
+            // normalize-style method this Vec2 version exposes. strafe == 0 -> honest (0, 1).
+            this.moveVector = strafe == 0 ? new Vec2(0.0f, 1.0f)
+                    : new Vec2(strafe > 0 ? 0.70710678f : -0.70710678f, 0.70710678f);
 
             // Mirrors homovore's sprint$applyBeforeJump, injected at the same point for the same
             // reason: this is the last moment before LocalPlayer.aiStep()'s own sprint bookkeeping

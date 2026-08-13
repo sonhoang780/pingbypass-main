@@ -109,8 +109,18 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
     private void syncSlotForInteract() {
         var speedMine = EUClient.MODULE_MANAGER.getModule(
                 eu.client.modules.impl.player.SpeedMineModule.class);
-        if (speedMine != null && speedMine.isToggled() && speedMine.isRunningOnProxy()
-                && (speedMine.getPrimary() != null || speedMine.getSecondary() != null)) {
+        // Was also gated on (getPrimary() != null || getSecondary() != null) -- but Instant's
+        // rebreak loop legitimately nulls primary for the single tick between "block confirmed
+        // broken" and "new Action re-acquired" (see Action.process()'s air-check -> cancel() ->
+        // handle() re-creating it next tick). A real UseItemPacket landing in exactly that one-
+        // tick window saw primary/secondary/legacySecondary all null and silently skipped
+        // setInteractPaused(true) entirely -- SpeedMine never learned the player was eating, so
+        // the very next rebreak cycle switched back to the pickaxe mid-eat as if nothing had
+        // happened. Reported as "can't eat while a block is instant-mining" even with WhileEating
+        // off. Pausing when SpeedMine has nothing active costs nothing (there's nothing to
+        // switch back from), so just drop the null-check instead of trying to also cover
+        // legacySecondary and still race the same window.
+        if (speedMine != null && speedMine.isToggled() && speedMine.isRunningOnProxy()) {
             Minecraft mc = Minecraft.getInstance();
             if (mc.player != null) {
                 int clientSlot = mc.player.getInventory().getSelectedSlot();

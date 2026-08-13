@@ -3,6 +3,7 @@ package eu.client.modules.impl.combat;
 
 import eu.client.EUClient;
 import eu.client.events.SubscribeEvent;
+import eu.client.events.impl.ClientRotationEvent;
 import eu.client.events.impl.PlayerUpdateEvent;
 import eu.client.modules.Module;
 import eu.client.modules.RegisterModule;
@@ -49,6 +50,10 @@ public class AutoWebModule extends Module {
     public BooleanSetting render = new BooleanSetting("Render", "Whether or not to render the place position.", true);
 
     private Player target = null;
+    // Only ever meaningful for the single tick it's set on (see onClientRotation below) -- cleared
+    // at the top of every runnable pass so a tick that doesn't reach the airPlace branch can't leave
+    // a stale position for the next tick's ClientRotationEvent to keep firing at.
+    private BlockPos rotatePosition = null;
 
     private int ticks = 0;
 
@@ -60,6 +65,8 @@ public class AutoWebModule extends Module {
         List<AbstractClientPlayer> players = mc.level.players();
 
         Runnable runnable = () -> {
+            rotatePosition = null;
+
             if (ticks < delay.getValue().intValue()) {
                 ticks++;
                 return;
@@ -108,7 +115,7 @@ public class AutoWebModule extends Module {
             Direction direction = WorldUtils.getDirection(position, strictDirection.getValue());
             if (direction == null && !airPlace.getValue()) return;
 
-            if(rotate.getValue() && airPlace.getValue()) EUClient.ROTATION_MANAGER.rotate(RotationUtils.getRotations(position.getCenter()), this);
+            if(rotate.getValue() && airPlace.getValue()) rotatePosition = position;
 
             InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
             WorldUtils.placeBlock(position, direction, InteractionHand.MAIN_HAND, rotate.getValue(), false, render.getValue());
@@ -119,6 +126,15 @@ public class AutoWebModule extends Module {
 
         if (asynchronous.getValue()) ThreadExecutor.execute(runnable);
         else runnable.run();
+    }
+
+    @SubscribeEvent
+    public void onClientRotation(ClientRotationEvent event) {
+        if (rotatePosition == null || event.isCancelled()) return;
+
+        float[] rotations = RotationUtils.getRotations(rotatePosition.getCenter());
+        event.setYaw(rotations[0]);
+        event.setPitch(rotations[1]);
     }
 
     @Override

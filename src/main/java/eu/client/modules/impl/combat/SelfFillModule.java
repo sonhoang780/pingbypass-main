@@ -2,7 +2,9 @@ package eu.client.modules.impl.combat;
 
 import eu.client.EUClient;
 import eu.client.events.SubscribeEvent;
+import eu.client.events.impl.ClientRotationEvent;
 import eu.client.events.impl.PlayerUpdateEvent;
+import eu.client.managers.RotationPriorities;
 import eu.client.modules.Module;
 import eu.client.modules.RegisterModule;
 import eu.client.settings.impl.BooleanSetting;
@@ -68,7 +70,10 @@ public class SelfFillModule extends Module {
 
         if (jumpMode.getValue().equalsIgnoreCase("Packet") && burrow.getValue().equalsIgnoreCase("Bypass")) {
             if (!rotatedBypass) {
-                EUClient.ROTATION_MANAGER.rotate(RotationUtils.getRotations(WorldUtils.getHitVector(lastPosition, direction)), this);
+                // Reasserted every tick from onClientRotation below while rotatedBypass stays true
+                // -- see RotationManager class doc. rotatedBypass itself is the "still active"
+                // signal (module self-disables via setToggled(false) once placement finishes,
+                // which unsubscribes this module from the event entirely).
                 rotatedBypass = true;
                 ticks = 0;
                 return;
@@ -130,6 +135,18 @@ public class SelfFillModule extends Module {
 
         jumped = false;
         rotatedBypass = false;
+    }
+
+    @SubscribeEvent(priority = RotationPriorities.SELF_FILL)
+    public void onClientRotation(ClientRotationEvent event) {
+        if (!rotatedBypass || lastPosition == null || event.isCancelled()) return;
+
+        Direction direction = WorldUtils.getDirection(lastPosition, strictDirection.getValue());
+        if (direction == null) return;
+
+        float[] rotations = RotationUtils.getRotations(WorldUtils.getHitVector(lastPosition, direction));
+        event.setYaw(rotations[0]);
+        event.setPitch(rotations[1]);
     }
 
     @Override

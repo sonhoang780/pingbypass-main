@@ -3,11 +3,15 @@ package eu.client.modules.impl.movement;
 import eu.client.EUClient;
 import eu.client.events.SubscribeEvent;
 import eu.client.events.impl.PlayerMoveEvent;
+import eu.client.events.impl.RenderWorldEvent;
 import eu.client.modules.Module;
 import eu.client.modules.RegisterModule;
 import eu.client.settings.impl.BooleanSetting;
+import eu.client.settings.impl.ColorSetting;
 import eu.client.settings.impl.ModeSetting;
 import eu.client.settings.impl.NumberSetting;
+import eu.client.utils.color.ColorUtils;
+import eu.client.utils.graphics.Renderer3D;
 import eu.client.utils.minecraft.HoleUtils;
 import eu.client.utils.minecraft.InventoryUtils;
 import eu.client.utils.minecraft.MovementUtils;
@@ -55,6 +59,9 @@ public class HoleSnapModule extends Module {
     // refreshed every move tick so dragging the slider live takes effect without retoggling;
     // restored to normal on disable so it never leaves the game permanently sped up.
     public NumberSetting timer = new NumberSetting("Timer", "The tick-speed multiplier to run at while HoleSnap is active (1.0 = normal speed).", 1.0f, 0.5f, 10.0f);
+
+    public BooleanSetting renderTarget = new BooleanSetting("RenderTarget", "Draws an outline around the hole HoleSnap is currently walking toward.", true);
+    public ColorSetting renderTargetColor = new ColorSetting("RenderTargetColor", "The color of the target hole outline.", new BooleanSetting.Visibility(renderTarget, true), ColorUtils.getDefaultOutlineColor());
 
     public AABB hole = null;
 
@@ -150,6 +157,12 @@ public class HoleSnapModule extends Module {
     }
 
     @SubscribeEvent
+    public void onRenderWorld(RenderWorldEvent event) {
+        if (!renderTarget.getValue() || hole == null) return;
+        Renderer3D.renderBoxOutline(event.getMatrices(), hole, renderTargetColor.getColor());
+    }
+
+    @SubscribeEvent
     public void onPlayerMove(PlayerMoveEvent event) {
         EUClient.WORLD_MANAGER.setTimerMultiplier(timer.getValue().floatValue());
         if (getNull()) return;
@@ -194,6 +207,34 @@ public class HoleSnapModule extends Module {
         //                                  1x1x1 singles preferred), so Step actually moves you
         //   - not in one                -> target = nearest valid hole in range (unchanged)
         if (hole == null && !pickTarget()) return;
+
+        // Two geometry checks getSingleHole/getDoubleHole/getQuadHole never cover, re-verified every
+        // tick against whatever `hole` is right now (not just once at pick time), since the player
+        // keeps moving between picks:
+        //   - Climbing UP into the hole only needs extra headroom when the climb is a full 2 blocks
+        //     -- that's the max a single vanilla jump (or this module's own obstruction-hop) can
+        //     clear at all, and a 1-block step never needed more than the hole's own pre-validated
+        //     2 cells anyway. Case image 71: obsidian sitting right above the player mid-Step,
+        //     jumped at it forever instead of noticing a 2-block climb here can never work.
+        //   - Descending INTO the hole from above only has the hole's own floor+1/+2 pre-validated
+        //     (headroom to stand once you're in it) -- anything further up that SAME column, between
+        //     that and wherever the player currently is, was never checked. Case image 72: a block
+        //     sitting on the hole's mouth partway up the approach shaft hung the player centered on
+        //     X/Z forever, unable to actually drop the remaining height.
+        if (hole != null && !isHoleReachable(hole)) {
+            unreachableHole = hole;
+            hole = null;
+            startingHole = null;
+            jumpAttempts = 0;
+
+            if (++giveUpCount >= MAX_CONSECUTIVE_GIVE_UPS) {
+                EUClient.CHAT_MANAGER.tagged("Gave up reaching a hole " + giveUpCount + " times in a row, disabling.", getName());
+                setToggled(false);
+                return;
+            }
+
+            if (!pickTarget()) return;
+        }
 
         // Enemy filled the hole we're currently walking toward mid-approach -- without this,
         // moveTowards() below just keeps aiming at now-solid ground forever (the "stuck, không vào
@@ -250,6 +291,45 @@ public class HoleSnapModule extends Module {
             // no-op in its own primary use case (reported: "Step bật mà đứng yên ở hole cũ, không
             // tự disable" -- ~200 ticks of unattempted "attempts" timing out before giving up).
             if (mc.player.horizontalCollision && mc.player.onGround() && !jumpPressed) {
+                // Wall-height probe right before actually pressing jump -- a real AABB collision
+                // query 0.5 block ahead (toward the hole) at head+2..+2.5, not a signum-guessed
+                // neighbor-column lookup, so it only fires exactly when a jump is about to be
+                // attempted (gated on horizontalCollision already being true) rather than scanning
+                // proactively every tick regardless of state.
+                double dx = hole.getCenter().x - mc.player.getX();
+                double dz = hole.getCenter().z - mc.player.getZ();
+                // dx/dz can legitimately both be 0 here (X/Z already centered, only Y left) --
+                // Vec3.normalize() doesn't guard divide-by-zero and returns NaN in that case, which
+                // silently defeats the check below (NaN AABB bounds compare false everywhere, so
+                // noCollision() would always read "clear"). Fall back to a zero offset instead.
+                net.minecraft.world.phys.Vec3 dir = (dx == 0 && dz == 0)
+                        ? net.minecraft.world.phys.Vec3.ZERO
+                        : new net.minecraft.world.phys.Vec3(dx, 0, dz).normalize();
+
+                AABB playerBox = mc.player.getBoundingBox();
+                AABB wallCheck = new AABB(
+                        playerBox.minX, mc.player.getY() + 2.0, playerBox.minZ,
+                        playerBox.maxX, mc.player.getY() + 2.5, playerBox.maxZ
+                ).move(dir.x * 0.5, 0, dir.z * 0.5);
+
+                // Blocked at head+2 -- wall's at least 3 blocks tall, beyond what a single jump (or
+                // Step's own hop) can ever clear. Reject this target now instead of burning attempts.
+                if (!mc.level.noCollision(wallCheck)) {
+                    unreachableHole = hole;
+                    hole = null;
+                    startingHole = null;
+                    jumpAttempts = 0;
+
+                    if (++giveUpCount >= MAX_CONSECUTIVE_GIVE_UPS) {
+                        EUClient.CHAT_MANAGER.tagged("Gave up reaching a hole " + giveUpCount + " times in a row, disabling.", getName());
+                        setToggled(false);
+                        return;
+                    }
+
+                    pickTarget();
+                    return;
+                }
+
                 mc.options.keyJump.setDown(true);
                 jumpPressed = true;
                 jumpWaitTicks = 0;
@@ -312,6 +392,10 @@ public class HoleSnapModule extends Module {
 
         if (EUClient.MODULE_MANAGER.getModule(StepModule.class).isToggled()) EUClient.MODULE_MANAGER.getModule(StepModule.class).setToggled(false);
         if (EUClient.MODULE_MANAGER.getModule(SpeedModule.class).isToggled()) EUClient.MODULE_MANAGER.getModule(SpeedModule.class).setToggled(false);
+        // Commonly bound to the same key as Speed (TickShift's boost only applies while Speed's
+        // Strafe/StrafeStrict mode drives the timer) -- disabling only Speed here desynced their
+        // toggle state relative to that shared bind.
+        if (EUClient.MODULE_MANAGER.getModule(TickShiftModule.class).isToggled()) EUClient.MODULE_MANAGER.getModule(TickShiftModule.class).setToggled(false);
 
         // Reached the target. FillHole backfills the hole we started in (only meaningful when
         // Step actually moved us away from one) -- that runs over several more ticks, so hold off
@@ -329,6 +413,36 @@ public class HoleSnapModule extends Module {
         setToggled(false);
         hole = null;
         startingHole = null;
+    }
+
+    // See the call site in onPlayerMove -- NOT a wall/neighbor-column scan (tried that, explicit
+    // false positives on flat/bedrock terrain caused real stuck cases). Both checks below stay
+    // strictly inside the hole's OWN column and the player's OWN current headroom -- geometry that's
+    // never wrong to check regardless of terrain shape.
+    private boolean isHoleReachable(AABB box) {
+        BlockPos holePos = BlockPos.containing(box.minX + 0.5, box.minY, box.minZ + 0.5);
+        int playerFloorY = (int) Math.floor(mc.player.getY());
+        int holeFloorY = holePos.getY();
+
+        if (playerFloorY > holeFloorY) {
+            // Descending into the hole -- only its own floor+1/+2 are pre-validated (room to stand
+            // once you're in it). Scan the rest of the SAME column up to the player's current height
+            // for anything blocking the actual drop-in.
+            for (int y = holeFloorY + 3; y <= playerFloorY + 1; y++) {
+                if (!mc.level.getBlockState(new BlockPos(holePos.getX(), y, holePos.getZ())).canBeReplaced()) return false;
+            }
+            return true;
+        }
+
+        // Climbing up -- a single jump/Step-hop only ever clears 2 blocks, and a climb that small
+        // never needed more than the hole's own pre-validated headroom. Only a full 2-block climb
+        // needs 2 MORE clear cells directly above the player's CURRENT head for the jump arc.
+        if (holeFloorY - playerFloorY >= 2) {
+            BlockPos head = mc.player.blockPosition().above(2);
+            if (!mc.level.getBlockState(head).canBeReplaced() || !mc.level.getBlockState(head.above()).canBeReplaced()) return false;
+        }
+
+        return true;
     }
 
     // Shared by both the initial "hole == null" pick and the mid-approach "target got filled,
@@ -520,14 +634,6 @@ public class HoleSnapModule extends Module {
             // actually hop up INTO a same-level hole across a 1-block lip too. Only still exclude
             // strictly-above candidates (nothing here climbs multiple levels).
             if (position.getY() > mc.player.getY()) continue;
-
-            // getSingleHole/getDoubleHole/getQuadHole already guarantee the 2 blocks directly
-            // above the hole's own floor are open (room to stand once you're in it), but say
-            // nothing about what's ABOVE that -- an overhang sitting right on top of that still
-            // blocks jumping up INTO the hole from an adjacent lower position even though the hole
-            // itself reads as perfectly valid on its own. Skip candidates with something solid
-            // sitting on their own roof.
-            if (!mc.level.getBlockState(position.above(3)).canBeReplaced()) continue;
 
             HoleUtils.Hole singleHole = HoleUtils.getSingleHole(position, 1);
             if (singleHole != null) {

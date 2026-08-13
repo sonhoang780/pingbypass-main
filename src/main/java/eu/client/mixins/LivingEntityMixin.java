@@ -119,9 +119,8 @@ public abstract class LivingEntityMixin extends Entity implements IMinecraft {
     // the camera yaw: a straight desync, and a setback every single tick. These two swaps close
     // that gap by running the local physics at the same yaw the packet reports.
     //
-    // Deliberately NOT reusing RotationsModule.movementFix for this. That toggle is off by default,
-    // is a user-facing setting for other modules, and its input remap rounds the rotated vector to
-    // integers (sqrt(2)x too fast on diagonals). Grim mode owns its own physics yaw end to end.
+    // Scope: Sprint Grim, or RotationManager's MovementFix octant remap -- see
+    // euclient$shouldSpoofRotation below. Never a bare rotation with no input compensation.
     @Unique private float euclient$grimYaw0;
     @Unique private boolean euclient$grimSwapped;
 
@@ -172,10 +171,10 @@ public abstract class LivingEntityMixin extends Entity implements IMinecraft {
     @Inject(method = "travel", at = @At("HEAD"))
     private void travel$grimHead(Vec3 movementInput, CallbackInfo info) {
         euclient$grimSwapped = false;
-        if ((Object) this != mc.player || !euclient$grimCompensating()) return;
+        if ((Object) this != mc.player || !euclient$shouldSpoofRotation()) return;
 
         euclient$grimYaw0 = getYRot();
-        setYRot(EUClient.MODULE_MANAGER.getModule(SprintModule.class).getGrimYaw());
+        setYRot(euclient$spoofYaw());
         euclient$grimSwapped = true;
         // Pitch is intentionally not swapped (homovore swaps it too). SprintModule queues the REAL
         // pitch, so swapping it would be a no-op, and the only travel() paths that read pitch at all
@@ -199,8 +198,8 @@ public abstract class LivingEntityMixin extends Entity implements IMinecraft {
     // Exactly one getYRot() call exists in the method, so no ordinal is needed.
     @ModifyExpressionValue(method = "jumpFromGround", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/LivingEntity;getYRot()F"))
     private float jumpFromGround$grimYaw(float original) {
-        if ((Object) this != mc.player || !euclient$grimCompensating()) return original;
-        return EUClient.MODULE_MANAGER.getModule(SprintModule.class).getGrimYaw();
+        if ((Object) this != mc.player || !euclient$shouldSpoofRotation()) return original;
+        return euclient$spoofYaw();
     }
 
     @Unique
@@ -208,5 +207,25 @@ public abstract class LivingEntityMixin extends Entity implements IMinecraft {
         if (EUClient.MODULE_MANAGER == null) return false;
         SprintModule sprint = EUClient.MODULE_MANAGER.getModule(SprintModule.class);
         return sprint != null && sprint.isGrimCompensating();
+    }
+
+    // Two mutually exclusive owners of the spoofed physics yaw, never both on the same tick:
+    //  - Sprint Grim, which picks the reported yaw itself so its compensation is exact (lossless);
+    //  - RotationManager's MovementFix, for a rotation dictated by an aim module, whose octant remap
+    //    of the input already ran this tick at the tail of KeyboardInput.tick() (LocalPlayer.aiStep
+    //    calls input.tick() before jumpFromGround() and before travel(), same ordering Grim relies
+    //    on). moveFixActive is false whenever that remap declined, so this never swaps the yaw
+    //    without the matching input compensation.
+    @Unique
+    private boolean euclient$shouldSpoofRotation() {
+        return euclient$grimCompensating()
+                || (EUClient.ROTATION_MANAGER != null && EUClient.ROTATION_MANAGER.isMoveFixActive());
+    }
+
+    @Unique
+    private float euclient$spoofYaw() {
+        return euclient$grimCompensating()
+                ? EUClient.MODULE_MANAGER.getModule(SprintModule.class).getGrimYaw()
+                : EUClient.ROTATION_MANAGER.getMoveFixYaw();
     }
 }

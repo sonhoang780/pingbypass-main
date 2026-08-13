@@ -11,6 +11,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.throwableitemprojectile.ThrownEnderpearl;
 import net.minecraft.network.protocol.game.ClientboundEntityEventPacket;
 import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
+import net.minecraft.network.protocol.game.ClientboundSetHeldSlotPacket;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.core.Vec3i;
@@ -126,6 +127,26 @@ public class WorldManager implements IMinecraft {
     @SubscribeEvent
     public void onPacketReceive(PacketReceiveEvent event) {
         if (mc.level == null) return;
+
+        // 1.21.2 added this S2C packet as a real server-authoritative sync for the held slot --
+        // .mcref confirms ClientPacketListener.handleSetHeldSlot unconditionally calls
+        // mc.player.getInventory().setSelectedSlot(packet.slot()). Every "Silent"-style switch in
+        // this project (SpeedMine/AutoCrystal/Surround/SelfTrap...) sends a raw
+        // ServerboundSetCarriedItemPacket to move the SERVER's held item without ever touching
+        // mc.player locally -- on 1.20.x that was fire-and-forget, no echo. On 1.21.2+ the server
+        // now echoes the resulting slot straight back, and vanilla's own packet handler applies it
+        // unconditionally, defeating every "don't show this switch to the player" fix at the
+        // source (not fixable by gating our own setSelectedSlot() calls -- this one is vanilla's,
+        // not ours). Confirmed live: no flicker with ViaFabric downgraded to 1.20.x, flickers on
+        // 1.21.2+. The only time the server's authoritative slot should legitimately differ from
+        // what's currently on screen is when WE just silently changed it out from under our own
+        // display -- so drop it whenever it doesn't match what the player is already looking at;
+        // a packet that agrees with the current display is a no-op to apply or drop either way.
+        if (event.getPacket() instanceof ClientboundSetHeldSlotPacket packet && mc.player != null
+                && packet.slot() != mc.player.getInventory().getSelectedSlot()) {
+            event.setCancelled(true);
+            return;
+        }
 
         if (event.getPacket() instanceof ClientboundEntityEventPacket packet && packet.getEventId() == 35) {
             if (!(packet.getEntity(mc.level) instanceof Player player)) return;

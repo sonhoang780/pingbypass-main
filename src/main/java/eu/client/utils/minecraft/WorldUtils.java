@@ -2,7 +2,6 @@ package eu.client.utils.minecraft;
 
 import com.google.common.collect.Sets;
 import eu.client.EUClient;
-import eu.client.modules.impl.core.RotationsModule;
 import eu.client.modules.impl.movement.HitboxDesyncModule;
 import eu.client.utils.IMinecraft;
 import eu.client.utils.miscellaneous.RenderPosition;
@@ -90,9 +89,6 @@ public class WorldUtils implements IMinecraft {
         // own UpdateMovementEvent.Post placement).
         EUClient.WORLD_MANAGER.reservePlacement(position);
 
-        float prevYaw = EUClient.ROTATION_MANAGER.getServerYaw();
-        float prevPitch = EUClient.ROTATION_MANAGER.getServerPitch();
-
         if (rotate) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(vec3d.x, vec3d.y, vec3d.z));
         if (crystalDestruction) {
             Direction finalDirection = direction;
@@ -118,8 +114,6 @@ public class WorldUtils implements IMinecraft {
         BlockHitResult blockHitResult = new BlockHitResult(vec3d, direction.getOpposite(), offsetPosition, false);
         NetworkUtils.sendSequencedPacket(sequence -> new ServerboundUseItemOnPacket(hand, blockHitResult, sequence));
         mc.getConnection().send(new ServerboundSwingPacket(hand));
-
-        if (rotate && EUClient.MODULE_MANAGER.getModule(RotationsModule.class).snapBack.getValue()) EUClient.ROTATION_MANAGER.packetRotate(prevYaw, prevPitch);
 
         EUClient.WORLD_MANAGER.getPlaceTimer().reset();
 

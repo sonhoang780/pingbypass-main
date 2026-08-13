@@ -11,6 +11,7 @@ import eu.client.modules.RegisterModule;
 import eu.client.modules.impl.movement.HitboxDesyncModule;
 import eu.client.modules.impl.movement.SpeedModule;
 import eu.client.modules.impl.movement.StepModule;
+import eu.client.modules.impl.movement.TickShiftModule;
 import eu.client.settings.impl.BooleanSetting;
 import eu.client.settings.impl.ModeSetting;
 import eu.client.settings.impl.NumberSetting;
@@ -60,7 +61,6 @@ public class SurroundModule extends Module {
     public BooleanSetting crystalDestruction = new BooleanSetting("CrystalDestruction", "Destroys any crystals that interfere with block placement.", true);
     public BooleanSetting center = new BooleanSetting("Center", "Puts you in the center of the block when you surround.", false);
     public BooleanSetting floor = new BooleanSetting("Floor", "Places blocks under your feet as well.", true);
-    public BooleanSetting extension = new BooleanSetting("Extension", "Extends the surround if there are entities obstructing block placement.", true);
     // Ported from homovore's SurroundModule (MineProtect/AvoidHelpingOpponents), renamed per
     // request. Descriptions written for the end user, not the implementation detail.
     public BooleanSetting blocker = new BooleanSetting("Blocker", "Pre-places extra blocks where an enemy is digging toward you.", true);
@@ -75,10 +75,15 @@ public class SurroundModule extends Module {
 
     public BooleanSetting selfDisable = new BooleanSetting("SelfDisable", "Toggles off the module once it is finished with placing.", false);
     public BooleanSetting jumpDisable = new BooleanSetting("JumpDisable", "Toggles off the module whenever your Y level changes.", true);
-    public BooleanSetting itemDisable = new BooleanSetting("ItemDisable", "Toggles off the module whenever you run out of items to place with.", true);
 
     public BooleanSetting stepToggle = new BooleanSetting("StepToggle", "Toggles the step module when you surround.", false);
     public BooleanSetting speedToggle = new BooleanSetting("SpeedToggle", "Toggles the speed module when you surround.", false);
+    // Speed and TickShift are commonly bound to the same key (TickShift's own boost only applies
+    // while Speed's Strafe/StrafeStrict mode is actively driving the timer, see SpeedModule's
+    // isDrivingTimer() doc) -- disabling only one of the pair here desyncs their toggle state
+    // relative to that shared bind (one press now turns them back on/off out of step with each
+    // other) until the user notices and manually re-syncs them.
+    public BooleanSetting tickShiftToggle = new BooleanSetting("TickShiftToggle", "Toggles the TickShift module when you surround.", false);
 
     public BooleanSetting render = new BooleanSetting("Render", "Whether or not to render the place position.", true);
 
@@ -111,6 +116,7 @@ public class SurroundModule extends Module {
 
         if(stepToggle.getValue() && EUClient.MODULE_MANAGER.getModule(StepModule.class).isToggled()) EUClient.MODULE_MANAGER.getModule(StepModule.class).setToggled(false);
         if(speedToggle.getValue() && EUClient.MODULE_MANAGER.getModule(SpeedModule.class).isToggled()) EUClient.MODULE_MANAGER.getModule(SpeedModule.class).setToggled(false);
+        if(tickShiftToggle.getValue() && EUClient.MODULE_MANAGER.getModule(TickShiftModule.class).isToggled()) EUClient.MODULE_MANAGER.getModule(TickShiftModule.class).setToggled(false);
         if(center.getValue()) mc.player.setPos(lastPosition.getX() + 0.5, lastPosition.getY(), lastPosition.getZ() + 0.5);
     }
 
@@ -153,11 +159,6 @@ public class SurroundModule extends Module {
         }
 
         if (autoSwitch.getValue().equalsIgnoreCase("None") && !(mc.player.getMainHandItem().getItem() instanceof BlockItem)) {
-            if (itemDisable.getValue()) {
-                EUClient.CHAT_MANAGER.tagged("You are currently not holding any blocks.", getName());
-                setToggled(false);
-            }
-
             targetPositions.clear();
             return;
         }
@@ -166,16 +167,11 @@ public class SurroundModule extends Module {
         int previousSlot = mc.player.getInventory().getSelectedSlot();
 
         if (slot == -1) {
-            if (itemDisable.getValue()) {
-                EUClient.CHAT_MANAGER.tagged("No blocks could be found in your hotbar.", getName());
-                setToggled(false);
-            }
-
             targetPositions.clear();
             return;
         }
 
-        targetPositions = HoleUtils.getFeetPositions(mc.player, extension.getValue(), floor.getValue(), false);
+        targetPositions = HoleUtils.getFeetPositions(mc.player, true, floor.getValue(), false);
 
         if (blocker.getValue()) applyBlocker();
 

@@ -65,7 +65,7 @@ public class AutoArmorModule extends Module {
         if (mc.player == null || mc.level == null) return;
 
         if(smartElytra.getValue() && elytra.getValue()) {
-            if((mc.player.onGround() && !(mc.player.getMainHandItem().getItem() instanceof ExperienceBottleItem) || EntityUtils.isInWeb(mc.player) || EUClient.MODULE_MANAGER.getModule(MaceAuraModule.class).isToggled())) elytra.setValue(false);
+            if((mc.player.onGround() && !(mc.player.getMainHandItem().getItem() instanceof ExperienceBottleItem) || EntityUtils.isInWeb(mc.player))) elytra.setValue(false);
         }
 
         if (ticks <= 0) {

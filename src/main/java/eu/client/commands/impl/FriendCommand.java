@@ -14,6 +14,19 @@ public class FriendCommand extends Command {
     public List<String> getSuggestions(String[] args) {
         if (args.length == 0) return List.of("add", "del", "clear", "list");
         if (args.length == 1 && args[0].equalsIgnoreCase("del")) return EUClient.FRIEND_MANAGER.getFriends();
+        // "add" never suggested anything -- only "del" read FRIEND_MANAGER's own list, "add"
+        // fell through to the empty default. Suggest online players instead (excluding yourself
+        // and anyone already friended), matching what "add" actually needs.
+        if (args.length == 1 && args[0].equalsIgnoreCase("add") && mc.level != null && mc.player != null) {
+            // getName().getString(), not getGameProfile().getName() -- matches how the rest of
+            // the codebase (SurroundModule/AutoCrystal's own friend checks) already resolves the
+            // name FRIEND_MANAGER.contains() compares against.
+            return mc.level.players().stream()
+                    .filter(player -> player != mc.player)
+                    .map(player -> player.getName().getString())
+                    .filter(name -> !EUClient.FRIEND_MANAGER.contains(name))
+                    .toList();
+        }
         return List.of();
     }
 

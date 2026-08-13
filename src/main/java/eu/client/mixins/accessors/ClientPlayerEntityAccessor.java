@@ -1,6 +1,7 @@
 package eu.client.mixins.accessors;
 
 import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.world.entity.player.Input;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;
 import org.spongepowered.asm.mixin.gen.Invoker;
@@ -37,4 +38,12 @@ public interface ClientPlayerEntityAccessor {
 
     @Accessor("xRotLast")
     void setLastPitch(float lastPitch);
+
+    // GrimV2 (InventoryControl): after sending a spoofed stationary Input packet ahead of a
+    // container click, LocalPlayer.tick() would otherwise immediately notice the real (moving)
+    // input still differs from what we just claimed and resend the true state next tick anyway --
+    // harmless for the click itself (already sent), but writing lastSentInput here matches what
+    // the real tick() loop does after every genuine send, keeping the two in sync.
+    @Accessor("lastSentInput")
+    void setLastSentInput(Input input);
 }

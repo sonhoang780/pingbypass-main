@@ -21,6 +21,7 @@ public class NoRenderModule extends Module {
     public BooleanSetting pumpkinOverlay = new BooleanSetting("PumpkinOverlay", "Disables the rendering of the pumpkin overlay.", true);
     public BooleanSetting portalOverlay = new BooleanSetting("PortalOverlay", "Disables the rendering of the portal overlay.", false);
     public BooleanSetting totemAnimation = new BooleanSetting("TotemAnimation", "Disables the rendering of the totem pop animation.", false);
+    public BooleanSetting totemPop = new BooleanSetting("TotemPop", "Disables the rendering of totem pop particles.", false);
     public BooleanSetting bossBar = new BooleanSetting("BossBar", "Disables the rendering of the boss bar.", false);
     public BooleanSetting vignette = new BooleanSetting("Vignette", "Disables the rendering of the vignette.", true);
     public BooleanSetting blindness = new BooleanSetting("Blindness", "Disables the rendering of the blindness and darkness potion effects.", true);
@@ -29,6 +30,11 @@ public class NoRenderModule extends Module {
     public BooleanSetting armor = new BooleanSetting("Armor", "Disables the rendering of armor.", false);
     public BooleanSetting limbSwing = new BooleanSetting("LimbSwing", "Disables the rendering of limb swing animations.", false);
     public BooleanSetting corpses = new BooleanSetting("Corpses", "Disables the rendering of corpses.", false);
+    // Requested (2026-08-12), then corrected: a pile of overlapping player models (surrounds/1x1
+    // fights) is what actually blocks seeing anything around you -- only hides an OTHER player's
+    // model while they're standing on top of/right next to you, not every player on the server.
+    // See LivingEntityRendererMixin.submit.
+    public BooleanSetting player = new BooleanSetting("Player", "Disables the rendering of other players standing in the same spot as you.", false);
     public BooleanSetting background = new BooleanSetting("Background", "Disables the dark background dimming behind inventory/other screens.", false);
     public ModeSetting tileEntities = new ModeSetting("TileEntities", "Disables the rendering of tile entities, such as chests, when meeting requirements.", "Never", new String[]{"Never", "Distance", "Always"});
     public NumberSetting tileDistance = new NumberSetting("TileDistance", "The distance at which tile entities will stop rendering.", new ModeSetting.Visibility(tileEntities, "Distance"), 10.0f, 0.0f, 100.0f);

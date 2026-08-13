@@ -8,6 +8,7 @@ import eu.client.modules.Module;
 import eu.client.modules.RegisterModule;
 import eu.client.settings.impl.BooleanSetting;
 import eu.client.settings.impl.ColorSetting;
+import eu.client.settings.impl.ModeSetting;
 import eu.client.settings.impl.NumberSetting;
 import eu.client.settings.impl.WhitelistSetting;
 import eu.client.utils.graphics.Renderer3D;
@@ -26,7 +27,8 @@ import java.util.ArrayList;
 @RegisterModule(name = "TextESP", description = "Renders text ESP on the world.", category = Module.Category.VISUALS)
 public class TextESPModule extends Module {
     public BooleanSetting items = new BooleanSetting("Items", "Renders text ESP on item entities.", true);
-    public WhitelistSetting itemWhitelist = new WhitelistSetting("ItemWhitelist", "Only render text ESP on these items. Empty means nothing renders.", new BooleanSetting.Visibility(items, true), WhitelistSetting.Type.ITEMS);
+    public ModeSetting itemListMode = new ModeSetting("ItemListMode", "All = render on every item. WhiteList = only listed items. BlackList = every item except listed.", new BooleanSetting.Visibility(items, true), "WhiteList", new String[]{"All", "WhiteList", "BlackList"});
+    public WhitelistSetting itemWhitelist = new WhitelistSetting("ItemWhitelist", "Items the WhiteList/BlackList mode compares against.", new BooleanSetting.Visibility(items, true), WhitelistSetting.Type.ITEMS);
     public BooleanSetting pearls = new BooleanSetting("Pearls", "Renders text ESP on pearl entities.", true);
     public BooleanSetting chorus = new BooleanSetting("Chorus", "Renders text ESP on chorus sounds.", true);
 
@@ -58,7 +60,7 @@ public class TextESPModule extends Module {
         for(Entity e : mc.level.entitiesForRendering()) {
             if(!Renderer3D.isFrustumVisible(e.getBoundingBox())) continue;
 
-            if(e instanceof ItemEntity item && items.getValue() && itemWhitelist.isWhitelistContains(item.getItem().getItem())) {
+            if(e instanceof ItemEntity item && items.getValue() && itemAllowed(item.getItem().getItem())) {
                 Vec3 pos = EntityUtils.getRenderPos(item, event.getTickDelta());
                 String s = item.getName().getString() + (item.getItem().getCount() > 1 ? " x" + item.getItem().getCount() : "");
                 Renderer3D.renderScaledText(event.getMatrices(), s, pos.x, pos.y, pos.z, scale.getValue().intValue(), false, color.getColor());
@@ -79,6 +81,14 @@ public class TextESPModule extends Module {
         }
     }
 
+    private boolean itemAllowed(net.minecraft.world.item.Item item) {
+        boolean listed = itemWhitelist.isWhitelistContains(item);
+        return switch (itemListMode.getValue()) {
+            case "WhiteList" -> listed;
+            case "BlackList" -> !listed;
+            default -> true; // All
+        };
+    }
 
     private class Chorus {
         private final String subtitle;

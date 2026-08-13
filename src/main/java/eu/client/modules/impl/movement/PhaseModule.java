@@ -12,6 +12,7 @@ import eu.client.utils.minecraft.NetworkUtils;
 import eu.client.utils.minecraft.WorldUtils;
 import eu.client.utils.rotations.RotationUtils;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.item.Items;
 import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
 import net.minecraft.network.protocol.game.ServerboundSwingPacket;
@@ -54,9 +55,25 @@ public class PhaseModule extends Module {
         }
 
         if (mode.getValue().equalsIgnoreCase("Pearl")) {
+            // Scaffolding sitting on the player's own position used to just abort Phase entirely
+            // (canBeReplaced() is false for it, same as any other real block) -- but scaffolding
+            // breaks in a single hit for any tool (hardness ~0), so break it out of the way first
+            // instead of giving up. Any OTHER real block still aborts same as before -- this
+            // isn't a general "clear my own position" feature, just the one block type cheap
+            // enough to instantly clear.
             if (!mc.level.getBlockState(mc.player.blockPosition()).canBeReplaced()) {
-                setToggled(false);
-                return;
+                if (!mc.level.getBlockState(mc.player.blockPosition()).is(Blocks.SCAFFOLDING)) {
+                    setToggled(false);
+                    return;
+                }
+
+                BlockPos selfPosition = mc.player.blockPosition();
+                NetworkUtils.sendSequencedPacket(sequence -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, selfPosition, Direction.UP, sequence));
+                NetworkUtils.sendSequencedPacket(sequence -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, selfPosition, Direction.UP, sequence));
+                mc.getConnection().send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
+                // Instant local feedback, same reasoning as SpeedMine's own client-side removal --
+                // don't wait on the server's block-update round-trip before continuing below.
+                mc.level.removeBlock(selfPosition, false);
             }
 
             if (autoSwitch.getValue().equalsIgnoreCase("None") && mc.player.getMainHandItem().getItem() != Items.ENDER_PEARL) {

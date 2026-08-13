@@ -45,7 +45,6 @@ public class SelfTrapModule extends Module {
     public BooleanSetting whileEating = new BooleanSetting("WhileEating", "Places blocks normally while eating.", true);
 
     public BooleanSetting selfDisable = new BooleanSetting("SelfDisable", "Toggles off the module once it is finished with placing.", false);
-    public BooleanSetting itemDisable = new BooleanSetting("ItemDisable", "Toggles off the module whenever you run out of items to place with.", true);
 
     public BooleanSetting render = new BooleanSetting("Render", "Whether or not to render the place position.", true);
 
@@ -68,11 +67,6 @@ public class SelfTrapModule extends Module {
             }
 
             if (autoSwitch.getValue().equalsIgnoreCase("None") && !(mc.player.getMainHandItem().getItem() instanceof BlockItem)) {
-                if (itemDisable.getValue()) {
-                    EUClient.CHAT_MANAGER.tagged("You are currently not holding any blocks.", getName());
-                    setToggled(false);
-                }
-
                 targetPositions = new ArrayList<>();
                 return;
             }
@@ -83,11 +77,6 @@ public class SelfTrapModule extends Module {
             int previousSlot = mc.player.getInventory().getSelectedSlot();
 
             if (slot == -1) {
-                if (itemDisable.getValue()) {
-                    EUClient.CHAT_MANAGER.tagged("No blocks could be found in your hotbar.", getName());
-                    setToggled(false);
-                }
-
                 targetPositions = new ArrayList<>();
                 return;
             }

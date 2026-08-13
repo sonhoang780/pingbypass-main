@@ -3,9 +3,11 @@ package eu.client.modules.impl.combat;
 import lombok.Getter;
 import eu.client.EUClient;
 import eu.client.events.SubscribeEvent;
+import eu.client.events.impl.ClientRotationEvent;
 import eu.client.events.impl.PlayerUpdateEvent;
 import eu.client.events.impl.RenderWorldEvent;
 import eu.client.events.impl.UpdateMovementEvent;
+import eu.client.managers.RotationPriorities;
 import eu.client.modules.Module;
 import eu.client.modules.RegisterModule;
 import eu.client.settings.impl.*;
@@ -66,6 +68,12 @@ public class KillAuraModule extends Module {
 
     private boolean attacking = false;
     private boolean shouldAttack = false;
+    // Reasserted every tick from onClientRotation below instead of the old one-shot rotate() calls
+    // -- see RotationManager class doc. Only meaningful for the tick it's set on (reset to false at
+    // the top of onPlayerUpdate every tick, same as attacking/shouldAttack), so "Normal" keeps its
+    // original narrower behavior (only the specific tick we're about to actually hit) instead of
+    // holding continuously like "Hold" does.
+    private boolean rotateActive = false;
 
     @SubscribeEvent
     public void onPlayerUpdate(PlayerUpdateEvent event) {
@@ -96,6 +104,7 @@ public class KillAuraModule extends Module {
 
         attacking = false;
         shouldAttack = false;
+        rotateActive = false;
 
         if (target == null) return;
 
@@ -109,15 +118,24 @@ public class KillAuraModule extends Module {
         // Skip actions on client when proxy handles them
         if (shouldSkipActions()) return;
 
-        if (rotate.getValue().equalsIgnoreCase("Hold")) EUClient.ROTATION_MANAGER.rotate(RotationUtils.getRotations(target), this);
+        if (rotate.getValue().equalsIgnoreCase("Hold")) rotateActive = true;
 
         if (hitDelay.getValue().equalsIgnoreCase("Vanilla") && mc.player.getAttackStrengthScale(0.5f) < 1.0f) return;
         if (hitDelay.getValue().equalsIgnoreCase("Custom") && !timer.hasTimeElapsed(1000.0f - speed.getValue().floatValue() * 50.0f))
             return;
 
-        if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.rotate(RotationUtils.getRotations(target), this);
+        if (rotate.getValue().equalsIgnoreCase("Normal")) rotateActive = true;
 
         shouldAttack = true;
+    }
+
+    @SubscribeEvent(priority = RotationPriorities.KILL_AURA)
+    public void onClientRotation(ClientRotationEvent event) {
+        if (target == null || !rotateActive || event.isCancelled()) return;
+
+        float[] rotations = RotationUtils.getRotations(target);
+        event.setYaw(rotations[0]);
+        event.setPitch(rotations[1]);
     }
 
     @SubscribeEvent

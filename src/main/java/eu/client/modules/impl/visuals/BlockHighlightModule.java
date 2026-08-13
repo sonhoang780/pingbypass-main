@@ -22,7 +22,12 @@ import net.minecraft.world.phys.shapes.VoxelShape;
 @RegisterModule(name = "BlockHighlight", description = "Replaces the default Minecraft block highlight with a more customizable one.", category = Module.Category.VISUALS)
 public class BlockHighlightModule extends Module {
     public ModeSetting animationMode = new ModeSetting("Animation", "The animation that will be applied to the rendering.", "Static", new String[]{"Static", "Slide"});
-    public ModeSetting mode = new ModeSetting("Mode", "The rendering that will be applied to the target block.", "Outline", new String[]{"None", "Fill", "Outline", "Both"});
+    // Complex renders every individual box in the block's VoxelShape (shape.toAabbs()) instead of
+    // just its overall bounding box -- a Hopper's funnel body + spout, a stair's two steps, a
+    // fence's post + arms, etc. all show as their real per-part silhouette instead of one flat
+    // cube. Fill/Outline/Both still control the STYLE each part is drawn with; Complex only
+    // changes which boxes get drawn.
+    public ModeSetting mode = new ModeSetting("Mode", "The rendering that will be applied to the target block.", "Outline", new String[]{"None", "Fill", "Outline", "Both", "Complex"});
     public NumberSetting slideSmoothness = new NumberSetting("Smoothness", "The smoothness for the slide while target block is changing.", 1, 0, 20);
     public ColorSetting fillColor = new ColorSetting("FillColor", "The color that will be used for the fill rendering.", new ModeSetting.Visibility(mode, "Fill", "Both"), ColorUtils.getDefaultFillColor());
     public ColorSetting outlineColor = new ColorSetting("OutlineColor", "The color that will be used for the outline rendering.", new ModeSetting.Visibility(mode, "Outline", "Both"), ColorUtils.getDefaultOutlineColor());
@@ -65,8 +70,18 @@ public class BlockHighlightModule extends Module {
         VoxelShape shape = state.getShape(mc.level, position);
         if (shape.isEmpty()) return;
 
-        if (mode.getValue().equalsIgnoreCase("Fill") || mode.getValue().equalsIgnoreCase("Both")) Renderer3D.renderBox(event.getMatrices(), shape.bounds().move(offset), fillColor.getColor());
-        if (mode.getValue().equalsIgnoreCase("Outline") || mode.getValue().equalsIgnoreCase("Both")) Renderer3D.renderBoxOutline(event.getMatrices(), shape.bounds().move(offset), outlineColor.getColor());
+        if (mode.getValue().equalsIgnoreCase("Complex")) {
+            // Per-part boxes instead of the merged bounding box -- always drawn Both-style
+            // (Complex's whole point is showing the real silhouette, an outline-only pass on
+            // adjoining parts would just draw a mess of internal seams).
+            for (net.minecraft.world.phys.AABB part : shape.toAabbs()) {
+                Renderer3D.renderBox(event.getMatrices(), part.move(offset), fillColor.getColor());
+                Renderer3D.renderBoxOutline(event.getMatrices(), part.move(offset), outlineColor.getColor());
+            }
+        } else {
+            if (mode.getValue().equalsIgnoreCase("Fill") || mode.getValue().equalsIgnoreCase("Both")) Renderer3D.renderBox(event.getMatrices(), shape.bounds().move(offset), fillColor.getColor());
+            if (mode.getValue().equalsIgnoreCase("Outline") || mode.getValue().equalsIgnoreCase("Both")) Renderer3D.renderBoxOutline(event.getMatrices(), shape.bounds().move(offset), outlineColor.getColor());
+        }
     }
 
     @Override

@@ -36,7 +36,6 @@ public class NeekeriFill {
     private static final int UBO_SIZE = new Std140SizeCalculator().putVec4().get();
 
     private static PostChain chain;
-    private static boolean chainLoadFailed = false;
     private static GpuBuffer uboBuffer;
     private static long lastProcessedAtMs = -1;
     private static PatternTexture texture;
@@ -55,9 +54,14 @@ public class NeekeriFill {
         if (now - lastProcessedAtMs < 10) return;
         lastProcessedAtMs = now;
 
-        if (chain == null && !chainLoadFailed) {
-            chain = Minecraft.getInstance().getShaderManager().getPostChain(CHAIN_ID, LevelTargetBundle.MAIN_TARGETS);
-            if (chain == null) chainLoadFailed = true;
+        // Always re-fetch from ShaderManager (cheap map lookup) instead of caching the PostChain
+        // ourselves -- a resource reload replaces ShaderManager's chain with a fresh instance and
+        // closes the old one's buffers, but a cached reference here would keep pointing at the
+        // closed instance and crash writeToBuffer with "Buffer already closed".
+        PostChain freshChain = Minecraft.getInstance().getShaderManager().getPostChain(CHAIN_ID, LevelTargetBundle.MAIN_TARGETS);
+        if (freshChain != chain) {
+            chain = freshChain;
+            uboBuffer = null; // stale buffer belonged to the old (now-closed) chain's passes
         }
         if (chain == null) return;
 

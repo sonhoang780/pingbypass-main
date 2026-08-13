@@ -47,26 +47,42 @@ public class EntityRendererMixin<T extends Entity, S extends EntityRenderState> 
         // ghost entity (frozen at the popper's pose, see PopChamsModule) that flows through this
         // SAME mixin naturally as its own distinct entity/capture, so it never has to fight Chams
         // over the one live-entity slot either.
-        ChamsModule chams = EUClient.MODULE_MANAGER.getModule(ChamsModule.class);
         IChamsCapture capture = (IChamsCapture) (Object) state;
         capture.euclient$setChams(false, 0, false, 0, false);
-        if (chams.isToggled()) {
-            if (entity instanceof LivingEntity livingEntity && chams.isValidEntity(livingEntity)) {
-                chams.applyEntityChams(livingEntity, capture);
-            } else if (chams.crystals.getValue() && entity instanceof EndCrystal) {
-                chams.applyCrystalChams(capture);
+
+        // A PopChams ghost is a real RemotePlayer/EntityType.PLAYER sitting in mc.level, so it
+        // matches Chams'/Shaders' own "Players" entity-type check same as any live player would --
+        // requested (2026-08-12) to stop leaking those onto it: PopChams should be the ONLY thing
+        // touching a ghost's render state, "chỉ được áp chams + pose tại thời điểm pop thôi". Chams'
+        // capture would just get overwritten by PopChams' own block below anyway (same field, PopChams
+        // runs later), but Shaders writes a SEPARATE field (state.outlineColor, vanilla's own slot)
+        // that nothing else here resets -- that's what let Shaders' live/animated pattern render on
+        // top of a ghost that's supposed to be a frozen, PopChams-only snapshot. Branching on
+        // isGhost() first and skipping both blocks outright is simpler and more robust than relying
+        // on capture-overwrite ordering.
+        PopChamsModule popChams = EUClient.MODULE_MANAGER.getModule(PopChamsModule.class);
+        boolean isGhost = entity instanceof net.minecraft.client.player.RemotePlayer ghost && popChams.isGhost(ghost);
+
+        if (!isGhost) {
+            ChamsModule chams = EUClient.MODULE_MANAGER.getModule(ChamsModule.class);
+            if (chams.isToggled()) {
+                if (entity instanceof LivingEntity livingEntity && chams.isValidEntity(livingEntity)) {
+                    chams.applyEntityChams(livingEntity, capture);
+                } else if (chams.crystals.getValue() && entity instanceof EndCrystal) {
+                    chams.applyCrystalChams(capture);
+                }
+            }
+
+            ShadersModule shaders = EUClient.MODULE_MANAGER.getModule(ShadersModule.class);
+            if (shaders.isToggled() && shaders.isValidEntity(entity)) {
+                state.outlineColor = shaders.getFillColor(entity);
             }
         }
 
-        PopChamsModule popChams = EUClient.MODULE_MANAGER.getModule(PopChamsModule.class);
-        if (popChams.isToggled() && entity instanceof net.minecraft.client.player.RemotePlayer ghost && popChams.isGhost(ghost)) {
+        if (popChams.isToggled() && isGhost) {
+            net.minecraft.client.player.RemotePlayer ghost = (net.minecraft.client.player.RemotePlayer) entity;
             capture.euclient$setChams(popChams.shouldFill(), popChams.getFillColor(ghost).getRGB(),
                     popChams.shouldOutline(), popChams.getOutlineColor(ghost).getRGB(), false);
-        }
-
-        ShadersModule shaders = EUClient.MODULE_MANAGER.getModule(ShadersModule.class);
-        if (shaders.isToggled() && shaders.isValidEntity(entity)) {
-            state.outlineColor = shaders.getFillColor(entity);
         }
     }
 }

@@ -73,6 +73,12 @@ public class NameTagsModule extends Module {
             boolean freecam = EUClient.MODULE_MANAGER.getModule(FreecamModule.class).isToggled();
             if (player == mc.player && (!self.getValue() || (mc.options.getCameraType().isFirstPerson() && !freecam))) continue;
             if (antiBot.getValue() && EntityUtils.isBot(player)) continue;
+            // A PopChams ghost is a real RemotePlayer in mc.level.players() -- exclude it, it should
+            // only ever show PopChams' own frozen chams+pose ("chỉ được áp chams + pose tại thời điểm
+            // pop thôi"), not a live-styled nametag (health/ping/items that don't apply to a frozen
+            // snapshot anyway).
+            if (player instanceof net.minecraft.client.player.RemotePlayer ghost
+                    && EUClient.MODULE_MANAGER.getModule(PopChamsModule.class).isGhost(ghost)) continue;
             if (!Renderer3D.isFrustumVisible(player.getBoundingBox())) continue;
 
             double x = Mth.lerp(event.getTickDelta(), player.xo, player.getX());

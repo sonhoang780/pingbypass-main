@@ -1,9 +1,10 @@
 package eu.client.modules.impl.movement;
 
 import eu.client.EUClient;
+import lombok.Getter;
 import eu.client.events.SubscribeEvent;
+import eu.client.events.impl.ClientRotationEvent;
 import eu.client.events.impl.PlayerUpdateEvent;
-import eu.client.events.impl.TickEvent;
 import eu.client.events.impl.UpdateMovementEvent;
 import eu.client.mixins.accessors.ClientPlayerEntityAccessor;
 import eu.client.modules.Module;
@@ -46,19 +47,28 @@ import net.minecraft.world.phys.Vec3;
 //     rubberband.
 //  2. While isSprinting, forward is PINNED to +1 and knownInput.backward() is ignored outright. So
 //     the only reported key combinations Grim can ever predict correctly for a sprinting player are
-//     the ones containing forward: W, W+A, W+D. Reporting pure-strafe or backward while sprinting is
-//     unpredictable-by-construction no matter how the yaw is faked -- which is why this mode reports
-//     PURE FORWARD, always, and never the general 8-octant remap homovore's computeMoveFixInput
-//     does. homovore only ever hits its non-forward octants transiently (its rotation queue lags one
-//     tick behind its input), and it gets away with it; we don't need to take that risk because we
-//     can make the reported yaw exact (see 3).
+//     the ones containing forward: W, W+A, W+D (real backward/pure-strafe bits are simply irrelevant
+//     to what Grim simulates). Reporting anything else -- e.g. a genuine backward-diagonal -- is
+//     unpredictable-by-construction no matter how the yaw is faked. This mode reports PURE FORWARD
+//     for non-diagonal real input, and never the general 8-octant remap homovore's computeMoveFixInput
+//     does (homovore only ever hits its non-forward octants transiently, its rotation queue lags one
+//     tick behind its input, and gets away with it; we don't take that risk).
+//
+//     For a real DIAGONAL input (W+A, W+D, S+A, or S+D), it instead reports forward + whichever real
+//     strafe key (A/D) is actually down, at a yaw offset chosen so the fake's real-world displacement
+//     exactly matches the real diagonal's (see grimUpdate()'s derivation, and getGrimStrafe()) --
+//     picking up vanilla's diagonal-without-turning speed bonus (cattyn, 20.62 vs 20.20km/h, see
+//     grimUpdate()) for all four diagonals, not only the two (W+A/W+D) simple enough to need no fake
+//     at all. That W+A/W+D case is the offset formula's own zero-offset special case, not a separate
+//     code path.
 //  3. So the whole mode reduces to a single invariant, which is all the code below exists to keep:
-//        reported keys = pure forward
-//        reported yaw  = realYaw + atan2(inputX, inputZ)   (the direction WASD actually points)
-//     Vanilla then computes world velocity as getInputVector((0,0,1), speed, reportedYaw), which is
-//     algebraically identical to getInputVector((realStrafe,0,realForward), speed, realYaw) for all
-//     8 keyboard directions -- so we move EXACTLY where the player asked, while Grim simulates
-//     exactly what we move. Nothing is approximated and nothing is snapped.
+//        reported keys = pure forward, or forward + real-matching-strafe for a real diagonal
+//        reported yaw  = realYaw + atan2(inputX, inputZ) [+/-45 for the diagonal case]
+//     Vanilla then computes world velocity from the reported (strafe, forward) pair at reportedYaw,
+//     which lands on the exact same real-world direction (and, for diagonals, the same input SHAPE)
+//     as the real input at realYaw for all 8 keyboard directions -- so we move EXACTLY where the
+//     player asked, while Grim simulates exactly what we move. Nothing is approximated and nothing
+//     is snapped.
 //
 // The invariant only holds if the reported yaw, the local physics yaw, and the reported keys all
 // come from ONE evaluation. Three places had to agree, and each one is a place a previous attempt
@@ -88,18 +98,21 @@ import net.minecraft.world.phys.Vec3;
 //     KeyboardInput.tick() itself reads (verified in bytecode), so the two are identical by
 //     construction.
 //
-// Deliberately NOT depended on: RotationsModule.movementFix. Its onKeyboardTick applies
-// Math.round() to the rotated input, which turns a diagonal (0.707, 0.707) into (1, 1) -- sqrt(2)x
-// too fast, an instant setback. Grim mode writes moveVector itself, after that handler, so it wins
-// whether movementFix is on or off (and when it is on, its velocity/jump handlers substitute the
-// same yaw we already substitute, so they become no-ops rather than double-compensating).
+// Deliberately NOT depended on: RotationsModule.movementFix (2026-08-12: its Math.round() bug that
+// used to make this a bad idea -- turning a diagonal (0.707, 0.707) into (1, 1), sqrt(2)x too fast
+// -- is fixed now, but the independence stands on its own: Grim needs the reported KEYS themselves
+// to change, not just the input vector movementFix remaps, and needs that from the exact same key
+// source the yaw is computed from on the exact same tick -- see point (c) above). Grim mode writes
+// moveVector itself, after that handler, so it wins whether movementFix is on or off (and when it
+// is on, its velocity/jump handlers substitute the same yaw we already substitute, so they become
+// no-ops rather than double-compensating).
 @RegisterModule(name = "Sprint", description = "Makes it so that you are always sprinting when possible.", category = Module.Category.MOVEMENT)
 public class SprintModule extends Module {
     // Instant: same technique HoleSnapModule's own homing movement uses -- set the horizontal
     // velocity directly toward the input direction every tick instead of letting vanilla's normal
     // acceleration/friction physics ramp it up over several ticks, so full speed applies
     // instantly the moment a movement key is pressed (and stops instantly on release, no slide).
-    public ModeSetting mode = new ModeSetting("Mode", "The limits to when you can be sprinting.", "Rage", new String[]{"Legit", "Rage", "RageStrict", "Instant", "Grim"});
+    public ModeSetting mode = new ModeSetting("Mode", "The limits to when you can be sprinting.", "Rage", new String[]{"Legit", "Rage", "Instant", "Grim"});
     public NumberSetting instantSpeed = new NumberSetting("InstantSpeed", "Per-tick horizontal speed to move at (blocks/tick) when Mode is Instant.", new ModeSetting.Visibility(mode, "Instant"), (float) MovementUtils.DEFAULT_SPEED, 0.05f, 0.6f);
     public BooleanSetting instantWater = new BooleanSetting("Water", "Keeps applying the Instant speed override while in water.", new ModeSetting.Visibility(mode, "Instant"), true);
     public BooleanSetting instantLava = new BooleanSetting("Lava", "Keeps applying the Instant speed override while in lava.", new ModeSetting.Visibility(mode, "Instant"), false);
@@ -114,14 +127,45 @@ public class SprintModule extends Module {
     // the yaw here is always the real one.
     private float cachedYaw;
 
+    // Same bug class as cachedYaw above, missed when that fix was written. KeyboardInput.tick()
+    // runs INSIDE super.tick() (between PlayerUpdateEvent's tick$BEFORE and UpdateMovementEvent's
+    // tick$AFTER), and RotationManager.computeMoveFix() -- called from the tail of that same
+    // KeyboardInput.tick() whenever ANY module holds a rotation this tick (AutoCrystal/SpeedMine/
+    // KillAura Rotate=Normal or MovementSync, not just Sprint's own Grim) -- REMAPS moveVector to
+    // an octant relative to the SPOOFED yaw, specifically so vanilla's OWN travel()/getInputVector
+    // (which also gets swapped onto the spoofed yaw for the same window) reproduces the real
+    // input's world direction. Reading mc.player.input.getMoveVector() live inside onUpdateMovement
+    // below picks up that ALREADY-REMAPPED vector, then combines it with cachedYaw (the REAL yaw)
+    // instead of the spoofed one it was actually remapped for -- two mismatched halves of two
+    // different systems. Instant's own velocity write bypasses vanilla physics entirely, so it
+    // never wanted or needed that remap in the first place; captured here (PlayerUpdateEvent, same
+    // place as cachedYaw, before KeyboardInput.tick() ever runs) it's the real, untouched WASD
+    // state. Reported as "quay sau nhấn S đi lùi rất chậm, sai hướng" while an aim module's
+    // Rotate=Normal/MovementSync happened to be live the same tick.
+    private Vec2 cachedMove;
+
     /** True iff grimUpdate() queued a rotation for THIS tick. See isGrimCompensating(). */
     private boolean grimQueued;
+
+    // Reasserted every tick from onClientRotation below instead of the old one-shot rotate() calls
+    // -- see RotationManager class doc. Only Grim writes this (grimUpdate(), via PlayerUpdateEvent);
+    // onPlayerUpdate() clears it to null on every tick isGrim() is false, so switching away from Grim
+    // mid-sprint can't leave a stale fake applying forever.
+    private Float pendingYaw;
+    private float pendingPitch;
+
+    /** 0 = report pure forward (non-diagonal input). +1/-1 = report forward+left / forward+right
+     *  (a real diagonal input, forward OR backward-diagonal). See grimUpdate()'s derivation. Only
+     *  meaningful while isGrimCompensating(); read by KeyboardInputMixin. */
+    @Getter
+    private int grimStrafe;
 
     @SubscribeEvent
     public void onPlayerUpdate(PlayerUpdateEvent event) {
         if (mc.player == null) return;
 
         cachedYaw = mc.player.getYRot();
+        cachedMove = mc.player.input.getMoveVector();
 
         // Must run before the shouldSprint()/setSprinting() call below AND before RotationManager's
         // own PlayerUpdateEvent handler. RotationManager subscribes at Integer.MIN_VALUE and
@@ -130,6 +174,7 @@ public class SprintModule extends Module {
         // on this same tick, not the next one. That is what lets the reported yaw be exact rather
         // than one tick stale (see the class comment, point c).
         if (isGrim()) grimUpdate();
+        else pendingYaw = null;
 
         boolean sprint = shouldSprint();
 
@@ -161,17 +206,30 @@ public class SprintModule extends Module {
                 && (instantWater.getValue() || !mc.player.isInWater());
 
         if (mode.getValue().equalsIgnoreCase("Instant") && instantAllowed) {
-            Vec2 move = mc.player.input.getMoveVector();
+            Vec2 move = cachedMove;
             Vec3 v = mc.player.getDeltaMovement();
 
             if (move.x != 0.0f || move.y != 0.0f) {
+                // move (real vanilla getMoveVector()) is NOT guaranteed unit length here -- vanilla's
+                // own "square movement" input adjustment (KeyboardInput's modifyInputSpeedForSquareMovement,
+                // same one GrimAC's ModernInputTransformer mirrors) deliberately rescales a diagonal
+                // press back up toward sqrt(2) so normal per-axis-clamped movement doesn't get slower
+                // going diagonal. Rotating that straight into a velocity (below) carried the same
+                // sqrt(2) into Instant's OWN speed override -- same instantSpeed setting, but diagonal
+                // came out ~1.41x faster than straight ("cùng Speed nhưng tốc độ khác nhau khi đi
+                // thẳng và đi chéo"). Instant is a flat magnitude override, not a replica of vanilla's
+                // per-axis physics, so normalize the direction first and let instantSpeed alone decide
+                // the magnitude, same in every direction.
+                double moveLength = Math.sqrt(move.x * move.x + move.y * move.y);
+                double normX = move.x / moveLength, normY = move.y / moveLength;
+
                 // Inverse of the strafe/forward <- world-delta rotation (yaw rotates world->input
                 // via [xxa;zza] = [[cos,sin],[-sin,cos]]*[dx;dz], same formula HoleSnap's Strict
                 // mode uses the other direction) -- input->world is the transpose of that rotation.
                 double yawRad = Math.toRadians(cachedYaw);
                 double sin = Math.sin(yawRad), cos = Math.cos(yawRad);
-                double vx = move.x * cos - move.y * sin;
-                double vz = move.x * sin + move.y * cos;
+                double vx = normX * cos - normY * sin;
+                double vz = normX * sin + normY * cos;
                 double speed = instantSpeed.getValue().doubleValue();
 
                 mc.player.setDeltaMovement(vx * speed, v.y, vz * speed);
@@ -186,19 +244,13 @@ public class SprintModule extends Module {
         }
     }
 
-    // RageStrict (ported from hachimi's RAGE_STRICT): continuously fakes the reported rotation to
-    // face the movement direction (45 deg for diagonal, 90 for pure strafe, 180+-45 for backward/
-    // backward-diagonal -- same offsets hachimi's own getSprintYaw uses), every tick, via
-    // RotationManager's real silent-rotation queue. Requires RotationsModule.movementFix to be ON
-    // for the real velocity to actually follow the faked rotation -- without it this only fakes the
-    // packet.
     @SubscribeEvent
-    public void onTick(TickEvent event) {
-        if (mc.player == null) return;
-        if (!mode.getValue().equalsIgnoreCase("RageStrict") || !mc.player.isSprinting()) return;
+    public void onClientRotation(ClientRotationEvent event) {
+        if (pendingYaw == null || event.isCancelled()) return;
 
-        float sprintYaw = getSprintYaw(mc.player.getYRot());
-        EUClient.ROTATION_MANAGER.rotate(sprintYaw, mc.player.getXRot(), this);
+        event.setYaw(pendingYaw);
+        event.setPitch(pendingPitch);
+        event.setOwner(this);
     }
 
     private boolean isGrim() {
@@ -208,6 +260,11 @@ public class SprintModule extends Module {
     // Queues the omni-sprint rotation for this tick. Direct port of homovore's SprintModule.omni().
     private void grimUpdate() {
         grimQueued = false;
+        // Clear any pendingYaw we set last tick right away -- every early return below means "don't
+        // fake this tick", and leaving a stale value would let onClientRotation keep applying it
+        // after isGrimCompensating() has already gone false for this tick, disagreeing with local
+        // physics. See the pendingYaw field doc.
+        pendingYaw = null;
 
         // Fall-flying is excluded exactly as homovore does: elytra movement doesn't go through the
         // strafe/forward input vector at all, so remapping the input would change where we fly
@@ -222,17 +279,55 @@ public class SprintModule extends Module {
         int inputZ = (mc.options.keyUp.isDown() ? 1 : 0) - (mc.options.keyDown.isDown() ? 1 : 0);
         if (inputX == 0 && inputZ == 0) return;
 
-        // atan2(x, z) is the clockwise-from-forward angle of the input direction, which is exactly
-        // the yaw offset needed to point at it: W+D -> +45, D -> +90, S -> +180, S+A -> -135, etc.
-        // Identical to getSprintYaw()'s 45/90/180 offset table below for all 8 keyboard directions
-        // (that table is only kept because RageStrict uses it and reads keyPresses, which is fine
-        // there because RageStrict runs on TickEvent).
+        // cattyn (Discord, 2026-08-08): moving diagonally without rotating to face it is ~0.49km/h
+        // faster than the same diagonal movement WITH the camera turned to face it (20.69 vs
+        // 20.20km/h, confirmed by xcvT) -- a real vanilla movement quirk, unrelated to any anti-cheat
+        // spoofing. W+A/W+D-while-sprinting is exactly the one diagonal case the class comment above
+        // (point 2) already says Grim predicts correctly with zero faking needed -- forward XOR one
+        // strafe key, sprinting pins forward to +1 either way. Real physics runs completely unfaked
+        // for that case, hence the natural bonus.
+        //
+        // 2026-08-12: extended this to S+A/S+D (backward-diagonal) too, which can't just skip the
+        // fake the same way -- Grim ignores knownInput.backward() outright while sprinting, so
+        // reporting real backward-diagonal keys would have it predict FORWARD-diagonal instead of
+        // backward-diagonal, an immediate mismatch. Instead we report a FORWARD+strafe diagonal
+        // (matching whichever real strafe key -- A or D -- is actually down) at a yaw offset that
+        // makes that fake diagonal's real-world displacement land exactly on the real backward-
+        // diagonal direction, so real physics still moves the genuine diagonal shape (same speed
+        // bonus) while Grim simulates a combo it can actually predict.
+        //
+        // Derivation (verified by direct substitution into vanilla's own world-velocity formula --
+        // worldX = strafe*cos(yaw) - forward*sin(yaw), worldZ = strafe*sin(yaw) + forward*cos(yaw),
+        // same one EntityAccessor.invokeMovementInputToVelocity/SprintModule's own Instant-mode
+        // comment use -- not re-derived abstractly this time, the previous attempt's abstract trig
+        // had a sign error that only showed up in-game):
+        //   Let side = -1 if A is down (report LEFT, GrimAC strafe=+1) else +1 if D is down (report
+        //   RIGHT, GrimAC strafe=-1) -- i.e. side matches whichever real strafe key is actually
+        //   pressed. Reporting keys=forward+that-side at
+        //       targetYaw = realYaw + moveAngle + (side < 0 ? +45 : -45)
+        //   reproduces the exact real-world displacement of the real key combo. Sanity check: for
+        //   real W+A/W+D (moveAngle = -45/+45), this collapses to targetYaw == realYaw -- i.e. the
+        //   formula naturally reduces to "no fake needed", exactly matching the old exemption, which
+        //   is why it was safe to fold that case into this same formula instead of skipping it.
+        // Confirmed numerically for S+A (moveAngle=-135, side=-1 -> +45 -> targetYaw=realYaw-90):
+        // fake world vector == real world vector exactly (not just proportional). S+D mirrors it by
+        // left/right symmetry (moveAngle=+135, side=+1 -> -45 -> targetYaw=realYaw+90).
         float moveAngle = (float) Math.toDegrees(Math.atan2(inputX, inputZ));
-        float targetYaw = Mth.wrapDegrees(mc.player.getYRot() + moveAngle);
+        float targetYaw;
+        int strafe = 0;
+
+        if (inputX != 0 && inputZ != 0) {
+            strafe = inputX < 0 ? 1 : -1; // +1 = report left (A down), -1 = report right (D down)
+            targetYaw = Mth.wrapDegrees(mc.player.getYRot() + moveAngle + (strafe > 0 ? 45.0f : -45.0f));
+        } else {
+            targetYaw = Mth.wrapDegrees(mc.player.getYRot() + moveAngle);
+        }
 
         // Real pitch: pitch plays no part in horizontal movement, and reporting it unchanged keeps
         // the rotation packet's pitch honest.
-        EUClient.ROTATION_MANAGER.rotate(targetYaw, mc.player.getXRot(), this);
+        pendingYaw = targetYaw;
+        pendingPitch = mc.player.getXRot();
+        grimStrafe = strafe;
         grimQueued = true;
     }
 
@@ -254,41 +349,15 @@ public class SprintModule extends Module {
      */
     public boolean isGrimCompensating() {
         // mc.player null-check included: grimQueued survives a world/dimension change (grimUpdate
-        // simply stops being called), and a queued Rotation stays valid for 100ms, so without it a
-        // disconnect could leave all three consumers thinking the fake is live.
+        // simply stops being called), so without it a disconnect could leave all three consumers
+        // thinking the fake is live.
         if (mc.player == null || !isToggled() || !isGrim() || !grimQueued) return false;
-        var rotation = EUClient.ROTATION_MANAGER.getRotation();
-        return rotation != null && rotation.getModule() == this;
+        return EUClient.ROTATION_MANAGER.getRotation() != null && EUClient.ROTATION_MANAGER.getRotationOwner() == this;
     }
 
     /** The faked yaw currently on the wire. Only meaningful while isGrimCompensating(). */
     public float getGrimYaw() {
         return EUClient.ROTATION_MANAGER.getRotation().getYaw();
-    }
-
-    // Ported verbatim (offsets/branches) from hachimi's SprintModule.getSprintYaw -- byte-identical
-    // to Shoreline's InputUtil.getYawFromInput. Used by RageStrict.
-    private float getSprintYaw(float yaw) {
-        var keys = mc.player.input.keyPresses;
-        boolean forward = keys.forward() && !keys.backward();
-        boolean backward = keys.backward() && !keys.forward();
-        boolean left = keys.left() && !keys.right();
-        boolean right = keys.right() && !keys.left();
-
-        if (forward) {
-            if (left) yaw -= 45.0f;
-            else if (right) yaw += 45.0f;
-        } else if (backward) {
-            yaw += 180.0f;
-            if (left) yaw += 45.0f;
-            else if (right) yaw -= 45.0f;
-        } else if (left) {
-            yaw -= 90.0f;
-        } else if (right) {
-            yaw += 90.0f;
-        }
-
-        return Mth.wrapDegrees(yaw);
     }
 
     @Override
@@ -316,13 +385,13 @@ public class SprintModule extends Module {
 
         // Ported from hachimi's canSprint() -- these were only ever checked in the Legit (else)
         // branch below, via vanilla's OWN Player.canStartSprinting/isSprinting internals, which
-        // the Rage/RageStrict/Instant branch bypasses entirely by design (that's the whole
+        // the Rage/Instant branch bypasses entirely by design (that's the whole
         // point of those modes). But bypassing the DIRECTION/wall gating vanilla does isn't the
         // same as bypassing THESE -- blindness, fall-flying, and lava are each their own GrimAC
         // check (SprintD/SprintF/an equivalent lava check), and low hunger is SprintA
         // ("Sprinting with too low hunger") -- none of those are about movement legitimacy, they're
         // just "is sprinting even POSSIBLE right now", true regardless of which mode is forcing the
-        // flag. Missing here meant Rage/RageStrict/Instant could force-sprint through all four
+        // flag. Missing here meant Rage/Instant could force-sprint through all four
         // states unconditionally, each one individually flaggable server-side.
         if (mc.player.isInLava()) return false;
         if (mc.player.onClimbable()) return false;
@@ -330,7 +399,7 @@ public class SprintModule extends Module {
         if (mc.player.isFallFlying()) return false;
         if (mc.player.getFoodData().getFoodLevel() <= 6) return false;
 
-        if (mode.getValue().equalsIgnoreCase("Rage") || mode.getValue().equalsIgnoreCase("RageStrict") || mode.getValue().equalsIgnoreCase("Instant") || isGrim()) {
+        if (mode.getValue().equalsIgnoreCase("Rage") || mode.getValue().equalsIgnoreCase("Instant") || isGrim()) {
             // GrimAC's real SprintE check ("Sprinting while colliding with a wall") flags/sets back
             // ANY tick where isSprinting is still true while horizontally colliding with a wall
             // (hard collision, not a minor/soft graze) -- UNLESS sprinting only just started that

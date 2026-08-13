@@ -25,6 +25,22 @@ public class InventoryControlModule extends Module {
     // cursor passes over, instead of having to shift-click each slot individually. Handled in
     // HandledScreenMixin -- this setting is just the toggle it reads.
     public BooleanSetting dragClick = new BooleanSetting("DragClick", "Hold shift + left-click and drag over slots to move each item you pass over.", true);
+    // Ported from example-addon-master's InvMovePlus. GrimAC v2 flags inventory clicks via
+    // MultiActionsC (stableKey "grim.multiactions.inventory_click_while_moving"), which ORs two
+    // independent triggers -- both need defeating, not just one:
+    //  1. supportsEndTick() && knownInput.moving() -- Grim's cached copy of the client's last
+    //     ServerboundPlayerInputPacket. supportsEndTick() requires the REAL backend server's
+    //     protocol to be >=1.21.2 -- on a ViaFabricPlus-bridged older-protocol server this is
+    //     permanently false, so spoofing only the input packet does nothing there.
+    //  2. isVerboseSprinting() -- a plain isSprinting state flag Grim flips only from
+    //     ServerboundPlayerCommandPacket's START/STOP_SPRINTING actions. That packet exists on
+    //     every protocol version, so it's the trigger that actually fires against Via-bridged
+    //     old-protocol servers. Fix: STOP_SPRINTING immediately before the click, START_SPRINTING
+    //     immediately after (only if actually sprinting) -- a real state-toggling pair, never
+    //     flagged by Grim's own redundant-toggle check (BadPacketsF).
+    // See ClientPlayerInteractionManagerMixin's beforeContainerClick/afterContainerClick for the
+    // actual hook (MultiPlayerGameMode.handleContainerInput).
+    public BooleanSetting grimV2 = new BooleanSetting("GrimV2", "Bypasses inventory-while-moving checks on GrimV2/NCP servers.", false);
 
     @SubscribeEvent
     public void onTick(TickEvent event) {
