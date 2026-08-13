@@ -198,8 +198,15 @@ public class WorldUtils implements IMinecraft {
         // packet (rotation-checking anticheat drops attacks sent while looking at the block
         // instead of the entity) -- the block-facing rotation from the caller gets re-applied on
         // the retry tick once the crystal is actually gone.
+        // No packetRotate here -- unlike block placement (server raytraces useItemOn against the
+        // player's ACTUAL facing to build the hit result, so a fake look genuinely widens what's
+        // reachable), vanilla/Grim's attack-reach check is pure distance, not look-angle. Faking a
+        // rotation purely to attack a crystal buys nothing legitimate and only adds a rotation
+        // snap right next to an attack packet -- exactly the pattern Grim's rotation checks (e.g.
+        // RotationGS) are built to catch, which can get the ATTACK itself dropped even when it was
+        // otherwise in range. Shoreline's own crystal-defense attack (referenced) sends no
+        // rotation either -- matched here.
         for (Entity entity : surroundingCrystals) {
-            EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(entity.getX(), entity.getEyeY(), entity.getZ()));
             mc.player.connection.send(new ServerboundAttackPacket(entity.getId()));
             mc.player.connection.send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
             if (retry != null) EUClient.WORLD_MANAGER.onCrystalAttacked(entity.getId(), retry);

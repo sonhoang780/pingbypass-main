@@ -19,7 +19,6 @@ import eu.client.utils.minecraft.HoleUtils;
 import eu.client.utils.minecraft.InventoryUtils;
 import eu.client.utils.minecraft.PositionUtils;
 import eu.client.utils.minecraft.WorldUtils;
-import eu.client.utils.rotations.RotationUtils;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.boss.enderdragon.EndCrystal;
@@ -261,6 +260,11 @@ public class SurroundModule extends Module {
         // approach anyway: fires the instant the crystal exists server-side instead of waiting for
         // this tick's placement attempt (or next tick) to stumble onto it.
         if (crystalDestruction.getValue() && event.getPacket() instanceof ClientboundAddEntityPacket packet && packet.getType().equals(EntityType.END_CRYSTAL)) {
+            // Only for the bounding-box/position math -- a freshly `new`'d client-local entity gets
+            // its id from Entity's own local static counter, NOT the server's real id (that's
+            // packet.getId(), used below for the actual attack). Sending an attack against
+            // crystal.getId() targeted a bogus id the server has no entity for -- a complete no-op
+            // that silently ate every reactive attack this branch ever sent, regardless of ping.
             EndCrystal crystal = new EndCrystal(mc.level, packet.getX(), packet.getY(), packet.getZ());
 
             for (BlockPos position : targetPositions) {
@@ -280,7 +284,7 @@ public class SurroundModule extends Module {
                     InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
 
                     WorldUtils.placeBlock(position, direction, InteractionHand.MAIN_HAND, () -> {
-                        mc.player.connection.send(new ServerboundAttackPacket(crystal.getId()));
+                        mc.player.connection.send(new ServerboundAttackPacket(packet.getId()));
                         mc.player.connection.send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
                     }, rotate.getValue(), false, render.getValue());
                     blocksPlaced++;
@@ -339,7 +343,9 @@ public class SurroundModule extends Module {
         if (best == null) return;
 
         lastCrystalAttackTime = now;
-        EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(best.getX(), best.getEyeY(), best.getZ()));
+        // No packetRotate -- see WorldUtils.destroyCrystals's own doc: attack reach is pure
+        // distance, and faking a look here only risks tripping rotation-based anticheat right next
+        // to an attack packet for zero gain. Matches Shoreline's own crystal-defense attack.
         mc.player.connection.send(new ServerboundAttackPacket(best.getId()));
         mc.player.connection.send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
     }

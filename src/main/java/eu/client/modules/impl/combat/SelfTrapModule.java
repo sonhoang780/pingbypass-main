@@ -2,6 +2,7 @@ package eu.client.modules.impl.combat;
 
 import eu.client.EUClient;
 import eu.client.events.SubscribeEvent;
+import eu.client.events.impl.PacketReceiveEvent;
 import eu.client.events.impl.PlayerUpdateEvent;
 import eu.client.modules.Module;
 import eu.client.modules.RegisterModule;
@@ -11,10 +12,11 @@ import eu.client.settings.impl.NumberSetting;
 import eu.client.utils.minecraft.HoleUtils;
 import eu.client.utils.minecraft.InventoryUtils;
 import eu.client.utils.minecraft.WorldUtils;
-import eu.client.utils.rotations.RotationUtils;
 import eu.client.utils.system.ThreadExecutor;
+import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
 import net.minecraft.network.protocol.game.ServerboundAttackPacket;
 import net.minecraft.network.protocol.game.ServerboundSwingPacket;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.boss.enderdragon.EndCrystal;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.InteractionHand;
@@ -171,6 +173,44 @@ public class SelfTrapModule extends Module {
         else runnable.run();
     }
 
+    // Ported from Surround's own reactive fast-path (onPacketReceive's ClientboundAddEntityPacket
+    // branch) -- SelfTrap had only the tick-polled attackThreateningCrystal below, up to a full
+    // tick slower to react than Surround's instant off-the-spawn-packet attack. Uses packet.getId()
+    // for the actual attack (the real server-assigned id) -- NOT a freshly `new`'d EndCrystal's own
+    // id, which comes from Entity's local static counter and doesn't correspond to anything on the
+    // server (that was Surround's own bug before this port, silently no-opping every reactive
+    // attack it ever sent regardless of ping).
+    @SubscribeEvent
+    public void onPacketReceive(PacketReceiveEvent event) {
+        if (!crystalDestruction.getValue() || mc.player == null || mc.level == null) return;
+        if (!(event.getPacket() instanceof ClientboundAddEntityPacket packet) || !packet.getType().equals(EntityType.END_CRYSTAL))
+            return;
+
+        EndCrystal crystal = new EndCrystal(mc.level, packet.getX(), packet.getY(), packet.getZ());
+        for (BlockPos position : targetPositions) {
+            if (!new AABB(position).intersects(crystal.getBoundingBox())) continue;
+
+            if (blocksPlaced > limit.getValue().intValue()) return;
+            if (!whileEating.getValue() && mc.player.isUsingItem()) return;
+
+            int slot = InventoryUtils.findHardestBlock(0, autoSwitch.getValue().equalsIgnoreCase("AltSwap") || autoSwitch.getValue().equalsIgnoreCase("AltPickup") ? 35 : 8);
+            int previousSlot = mc.player.getInventory().getSelectedSlot();
+            if (slot == -1) return;
+
+            Direction direction = WorldUtils.getDirection(position, strictDirection.getValue());
+            if (direction == null) return;
+
+            InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
+            WorldUtils.placeBlock(position, direction, InteractionHand.MAIN_HAND, () -> {
+                mc.player.connection.send(new ServerboundAttackPacket(packet.getId()));
+                mc.player.connection.send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
+            }, rotate.getValue(), false, render.getValue());
+            blocksPlaced++;
+            InventoryUtils.switchBack(autoSwitch.getValue(), slot, previousSlot);
+            break;
+        }
+    }
+
     // Ported from Surround's own homovore-based fix (findThreateningCrystal/breakCrystal) -- rate-
     // limited to 50ms, same as Surround's copy.
     private void attackThreateningCrystal() {
@@ -196,7 +236,9 @@ public class SelfTrapModule extends Module {
         if (best == null) return;
 
         lastCrystalAttackTime = now;
-        EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(best.getX(), best.getEyeY(), best.getZ()));
+        // No packetRotate -- see WorldUtils.destroyCrystals's own doc: attack reach is pure
+        // distance, and faking a look here only risks tripping rotation-based anticheat right next
+        // to an attack packet for zero gain. Matches Shoreline's own crystal-defense attack.
         mc.player.connection.send(new ServerboundAttackPacket(best.getId()));
         mc.player.connection.send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
     }

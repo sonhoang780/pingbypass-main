@@ -124,7 +124,15 @@ public class KillAuraModule extends Module {
         if (hitDelay.getValue().equalsIgnoreCase("Custom") && !timer.hasTimeElapsed(1000.0f - speed.getValue().floatValue() * 50.0f))
             return;
 
-        if (rotate.getValue().equalsIgnoreCase("Normal")) rotateActive = true;
+        // "Normal" used to also flip rotateActive -- routing through the same ClientRotationEvent/
+        // `rotation` path as "Hold", which visibly snaps the camera toward the target for that
+        // render frame (revert only happens after the movement packet is sent, same tick, but
+        // after the frame already drew at the spoofed yaw). SpeedMine/AutoCrystal's "Normal" is the
+        // silent, revert-free legacyRotate queue instead (see RotationManager's own doc on it) --
+        // KillAura's LEGACY_PRIORITIES entry was already there, just never wired up. Match them.
+        if (rotate.getValue().equalsIgnoreCase("Normal")) {
+            EUClient.ROTATION_MANAGER.legacyRotate(RotationUtils.getRotations(target), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
+        }
 
         shouldAttack = true;
     }
