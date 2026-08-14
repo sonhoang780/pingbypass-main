@@ -319,7 +319,7 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
         if (!WorldUtils.canSee(crystal) && (raytrace.getValue() || crystal.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > Mth.square(attackWallsRange.getValue().doubleValue())))
             return;
 
-        if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
+        if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
         if (rotate.getValue().equalsIgnoreCase("MovementSync")) attackRotations = calculateRotations(Vec3.atCenterOf(crystal.blockPosition()));
         // "Normal" is a deliberate no-op here -- see setYawPitch's doc, this class only ever
         // runs on the proxy, where bản gốc's "Normal" never touched the camera either.
@@ -362,7 +362,7 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
         EUClient.RENDER_MANAGER.setRenderPosition(position);
 
         if (mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeRange.getValue().doubleValue())) return;
-        if (!WorldUtils.canSee(position.above()) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue())))
+        if (!WorldUtils.canSeeBlock(position) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue())))
             return;
 
         if (rotate.getValue().equalsIgnoreCase("MovementSync")) placeRotations = calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0));
@@ -495,7 +495,7 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
         if (bailReason != null) return;
 
         attackRunnable = () -> {
-            if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
+            if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
 
             attack(crystal);
         };
@@ -522,7 +522,7 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
         if (!mc.level.getWorldBorder().isWithinBounds(position)) return;
         if (mc.level.getBlockState(position).getBlock() != Blocks.OBSIDIAN && mc.level.getBlockState(position).getBlock() != Blocks.BEDROCK) return;
         if (!mc.level.getBlockState(position.offset(0, 1, 0)).isAir() || (placements.getValue().equalsIgnoreCase("Protocol") && !mc.level.getBlockState(position.offset(0, 2, 0)).isAir())) return;
-        if (!WorldUtils.canSee(position.above()) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue()))) return;
+        if (!WorldUtils.canSeeBlock(position) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue()))) return;
         if (mc.level.getEntities((Entity) null, new AABB(position.offset(0, 1, 0)), entity -> true).stream().anyMatch(entity -> entity.isAlive() && !(entity instanceof ExperienceOrb) && !(entity instanceof EndCrystal))) return;
 
         if (rotate.getValue().equalsIgnoreCase("MovementSync")) placeRotations = calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0));
@@ -536,7 +536,7 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
         placeRunnable = () -> {
             boolean switched = false;
 
-            if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(position).add(0, 1, 0)));
+            if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(position).add(0, 1, 0)));
 
             if (mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
                 if (autoSwitch.getValue().equalsIgnoreCase("Normal") && swapBack.getValue() && savedSlot == -1) savedSlot = previousSlot;
@@ -681,7 +681,7 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
             if (mc.level.getBlockState(position).getBlock() != Blocks.OBSIDIAN && mc.level.getBlockState(position).getBlock() != Blocks.BEDROCK) continue;
             if (!mc.level.getBlockState(position.offset(0, 1, 0)).isAir() || (placements.getValue().equalsIgnoreCase("Protocol") && !mc.level.getBlockState(position.offset(0, 2, 0)).isAir())) continue;
 
-            if (!WorldUtils.canSee(position.above()) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue()))) continue;
+            if (!WorldUtils.canSeeBlock(position) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue()))) continue;
 
             if (mc.level.getEntities((Entity) null, new AABB(position.offset(0, 1, 0)), entity -> true).stream().anyMatch(entity -> entity.isAlive() && !(entity instanceof ExperienceOrb) && !(entity instanceof EndCrystal))) continue;
 
@@ -764,21 +764,22 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
 
     private void attack(EndCrystal crystal) {
         int previousSlot = mc.player.getInventory().getSelectedSlot();
-        boolean switched = false;
+        int switchedSlot = -1;
 
         if (!antiWeakness.getValue().equalsIgnoreCase("None") && mc.player.hasEffect(MobEffects.WEAKNESS)) {
             int slot = InventoryUtils.findBestSword(InventoryUtils.HOTBAR_START, InventoryUtils.HOTBAR_END);
             if (slot != -1) {
                 InventoryUtils.switchSlot(antiWeakness.getValue(), slot, previousSlot);
-                switched = true;
+                switchedSlot = slot;
             }
         }
 
         mc.getConnection().send(new ServerboundAttackPacket(crystal.getId()));
         mc.getConnection().send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
 
-        if (switched) {
-            InventoryUtils.switchBack(antiWeakness.getValue(), 0, previousSlot);
+        // See AutoCrystalModule.attack()'s own note -- same hardcoded-0 switchBack key bug.
+        if (switchedSlot != -1) {
+            InventoryUtils.switchBack(antiWeakness.getValue(), switchedSlot, previousSlot);
         }
 
         attackedCrystals.put(crystal.getId(), System.currentTimeMillis());

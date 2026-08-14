@@ -1,7 +1,7 @@
 package eu.client.modules.impl.movement;
 
 import eu.client.events.SubscribeEvent;
-import eu.client.events.impl.UpdateMovementEvent;
+import eu.client.events.impl.PlayerMoveEvent;
 import eu.client.modules.Module;
 import eu.client.modules.RegisterModule;
 import eu.client.settings.impl.NumberSetting;
@@ -26,8 +26,18 @@ import org.joml.Vector2d;
 //     whatever partial ramp-up vanilla itself is mid-way through.
 // Fixed by not depending on vanilla's per-tick water/lava output at all -- explicit overrides
 // instead, same "replace the tick's physics result outright" technique SprintModule's Instant mode
-// and FastClimbModule already use (UpdateMovementEvent fires after AbstractClientPlayer.tick(),
-// i.e. after travel()'s own water/lava physics already ran -- see ClientPlayerEntityMixin.tick$AFTER).
+// uses.
+//
+// 2026-08-14: moved off UpdateMovementEvent onto PlayerMoveEvent, same fix and for the same
+// reason as SprintModule's Instant mode -- UpdateMovementEvent fires AFTER
+// AbstractClientPlayer.tick() has already called travel()/move() for the tick (see
+// ClientPlayerEntityMixin.tick$AFTER), so a setDeltaMovement() there only takes effect on the
+// FOLLOWING tick's move() call, and that call still runs full, un-intercepted vanilla water/lava
+// drag -- the doc above claims "instant 0->max" but it was really a friction-smoothed ramp one
+// tick late, the same "0 -> 11.71 -> 20.62 instead of a snap" shape Sprint's Instant had.
+// PlayerMoveEvent fires from INSIDE travel() (ClientPlayerEntityMixin#move, which the mixin
+// posts from Entity.move() itself) and lets event.setMovement()+setCancelled() replace the
+// actual vector physics is about to apply THIS tick -- the real "instant" hook.
 @RegisterModule(name = "FastSwim", description = "Modifies your swim speed in water and lava.", category = Module.Category.MOVEMENT)
 public class FastSwimModule extends Module {
     // Vanilla's own default water/lava vertical swim speed is close to this -- v=1.0 stays roughly
@@ -40,7 +50,7 @@ public class FastSwimModule extends Module {
     public NumberSetting vLava = new NumberSetting("V-Lava", "Vertical (up/down) swim speed multiplier in lava.", 1.0f, 0.1f, 20.0f);
 
     @SubscribeEvent
-    public void onUpdateMovement(UpdateMovementEvent event) {
+    public void onPlayerMove(PlayerMoveEvent event) {
         if (mc.player == null) return;
         if (mc.player.onGround()) return;
 
@@ -55,8 +65,6 @@ public class FastSwimModule extends Module {
             return;
         }
 
-        Vec3 delta = mc.player.getDeltaMovement();
-
         // Horizontal: instant 0->max on input, instant max->0 on release -- MovementUtils.forward()
         // already returns (0, 0) with no movement key held and a real yaw-rotated unit-direction
         // vector scaled to `speed` otherwise (same helper AccelerateModule/SprintModule's own
@@ -64,16 +72,18 @@ public class FastSwimModule extends Module {
         Vector2d horizontal = MovementUtils.forward(MovementUtils.DEFAULT_SPEED * h);
 
         // Vertical: explicit override keyed off the real jump/shift keys instead of scaling
-        // whatever vanilla's swim physics left in delta.y (see class doc point 1) -- guarantees V
-        // actually does something on the way up, not just on the way down. Neither key held: leave
-        // delta.y as vanilla computed it (not asked to change idle floating/sinking).
-        double y = delta.y;
+        // whatever vanilla's swim physics left in this tick's motion (see class doc point 1) --
+        // guarantees V actually does something on the way up, not just on the way down. Neither
+        // key held: leave Y as vanilla's travel() computed it (not asked to change idle
+        // floating/sinking).
+        double y = event.getMovement().y;
         if (mc.options.keyJump.isDown()) {
             y = DEFAULT_VERTICAL_SPEED * v;
         } else if (mc.options.keyShift.isDown()) {
             y = -DEFAULT_VERTICAL_SPEED * v;
         }
 
-        mc.player.setDeltaMovement(horizontal.x, y, horizontal.y);
+        event.setMovement(new Vec3(horizontal.x, y, horizontal.y));
+        event.setCancelled(true);
     }
 }

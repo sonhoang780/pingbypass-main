@@ -62,6 +62,19 @@ public class AutoTotemModule extends Module {
         if (!(mc.screen instanceof InventoryScreen) && mc.screen instanceof AbstractContainerScreen<?>)
             return;
 
+        // The player's own inventory screen is deliberately still allowed above (so AutoTotem
+        // keeps working while you're just looking at your inventory) -- but a click storm was
+        // reported at 20Hz (once per tick, no gap) whenever it fires. mc.player.containerMenu's
+        // cursor (getCarried()) is non-empty exactly while the PLAYER has mid-clicked a slot
+        // themselves (picked something up, hasn't placed it yet) -- injecting our own synthetic
+        // PICKUP click on 35/45 into that same menu while a manual click is mid-flight collides
+        // with it: our click's "pick up 45 (offhand)" step picks up whatever's ALREADY on the
+        // cursor from the player's own click instead of the offhand item, so the 3-click swap
+        // never actually lands the target item -- getOffhandItem() below keeps reading wrong,
+        // and onPlayerUpdate retries every tick forever with nothing to show for it. Skip while
+        // the player's own click is in flight; retry once their cursor is empty again.
+        if (!mc.player.containerMenu.getCarried().isEmpty()) return;
+
         Item item = getItem();
         if (item == null) return;
 

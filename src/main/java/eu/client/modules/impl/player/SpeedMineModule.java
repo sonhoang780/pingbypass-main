@@ -86,6 +86,7 @@ public class SpeedMineModule extends Module {
     public BooleanSetting switchReset = new BooleanSetting("SwitchReset", "Resets the mining when switching slots.", new ModeSetting.Visibility(switchMode, "None", "AltSwap", "AltPickup"), true);
     public BooleanSetting doubleMine = new BooleanSetting("Double", "Allows the mining of 2 blocks at the same time.", false);
     public ModeSetting sequence = new ModeSetting("Sequence", "Sequence of mining for double mine", new BooleanSetting.Visibility(doubleMine, true), "Surround", new String[]{"Surround", "Phase"});
+    public BooleanSetting antiCrawl = new BooleanSetting("AntiCrawl", "While crawling, mines the block above/below your feet to stand back up instead of staying trapped.", new BooleanSetting.Visibility(doubleMine, true), true);
     public BooleanSetting instant = new BooleanSetting("Instant", "Instantly mines blocks once they have been replaced.", false);
     public NumberSetting instantDelay = new NumberSetting("InstantDelay", "The amount of time that has to pass before instantly mining blocks.", new BooleanSetting.Visibility(instant, true), 0, 0, 20);
     public NumberSetting instantTimeout = new NumberSetting("InstantTimeout", "The amount of time that cancel instantly mine while no block to mine.", new BooleanSetting.Visibility(instant, true), 60, 0, 100);
@@ -174,7 +175,6 @@ public class SpeedMineModule extends Module {
     // secondary slot for minutes. Raise it only if a legitimately slow break gets cut off.
     private static final int SECONDARY_MAX_TICKS = 60;
 
-    private SwitchAction switchAction = null;
     // Re-entrancy guard: cancel()/start() below send a ServerboundSetCarriedItemPacket themselves,
     // which re-fires this same PacketSendEvent.Post listener and matches the same condition --
     // without this guard that recurses forever (StackOverflowError).
@@ -283,6 +283,10 @@ public class SpeedMineModule extends Module {
     @Getter private volatile boolean interactPaused = false;
     private volatile long interactPausedAt = 0;
     private boolean needsRestart = false;
+
+    // Shared with PbPlayHandler.syncSlotForInteract() -- see Action.tryStart()'s doc for why this
+    // needs to be a real lock and not just interactPaused's own volatile read/write.
+    public final Object interactSyncLock = new Object();
 
     // Only interactions that actually hold down "use" (eating, drinking, blocking,
     // bow...) send RELEASE_USE_ITEM afterward -- a plain right-click on a chest,
@@ -409,7 +413,7 @@ public class SpeedMineModule extends Module {
         if (doubleMine.getValue()) {
             if (!mineTimer.hasTimeElapsed(350L)) return;
 
-            if (mc.player.isVisuallyCrawling()) {
+            if (antiCrawl.getValue() && mc.player.isVisuallyCrawling()) {
                 BlockPos position;
                 BlockPos playerPosition = mc.player.blockPosition();
 
@@ -462,7 +466,12 @@ public class SpeedMineModule extends Module {
                 Runnable bed = () -> {
                     if (!SpeedMineModule.this.bed.getValue()) return;
 
-                    BlockPos head = target.player().blockPosition().offset(0, 2, 0);
+                    // blockPosition() is the player's FEET block -- a player is 2 blocks tall, so
+                    // the head block is one above that (offset 1), not two. offset(0,2,0) targeted
+                    // the block ABOVE the head instead of the head itself (reported: mined one
+                    // block too high, screenshot showed the wrong block breaking above the real
+                    // anti-crystal bed position).
+                    BlockPos head = target.player().blockPosition().above();
                     List<BlockPos> headPositions = new ArrayList<>();
                     if (!mc.level.getBlockState(head).canBeReplaced()) headPositions.add(head);
                     for (Direction dir : Direction.Plane.HORIZONTAL) {
@@ -505,20 +514,6 @@ public class SpeedMineModule extends Module {
 
             handle(position, 0);
         }
-    }
-
-    @SubscribeEvent(priority = Integer.MAX_VALUE)
-    public void onTick(TickEvent event) {
-        if (isDeferringToProxy()) return;
-        if (switchAction == null) return;
-        if (System.currentTimeMillis() - switchAction.time() < 100L)
-            return;
-
-        if (mc.player != null && mc.level != null && (switchAction.slot() != -1 && switchAction.previousSlot() != -1)) {
-            InventoryUtils.switchBack(switchMode.getValue(), switchAction.slot(), switchAction.previousSlot());
-        }
-
-        switchAction = null;
     }
 
     @SubscribeEvent
@@ -1184,10 +1179,25 @@ public class SpeedMineModule extends Module {
             return new Secondary(position, priority, current, progress);
         }
 
-        /** homovore's `if (stopCooldown == 0 && canBegin()) begin();`. */
+        /**
+         * homovore's `if (stopCooldown == 0 && canBegin()) begin();`.
+         * <p>
+         * Synchronized on {@link #interactSyncLock}: canStartNow()'s interactPaused check alone
+         * isn't enough to stop a NEW block's slot-switch packet (legacyStart's pickaxe
+         * ServerboundSetCarriedItemPacket) from racing PbPlayHandler.syncSlotForInteract()'s own
+         * slot-switch + interactPaused=true, which runs on a different thread (the proxy's netty
+         * IO thread for the real client's connection, vs this tick thread). Without the lock, the
+         * two independent sends can interleave on the wire in either order -- occasionally landing
+         * the pickaxe switch AFTER the food switch (and even after the eat's UseItemPacket),
+         * silently failing the eat right as SpeedMine starts targeting a new block. Synchronizing
+         * both critical sections on the same lock makes the interactPaused read/write and the
+         * packet sends that depend on it atomic relative to each other.
+         */
         private void tryStart() {
-            if (!canStartNow()) return;
-            start();
+            synchronized (interactSyncLock) {
+                if (!canStartNow()) return;
+                start();
+            }
         }
 
         public boolean process() {
@@ -1288,9 +1298,9 @@ public class SpeedMineModule extends Module {
                     // Switch server back to the client's actual slot
                     serverSend(new ServerboundSetCarriedItemPacket(mc.player.getInventory().getSelectedSlot()));
                 }
-                if (switchAction != null) {
-                    switchAction = null;
-                }
+                // No deferred SwitchAction to hand back here any more -- fireBreakBurst's
+                // switchBack call is unconditional and eager now (see its own note), so there is
+                // never a pending switch left dangling by the time a cancel path reaches here.
                 cancel();
                 return true;
             }
@@ -1462,9 +1472,9 @@ public class SpeedMineModule extends Module {
                 if (isProxyActive()) {
                     serverSend(new ServerboundSetCarriedItemPacket(mc.player.getInventory().getSelectedSlot()));
                 }
-                if (switchAction != null) {
-                    switchAction = null;
-                }
+                // No deferred SwitchAction to hand back here any more -- fireBreakBurst's
+                // switchBack call is unconditional and eager now (see its own note), so there is
+                // never a pending switch left dangling by the time a cancel path reaches here.
                 cancel();
                 return true;
             }
@@ -1564,22 +1574,31 @@ public class SpeedMineModule extends Module {
                 boolean needSwitch = mineSlot != -1 && mineSlot != previousSlot;
 
                 if (needSwitch) serverSend(new ServerboundSetCarriedItemPacket(mineSlot));
-                serverSendSequenced(seq -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, position, direction, seq));
+                stopDestroyBlock(position, direction, true);
                 if (grim.getValue()) serverSend(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, position.above(500), direction));
                 serverSend(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
                 if (needSwitch) serverSend(new ServerboundSetCarriedItemPacket(previousSlot));
             } else {
                 InventoryUtils.switchSlot(switchMode.getValue(), slot, previousSlot);
 
-                NetworkUtils.sendSequencedPacket(seq -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, position, direction, seq));
+                stopDestroyBlock(position, direction, true);
                 if (grim.getValue()) mc.getConnection().send(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, position.above(500), direction));
                 mc.getConnection().send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
 
-                if (strict.getValue() || (doubleMine.getValue() && isSecondaryRole)) switchAction = new SwitchAction(slot, previousSlot, System.currentTimeMillis());
-                else if (switchAction == null) InventoryUtils.switchBack(switchMode.getValue(), slot, previousSlot);
+                // Strict/DoubleMine-secondary used to defer this call itself via a private
+                // 100ms SwitchAction timer -- a second, independent "wait before restoring"
+                // mechanism running alongside InventoryUtils' own dwell (see its own doc), unaware
+                // of it and uncoordinated with any other module's concurrent hold. For that whole
+                // 100ms, InventoryUtils had no record this switch even wanted to restore, so it
+                // couldn't arbitrate against e.g. AutoCrystal's own hold opening in the same
+                // window -- exactly the class of bug behind the AutoCrystal+SpeedMine crystal ->
+                // pickaxe flicker, reported to still happen with plain single-block mining,
+                // Double on or off. InventoryUtils.switchBack already IS "wait for the server to
+                // tick you before switching back" now (that's the whole point of its dwell), so
+                // Strict's separate implementation of the same idea was pure duplication. Call it
+                // eagerly, same as every other mode -- the dwell inside handles the wait.
+                InventoryUtils.switchBack(switchMode.getValue(), slot, previousSlot);
             }
-
-            mc.level.removeBlock(position, false);
         }
 
         // Extracted out of process()'s completion branch so Async's blind re-fire (see the
@@ -1664,10 +1683,16 @@ public class SpeedMineModule extends Module {
 
                 // FarReach: homovore's sendAction() is used for the completing STOP too, not just
                 // the START/decoy -- uniform seq=0, and it's the STOP that arms stopCooldown.
+                // Deliberately NOT routed through the real BlockStatePredictionHandler sequence
+                // below (see stopDestroyBlock's own doc) -- FarReach's decoy needs a uniform
+                // seq=0 across every packet (see the class comment on GRIM_DECOY_Y_OFFSET), a
+                // real incrementing sequence here would break that. Its client-side removal
+                // stays unprotected/unrolled-back, same trade-off FarReach already accepted.
                 if (farReach.getValue()) {
                     sendRawPlayerAction(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, position, direction, armCooldown);
+                    if (!demote) mc.level.removeBlock(position, false);
                 } else {
-                    serverSendSequenced(seq -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, position, direction, seq));
+                    stopDestroyBlock(position, direction, !demote);
                     markStop();
                 }
                 if (grim.getValue()) serverSend(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, position.above(500), direction));
@@ -1682,22 +1707,48 @@ public class SpeedMineModule extends Module {
 
                 if (farReach.getValue()) {
                     sendRawPlayerAction(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, position, direction, armCooldown);
+                    if (!demote) mc.level.removeBlock(position, false);
                 } else {
-                    NetworkUtils.sendSequencedPacket(seq -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, position, direction, seq));
+                    stopDestroyBlock(position, direction, !demote);
                     markStop();
                 }
                 if (grim.getValue()) mc.getConnection().send(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, position.above(500), direction));
                 mc.getConnection().send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
 
-                if (strict.getValue() || demote) switchAction = new SwitchAction(slot, previousSlot, System.currentTimeMillis());
-                else if (switchAction == null) InventoryUtils.switchBack(switchMode.getValue(), slot, previousSlot);
+                // See the other fireBreakBurst call site's note -- Strict/demote's own separate
+                // defer is gone, InventoryUtils.switchBack's dwell already does the "hold it a
+                // moment longer" job for both cases now.
+                InventoryUtils.switchBack(switchMode.getValue(), slot, previousSlot);
             }
+        }
 
-            // Remove block client-side so modules (and process()'s own top-of-loop
-            // canBeReplaced() check) see it as air immediately instead of waiting on the server's
-            // block-update round-trip.
-            if (!demote) {
-                mc.level.removeBlock(position, false);
+        /**
+         * Sends STOP_DESTROY_BLOCK with a REAL incrementing BlockStatePredictionHandler sequence
+         * and, if {@code remove} is true, removes the block client-side INSIDE THE SAME
+         * prediction window -- {@link NetworkUtils#sendSequencedPacket}/{@code serverSendSequenced}
+         * close their window the instant the packet is built and returned, before this method's
+         * own {@code mc.level.removeBlock()} used to ever run. {@code ClientLevel.setBlock} only
+         * calls {@code retainKnownServerState} (the thing that lets a later
+         * {@code ClientboundBlockChangedAckPacket} roll the block back) while
+         * {@code isPredicting()} is true, so the old two-call-site shape never registered the
+         * predicted removal at all -- if the server silently never confirmed the break (anticheat
+         * rejection, packet loss, hardness mismatch, or the player got stuck mid-mine), the client
+         * just believed the block was gone forever with no way to notice or recover (reported:
+         * "Speedmine đào block mà bị kẹt thì client side vẫn cứ giả sử block đó đã biến mất").
+         * One shared window fixes that -- same shape as vanilla's own
+         * {@code MultiPlayerGameMode.destroyBlock()}/{@code startPrediction()}, predicting the
+         * removal and sending the packet that concludes it in one session.
+         */
+        private void stopDestroyBlock(BlockPos position, Direction direction, boolean remove) {
+            try (net.minecraft.client.multiplayer.prediction.BlockStatePredictionHandler prediction =
+                         ((eu.client.mixins.accessors.ClientWorldAccessor) mc.level).invokeGetPendingUpdateManager().startPredicting()) {
+                net.minecraft.network.protocol.Packet<?> packet = new ServerboundPlayerActionPacket(
+                        ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, position, direction, prediction.currentSequence());
+
+                if (isProxyActive()) serverSend(packet);
+                else mc.getConnection().send(packet);
+
+                if (remove) mc.level.removeBlock(position, false);
             }
         }
 
@@ -1923,12 +1974,24 @@ public class SpeedMineModule extends Module {
                 if (isProxyActive()) {
                     serverSendSequenced(seq -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, position, direction, seq));
                     serverSend(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
-                    serverSend(new ServerboundSetCarriedItemPacket(mc.player.getInventory().getSelectedSlot()));
                 } else {
                     NetworkUtils.sendSequencedPacket(seq -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, position, direction, seq));
                     mc.getConnection().send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
                 }
             }
+
+            // Hoisted OUT of the !doubleMine branch above. legacyStart()'s proxy branch parks the
+            // real server on the fast tool unconditionally ("Do NOT switch back -- bản gốc keeps the
+            // fast tool held for the whole mining duration") and it is NOT gated on doubleMine -- but
+            // this restore was, so with Double on, every early end (handle() swapping targets,
+            // onDisable, out-of-range, switchReset) left the real server holding the PICKAXE with
+            // nothing alive to hand it back. It is a raw serverSend, so InventoryUtils' SILENT_RESTORE
+            // /PENDING maps cannot see it either. AutoCrystal then places against a server that thinks
+            // a pickaxe is in hand: the place silently no-ops, the server re-asserts its own view of
+            // the slot with a ContainerSetSlot writing the pickaxe into the crystal slot, and that is
+            // the reported "crystal slot flickers into the pickaxe". Restore unconditionally, matching
+            // the switch that was equally unconditional.
+            if (isProxyActive()) serverSend(new ServerboundSetCarriedItemPacket(mc.player.getInventory().getSelectedSlot()));
 
             this.progress = 0.0f;
             this.prevProgress = 0.0f;
@@ -1964,7 +2027,6 @@ public class SpeedMineModule extends Module {
         }
     }
 
-    private record SwitchAction(int slot, int previousSlot, long time) { }
 
     private record Target(Player player, java.util.List<Position> feetPositions, BlockPos position) { }
     private record Position(BlockPos position, boolean feetPosition) { }

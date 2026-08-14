@@ -177,6 +177,13 @@ public abstract class Module implements IMinecraft {
             EUClient.EVENT_HANDLER.unsubscribe(this);
             onDisable();
 
+            // Any silent switch this module still had deferred has to land NOW -- unsubscribed, it
+            // will never re-switch to cancel it, and until it lands the server is still holding the
+            // module's item (AutoCrystal's crystal slot), so the player's next right-click eats/
+            // places nothing. Central here rather than in each onDisable(): every Silent-switch
+            // module has the same exposure.
+            eu.client.utils.minecraft.InventoryUtils.flushPendingRestores();
+
             if (notify && chatNotify.getValue()) {
                 EUClient.CHAT_MANAGER.message(ChatUtils.getPrimary() + name + ChatUtils.getSecondary() + " = " + ChatFormatting.RED + "false" + ChatUtils.getSecondary() + ";", "toggle-" + getName().toLowerCase());
             }

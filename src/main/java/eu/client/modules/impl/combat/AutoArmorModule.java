@@ -194,6 +194,20 @@ public class AutoArmorModule extends Module {
         // levels vs 0 and fell through to "return x" (keep current), never swapping. Elytra isn't
         // a HUMANOID_ARMOR-type item for our purposes here, regardless of which slot it occupies.
         if (itemStack.getItem() == Items.ELYTRA) return false;
+
+        // Same class of bug, different item: mob heads (creeper/skeleton/zombie/piglin/wither
+        // skull/player head) are EQUIPPABLE into HEAD, and HEAD's EquipmentSlot.Type is also
+        // HUMANOID_ARMOR -- that's a property of the SLOT, not the item, same as above. Heads
+        // carry no armor value at all (they're plain SkullBlockItems -- this componentized item
+        // system has no dedicated ArmorItem class anymore to instanceof-check against), so
+        // findArmor() picked one as the "best" helmet whenever the inventory had no real helmet,
+        // equipping a decorative head instead of leaving the head slot alone. Real armor grants a
+        // generic.armor attribute modifier; heads grant none -- check that directly instead.
+        boolean grantsArmor = itemStack.getOrDefault(DataComponents.ATTRIBUTE_MODIFIERS,
+                        net.minecraft.world.item.component.ItemAttributeModifiers.EMPTY).modifiers().stream()
+                .anyMatch(entry -> entry.attribute().is(net.minecraft.world.entity.ai.attributes.Attributes.ARMOR));
+        if (!grantsArmor) return false;
+
         var equippable = itemStack.get(DataComponents.EQUIPPABLE);
         return equippable != null && equippable.slot().getType() == EquipmentSlot.Type.HUMANOID_ARMOR;
     }

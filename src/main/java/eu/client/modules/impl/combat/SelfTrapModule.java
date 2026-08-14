@@ -69,6 +69,10 @@ public class SelfTrapModule extends Module {
             }
 
             if (autoSwitch.getValue().equalsIgnoreCase("None") && !(mc.player.getMainHandItem().getItem() instanceof BlockItem)) {
+                // Ported from the deleted ItemDisable setting's own notification -- always on now
+                // (hardcoded), matches SurroundModule's own copy of the same fix.
+                EUClient.CHAT_MANAGER.tagged("You are currently not holding any blocks.", getName());
+                setToggled(false);
                 targetPositions = new ArrayList<>();
                 return;
             }
@@ -79,6 +83,8 @@ public class SelfTrapModule extends Module {
             int previousSlot = mc.player.getInventory().getSelectedSlot();
 
             if (slot == -1) {
+                EUClient.CHAT_MANAGER.tagged("No blocks could be found in your hotbar.", getName());
+                setToggled(false);
                 targetPositions = new ArrayList<>();
                 return;
             }
@@ -200,7 +206,8 @@ public class SelfTrapModule extends Module {
             Direction direction = WorldUtils.getDirection(position, strictDirection.getValue());
             if (direction == null) return;
 
-            InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
+            // Netty IO thread -- see SurroundModule's identical guard / InventoryUtils.switchSlot.
+            if (!InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot)) return;
             WorldUtils.placeBlock(position, direction, InteractionHand.MAIN_HAND, () -> {
                 mc.player.connection.send(new ServerboundAttackPacket(packet.getId()));
                 mc.player.connection.send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));

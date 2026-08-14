@@ -40,20 +40,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 // doesn't touch anything outside this player's own item submission.
 @Mixin(ItemInHandRenderer.class)
 public class ItemInHandRendererMixin {
-    private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger("EUClient/Shaders");
-    private static long euclient$lastLog = 0L;
-    private static int euclient$logCount = 0;
-    private static String euclient$currentItem = "?";
-
-    // TEMP DIAGNOSTIC (2026-08-08): "tay này có thì tay kia mất" still reported after the
-    // OutlineBufferSource guard fix -- log which item/hand computed which color, to see if BOTH
-    // hands actually reach here with a real color each, or if one hand's @ModifyArg never fires /
-    // computes 0. Remove once root-caused.
-    @Inject(method = "renderItem", at = @At("HEAD"))
-    private void euclient$logRenderItem(net.minecraft.world.entity.LivingEntity mob, net.minecraft.world.item.ItemStack itemStack, net.minecraft.world.item.ItemDisplayContext type, PoseStack poseStack, SubmitNodeCollector collector, int light, CallbackInfo ci) {
-        euclient$currentItem = itemStack.isEmpty() ? "empty" : (itemStack.getItem() + "@" + type);
-    }
-
     // Re-added (2026-08-08) alongside the OutlineBufferSource guard, not instead of it: the guard
     // stops the CRASH (IllegalStateException aborting the flush), this flag+redirect is the actual
     // BetterChams trick that forces hand geometry onto the outline target regardless of which
@@ -102,10 +88,6 @@ public class ItemInHandRendererMixin {
                 }
             }
         }
-
-        long now = System.currentTimeMillis();
-        if (now - euclient$lastLog > 500) { euclient$lastLog = now; euclient$logCount = 0; }
-        if (euclient$logCount++ < 6) LOGGER.info("[HandsOutline] item={} source={} color={}", euclient$currentItem, source, Integer.toHexString(result));
 
         return result;
     }

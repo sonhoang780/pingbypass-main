@@ -156,7 +156,15 @@ public class KillAuraModule extends Module {
 
         if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(target));
 
-        if (autoSwitch.getValue().equalsIgnoreCase("Normal")) InventoryUtils.switchSlot("Normal", InventoryUtils.findBestSword(InventoryUtils.HOTBAR_START, InventoryUtils.HOTBAR_END), mc.player.getInventory().getSelectedSlot());
+        // Unlike every other module's switch, this one used to run unconditionally every attack
+        // tick with no coordination at all -- not even via SILENT_RESTORE, since "Normal" never
+        // populated it. A module silently holding a different slot (AutoCrystal/Surround/SpeedMine
+        // mid-cycle) got its slot yanked back to sword on the very next attack tick, every time --
+        // reported as e.g. an obsidian slot flickering to sword during Surround+KillAura combat.
+        // Skip the forced switch for this tick if another module currently owns a silent switch;
+        // the next attack tick (50ms later) retries once that module's own restore has run.
+        if (autoSwitch.getValue().equalsIgnoreCase("Normal") && !InventoryUtils.hasActiveSilentSwitch())
+            InventoryUtils.switchSlot("Normal", InventoryUtils.findBestSword(InventoryUtils.HOTBAR_START, InventoryUtils.HOTBAR_END), mc.player.getInventory().getSelectedSlot());
         mc.gameMode.attack(mc.player, target);
 
         switch (swing.getValue()) {

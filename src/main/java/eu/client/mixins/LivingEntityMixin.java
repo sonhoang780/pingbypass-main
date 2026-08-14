@@ -168,6 +168,20 @@ public abstract class LivingEntityMixin extends Entity implements IMinecraft {
         return constant * factor;
     }
 
+    // ElytraFly ControlRocket + GrimV3 parks the elytra in the inventory for exactly one tick per
+    // cycle so the server's fallFlyTicks counter resets and the elytra never takes durability
+    // damage (see ElytraFlyModule.grimSwapCycle). For that one tick the chest slot is genuinely
+    // empty, which would pop the wings off the player model -- WingsLayer and HumanoidArmorLayer
+    // both draw from HumanoidRenderState.chestEquipment, extracted straight from this method. Hand
+    // back the parked stack instead, so nothing on the client (render state included) ever observes
+    // the gap. Own player only, and only while a swap is actually in flight.
+    @Inject(method = "getItemBySlot", at = @At("HEAD"), cancellable = true)
+    private void euclient$hideElytraSwap(net.minecraft.world.entity.EquipmentSlot slot, CallbackInfoReturnable<ItemStack> cir) {
+        if (slot != net.minecraft.world.entity.EquipmentSlot.CHEST || (Object) this != mc.player || EUClient.MODULE_MANAGER == null) return;
+        ItemStack parked = EUClient.MODULE_MANAGER.getModule(ElytraFlyModule.class).getGrimHiddenElytra();
+        if (parked != null) cir.setReturnValue(parked);
+    }
+
     @Inject(method = "travel", at = @At("HEAD"))
     private void travel$grimHead(Vec3 movementInput, CallbackInfo info) {
         euclient$grimSwapped = false;

@@ -101,6 +101,10 @@ public class WorldManager implements IMinecraft {
         // fresh and a reservation from N ticks ago can't linger and block a cell forever.
         reservedPlacements.clear();
 
+        // Silent switches hold the server's held slot open across a burst now; this lands the
+        // restore once the burst stops. See InventoryUtils.tickPendingRestore.
+        eu.client.utils.minecraft.InventoryUtils.tickPendingRestore();
+
         if (mc.level == null) return;
 
         for (UUID uuid : new ArrayList<>(poppedTotems.keySet())) {

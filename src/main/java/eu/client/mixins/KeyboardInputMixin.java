@@ -79,10 +79,17 @@ public class KeyboardInputMixin extends ClientInput {
             int strafe = sprint.getGrimStrafe();
             this.keyPresses = new Input(true, false, strafe > 0, strafe < 0,
                     this.keyPresses.jump(), this.keyPresses.shift(), this.keyPresses.sprint());
-            // (±1, 1) normalized -- 1/sqrt(2), spelled out to avoid depending on whichever
-            // normalize-style method this Vec2 version exposes. strafe == 0 -> honest (0, 1).
+            // The RAW SQUARE pair (+-1, 1) for a diagonal, not the pre-normalized (+-0.7071, 0.7071)
+            // it used to be -- same reasoning as RotationManager.OCTANTS, see the long note there.
+            // Entity.getInputVector only normalizes when lengthSqr() > 1.0, so both forms are
+            // bit-identical on a native 26.1.2 connection; they stop being identical the moment a
+            // downgraded protocol re-applies old vanilla's `xxa *= 0.98F` before that check, at which
+            // point the unit form falls UNDER the threshold (0.96), never normalizes, and moves 2%
+            // slower than the full-speed diagonal GrimAC's legacy transformer predicts from the raw
+            // pair -- a setback on diagonals only, on ViaFabricPlus-downgraded connections only.
+            // strafe == 0 -> honest (0, 1), unchanged.
             this.moveVector = strafe == 0 ? new Vec2(0.0f, 1.0f)
-                    : new Vec2(strafe > 0 ? 0.70710678f : -0.70710678f, 0.70710678f);
+                    : new Vec2(strafe > 0 ? 1.0f : -1.0f, 1.0f);
 
             // Mirrors homovore's sprint$applyBeforeJump, injected at the same point for the same
             // reason: this is the last moment before LocalPlayer.aiStep()'s own sprint bookkeeping

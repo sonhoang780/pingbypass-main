@@ -107,6 +107,12 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
      * doesn't switch back to pickaxe (which would cancel eating).
      */
     private void syncSlotForInteract() {
+        // The proxy can't see the real player's keyUse/keyAttack (InventoryUtils.tickPendingRestore
+        // watches those locally), so their interact packet arriving here is our only signal that a
+        // deferred silent restore has to land BEFORE it -- otherwise the real server resolves this
+        // interact while still carrying whatever module slot is being held.
+        eu.client.utils.minecraft.InventoryUtils.flushPendingRestores();
+
         var speedMine = EUClient.MODULE_MANAGER.getModule(
                 eu.client.modules.impl.player.SpeedMineModule.class);
         // Was also gated on (getPrimary() != null || getSecondary() != null) -- but Instant's
@@ -123,12 +129,32 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
         if (speedMine != null && speedMine.isToggled() && speedMine.isRunningOnProxy()) {
             Minecraft mc = Minecraft.getInstance();
             if (mc.player != null) {
-                int clientSlot = mc.player.getInventory().getSelectedSlot();
-                // Switch server to client's actual slot for the interact
-                forward(new ServerboundSetCarriedItemPacket(clientSlot));
-                // Tell SpeedMine to pause — don't switch back to pickaxe
-                speedMine.setInteractPaused(true);
+                // Locked against Action.tryStart() (see its own doc) -- without this, a NEW
+                // block's pickaxe-switch packet (sent from the main tick thread) can race this
+                // slot correction (sent from this netty IO thread) and land on the wire after it,
+                // silently failing the eat.
+                synchronized (speedMine.interactSyncLock) {
+                    int clientSlot = mc.player.getInventory().getSelectedSlot();
+                    // Switch server to client's actual slot for the interact
+                    forward(new ServerboundSetCarriedItemPacket(clientSlot));
+                    // Tell SpeedMine to pause — don't switch back to pickaxe
+                    speedMine.setInteractPaused(true);
+                    return;
+                }
             }
+        }
+
+        // SpeedMine is not the only module that parks the real server on its own slot -- AutoCrystal
+        // (Silent) does it every place cycle. Whoever is holding it, the real player's interact is
+        // resolved by the server against the slot the server is carrying, so put it back on theirs
+        // first. Same rule as InventoryUtils.tickPendingRestore's local resync; this is the proxy's
+        // only chance to apply it, since the player's key state isn't visible here.
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null) return;
+
+        int clientSlot = mc.player.getInventory().getSelectedSlot();
+        if (clientSlot != EUClient.POSITION_MANAGER.getServerSlot()) {
+            forward(new ServerboundSetCarriedItemPacket(clientSlot));
         }
     }
 
@@ -367,15 +393,29 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
         // the mirror too while SpeedMine owns it, not just the forward.
         var speedMine = EUClient.MODULE_MANAGER.getModule(
                 eu.client.modules.impl.player.SpeedMineModule.class);
-        if (speedMine != null && speedMine.isToggled() && speedMine.isRunningOnProxy()
-                && (speedMine.getPrimary() != null || speedMine.getSecondary() != null)) {
-            return;
-        }
-
-        // Sync proxy's local slot (so modules can read the client's real slot).
+        boolean speedMineOwnsSlot = speedMine != null && speedMine.isToggled() && speedMine.isRunningOnProxy()
+                && (speedMine.getPrimary() != null || speedMine.getSecondary() != null);
+        // speedMineOwnsSlot covers SpeedMine's whole mining-action window (wider than just the
+        // instant a switch is open); hasActiveSilentSwitch() covers every OTHER module doing a
+        // Silent-mode switch (AutoCrystal, Surround, SelfTrap) -- previously unprotected, see
+        // InventoryUtils.hasActiveSilentSwitch()'s own note.
+        // ...but the MIRROR is updated either way. Skipping it was a total-loss bug: while
+        // SpeedMine is mining, speedMineOwnsSlot stays true for its whole Action lifetime (an
+        // Instant rebreak loop keeps `primary` alive as long as the player holds left-click), so
+        // every slot the player picked in that window was thrown away -- and syncSlotForInteract()
+        // below reads THIS mirror to tell the real server which slot the player's right-click is
+        // for. Stale mirror => the interact resolved against the old slot => the player could not
+        // place a block or eat anything at all for as long as SpeedMine ran. A genuine selection
+        // by the player is the one thing that must never be dropped; only the forward is held back
+        // (a module's in-flight server-side slot still must not be yanked mid-sequence).
         if (mc.player != null) {
             mc.player.getInventory().setSelectedSlot(p.getSlot());
         }
+
+        if (speedMineOwnsSlot || eu.client.utils.minecraft.InventoryUtils.hasActiveSilentSwitch()) {
+            return;
+        }
+
         forward(p);
     }
     @Override public void handleClientCommand(ServerboundClientCommandPacket p) { forward(p); }

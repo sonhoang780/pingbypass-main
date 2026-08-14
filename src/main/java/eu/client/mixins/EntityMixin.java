@@ -60,6 +60,22 @@ public abstract class EntityMixin implements IMinecraft {
     private void getYaw(CallbackInfoReturnable<Float> info) {
         if (EUClient.MODULE_MANAGER.getModule(RotationLockModule.class).isToggled() && (EUClient.MODULE_MANAGER.getModule(RotationLockModule.class).mode.getValue().equals("Yaw") || EUClient.MODULE_MANAGER.getModule(RotationLockModule.class).mode.getValue().equals("Both")) && (Object) this == mc.player) {
             info.setReturnValue(EUClient.MODULE_MANAGER.getModule(RotationLockModule.class).yaw.getValue().floatValue());
+            return;
+        }
+        // ControlRocket's camera-decouple, ported from example-addon-master's ControlRocket.java +
+        // its companion MixinEntity: between PlayerUpdateEvent (sets the entity's real yaw/pitch
+        // to the flight direction so local elytra physics AND the movement packet use it) and
+        // UpdateMovementEvent.Post (restores it), getYRot()/getXRot() -- NOT the raw fields --
+        // are what the first-person arm renderer, HeldItemRenderer and Camera.update() all read.
+        // Without this, they'd see the flight direction rather than the real camera rotation for
+        // that whole window and the hand/view could flick toward it, same symptom the reference's
+        // own comment describes. mc.player's OWN tick/aiStep call getYRot() directly too (not
+        // through this wildcard-matched injection's overloads specifically, but the point stands),
+        // so this only ever needs to fool RENDER-side callers -- sendMovementPackets() builds the
+        // outbound packet from the raw field, unaffected by this override.
+        if ((Object) this == mc.player) {
+            var elytraFly = EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.movement.ElytraFlyModule.class);
+            if (elytraFly.isCrCameraOverrideActive()) info.setReturnValue(elytraFly.getCrSavedYaw());
         }
     }
 
@@ -67,6 +83,11 @@ public abstract class EntityMixin implements IMinecraft {
     private void getPitch(CallbackInfoReturnable<Float> info) {
         if (EUClient.MODULE_MANAGER.getModule(RotationLockModule.class).isToggled() && (EUClient.MODULE_MANAGER.getModule(RotationLockModule.class).mode.getValue().equals("Pitch") || EUClient.MODULE_MANAGER.getModule(RotationLockModule.class).mode.getValue().equals("Both")) && (Object) this == mc.player) {
             info.setReturnValue(EUClient.MODULE_MANAGER.getModule(RotationLockModule.class).pitch.getValue().floatValue());
+            return;
+        }
+        if ((Object) this == mc.player) {
+            var elytraFly = EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.movement.ElytraFlyModule.class);
+            if (elytraFly.isCrCameraOverrideActive()) info.setReturnValue(elytraFly.getCrSavedPitch());
         }
     }
 

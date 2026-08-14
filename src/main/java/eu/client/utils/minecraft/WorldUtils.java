@@ -359,6 +359,26 @@ public class WorldUtils implements IMinecraft {
         return mc.level.clip(new ClipContext(new Vec3(mc.player.getX(), mc.player.getEyeY(), mc.player.getZ()), new Vec3(x, y, z), ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, mc.player)).getType() == HitResult.Type.MISS;
     }
 
+    // canSee(BlockPos) is unusable for a SOLID support block (e.g. AutoCrystal's obsidian): the
+    // clip's own endpoint sits at that block's center, so the ray hits the block's own near face
+    // first and returns BLOCK, never MISS -- "can I see this block" was unconditionally false for
+    // every solid block, real wall or not (see AutoCrystalModule's own note on why it moved to
+    // position.above() instead). But position.above() asks a DIFFERENT question -- "can I see the
+    // empty air cell the crystal spawns into" -- which a real player never needs: vanilla lets you
+    // place by clicking ANY reachable, visible face of the support block (its underside included),
+    // same as standing under a ceiling and placing on the block right above your head. This checks
+    // that instead: nothing OTHER than the block itself is in the way. If the clip hits a solid
+    // block before reaching this one's own center, that hit block is a real obstruction (a wall) --
+    // if the clip's own hit block position is `position` itself (or air), there's no wall.
+    public static boolean canSeeBlock(BlockPos position) {
+        HitResult result = mc.level.clip(new ClipContext(
+                new Vec3(mc.player.getX(), mc.player.getEyeY(), mc.player.getZ()),
+                Vec3.atCenterOf(position), ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, mc.player));
+
+        if (result.getType() == HitResult.Type.MISS) return true;
+        return result instanceof BlockHitResult blockHit && blockHit.getBlockPos().equals(position);
+    }
+
     public static boolean canBreak(BlockPos... pos) {
         return Arrays.stream(pos).allMatch(blockPos -> mc.level.getBlockState(blockPos).getBlock().defaultDestroyTime() != -1);
     }

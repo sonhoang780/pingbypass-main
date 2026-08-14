@@ -242,12 +242,25 @@ public class RotationManager implements IMinecraft {
     // player -- see SprintModule's class doc, point 2. Those ticks fall back to doing nothing at all
     // (status quo), rather than trading a fixed prediction for a broken one.
     //
-    // {right, forward} unit vectors for sector*45 degrees, sector 0 = forward, increasing clockwise
-    // (i.e. toward the player's right), matching Mth-free exact values so a pure axis stays a pure
-    // axis and a diagonal stays unit length.
+    // {right, forward} for sector*45 degrees, sector 0 = forward, increasing clockwise (i.e. toward
+    // the player's right).
+    //
+    // Diagonals are the RAW SQUARE pair (+-1, +-1), NOT the pre-normalized (+-0.7071, +-0.7071) they
+    // used to be. Entity.getInputVector (.mcref net/minecraft/world/entity/Entity.java:1660) only
+    // normalizes when lengthSqr() > 1.0, so on a native 26.1.2 connection the two forms produce the
+    // BIT-IDENTICAL world velocity -- this is a no-op there. It stops being a no-op the moment
+    // anything scales the input before that check, which is exactly what a pre-1.21.2 protocol does:
+    // old vanilla applied `xxa *= 0.98F; zza *= 0.98F` in LocalPlayer.aiStep (removed in 1.21.2+, and
+    // re-emulated by ViaFabricPlus when it downgrades the connection). Feed 0.98 a unit diagonal and
+    // lengthSqr becomes 0.96 -- under the threshold, so the normalize never fires and the player moves
+    // 2% slow; feed it the square pair and lengthSqr is 1.92, normalize fires, and the result is the
+    // full-speed diagonal both old vanilla AND GrimAC's legacy input transformer compute from the same
+    // raw pair. That 2% is the entire pre-1.21.2 "diagonal without turning is faster" quirk (20.62 vs
+    // 20.20 km/h) and a 2% mismatch against Grim's prediction is a setback, on diagonals only, on
+    // downgraded connections only. Match real input's own representation instead of pre-solving it.
     private static final float[][] OCTANTS = {
-            {0.0f, 1.0f}, {0.70710678f, 0.70710678f}, {1.0f, 0.0f}, {0.70710678f, -0.70710678f},
-            {0.0f, -1.0f}, {-0.70710678f, -0.70710678f}, {-1.0f, 0.0f}, {-0.70710678f, 0.70710678f}
+            {0.0f, 1.0f}, {1.0f, 1.0f}, {1.0f, 0.0f}, {1.0f, -1.0f},
+            {0.0f, -1.0f}, {-1.0f, -1.0f}, {-1.0f, 0.0f}, {-1.0f, 1.0f}
     };
 
     /** True iff computeMoveFix() remapped the input THIS tick. Read by LivingEntityMixin to decide
@@ -255,6 +268,9 @@ public class RotationManager implements IMinecraft {
     @Getter private boolean moveFixActive;
     /** The spoofed yaw the remap was computed against; only meaningful while moveFixActive. */
     @Getter private float moveFixYaw;
+    /** True while the remap needs a reported octant with no forward component. Read by
+     *  SprintModule.shouldSprint() -- see computeMoveFix's own note on the sprint pin. */
+    @Getter private boolean moveFixNoForward;
 
     /**
      * Called once per tick from the tail of KeyboardInput.tick(), which is the single place where
@@ -266,6 +282,7 @@ public class RotationManager implements IMinecraft {
      */
     public float[] computeMoveFix(float inputRight, float inputForward) {
         moveFixActive = false;
+        moveFixNoForward = false;
         if (rotation == null || mc.player == null || mc.player.isPassenger() || mc.player.isFallFlying()) return null;
 
         // Sprint Grim owns this tick -> it already reports a yaw derived from the real input, exactly,
@@ -282,8 +299,25 @@ public class RotationManager implements IMinecraft {
                 + mc.player.getYRot() - spoofYaw);
         float[] octant = OCTANTS[(Math.round(target / 45.0f) % 8 + 8) % 8];
 
-        // No forward component while sprinting -> Grim would predict forward anyway. Bail.
-        if (octant[1] <= 0.0f && mc.player.isSprinting()) return null;
+        // Grim's loopVectors pins forward to +1 and ignores backward WHILE SPRINTING, so a reported
+        // octant with no forward component is unpredictable-by-construction for a sprinting player.
+        // This used to `return null` here -- which is NOT a no-op, and that is the AutoCrystal
+        // MovementSync stutter: bailing leaves the movement packet carrying the SPOOFED yaw while
+        // local physics runs on the REAL one, i.e. a full (realYaw - spoofYaw) of prediction error
+        // and a hard setback on every such tick. And the bail covers everything past 67.5 deg off the
+        // movement direction -- more than half the circle -- so an aim module whose target swings
+        // around the player alternates "predicted exactly" / "totally mispredicted" tick by tick.
+        // That on/off flip is the stutter, not the +-22.5 deg direction floor documented below.
+        //
+        // The sprint pin is the ONLY thing making these octants unpredictable, so drop the pin
+        // instead of dropping the compensation: stand down from sprinting for as long as the remap
+        // needs a non-forward octant, at which point Grim derives (strafe, forward) honestly from
+        // knownInput and the prediction is exact again. Vanilla itself desprints whenever there is
+        // no forward impulse, so this is not an anomalous state server-side. moveFixNoForward is
+        // read by SprintModule.shouldSprint() so its own force-sprint does not re-assert the flag
+        // right back and turn this into a per-tick START/STOP_SPRINTING toggle.
+        moveFixNoForward = octant[1] <= 0.0f;
+        if (moveFixNoForward && mc.player.isSprinting()) mc.player.setSprinting(false);
 
         moveFixYaw = spoofYaw;
         moveFixActive = true;

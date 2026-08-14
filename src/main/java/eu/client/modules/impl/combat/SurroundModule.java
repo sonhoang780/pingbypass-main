@@ -158,6 +158,11 @@ public class SurroundModule extends Module {
         }
 
         if (autoSwitch.getValue().equalsIgnoreCase("None") && !(mc.player.getMainHandItem().getItem() instanceof BlockItem)) {
+            // Ported from the deleted ItemDisable setting's own notification -- always on now
+            // (hardcoded, matches this module's other now-hardcoded "always on" behaviors) instead
+            // of gated behind a toggle.
+            EUClient.CHAT_MANAGER.tagged("You are currently not holding any blocks.", getName());
+            setToggled(false);
             targetPositions.clear();
             return;
         }
@@ -166,6 +171,8 @@ public class SurroundModule extends Module {
         int previousSlot = mc.player.getInventory().getSelectedSlot();
 
         if (slot == -1) {
+            EUClient.CHAT_MANAGER.tagged("No blocks could be found in your hotbar.", getName());
+            setToggled(false);
             targetPositions.clear();
             return;
         }
@@ -281,7 +288,11 @@ public class SurroundModule extends Module {
                     Direction direction = WorldUtils.getDirection(position, strictDirection.getValue());
                     if (direction == null) return;
 
-                    InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
+                    // Runs on the netty IO thread; an Alt* switch to a slot outside the hotbar can't
+                    // be done safely from here (see InventoryUtils.switchSlot) -- placing with the
+                    // wrong item in hand is worse than skipping this reactive attempt, the tick-
+                    // polled attackThreateningCrystal()/next placement cycle still covers it.
+                    if (!InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot)) return;
 
                     WorldUtils.placeBlock(position, direction, InteractionHand.MAIN_HAND, () -> {
                         mc.player.connection.send(new ServerboundAttackPacket(packet.getId()));
@@ -310,7 +321,7 @@ public class SurroundModule extends Module {
             Direction direction = WorldUtils.getDirection(packet.getPos(), strictDirection.getValue());
             if (direction == null) return;
 
-            InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
+            if (!InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot)) return;
             WorldUtils.placeBlock(packet.getPos(), direction, InteractionHand.MAIN_HAND, rotate.getValue(), crystalDestruction.getValue(), render.getValue());
             blocksPlaced++;
             InventoryUtils.switchBack(autoSwitch.getValue(), slot, previousSlot);

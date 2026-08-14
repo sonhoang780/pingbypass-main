@@ -77,6 +77,23 @@ public class AutoCrystalModule extends Module {
     // See ServerAutoCrystal's identical setting for the full rationale (ported 1:1): MovementSync
     // is this project's ClientRotationEvent-arbitrated rewrite of the old "Normal" (kept, renamed,
     // default unchanged); Normal/Packet below are bản gốc 1.21.4's originals restored verbatim.
+    //
+    // 2026-08-14: "Normal" no longer calls RotationManager.legacyRotate() -- that writes the
+    // fake yaw straight into mc.player's real field for a window spanning the SAME movement
+    // packet that reports your actual WASD direction that tick (see RotationManager's own note on
+    // why it bails outright whenever Sprint Grim is compensating -- two independent yaw fakes
+    // racing for the same field, last write wins). Two real, reported bugs: with Grim on, Grim's
+    // write always lost, so AutoCrystal's target yaw silently never reached the wire at all --
+    // calculatePlacements still rendered a valid target, but the interaction packet went out with
+    // whatever rotation the movement packet actually carried, and the server rejected it (no
+    // place/attack, ever). With Grim off, nothing reconciles the movement packet's real WASD
+    // report against the fake yaw riding along with it -- exactly the kind of rotation/movement
+    // mismatch Grim's whole octant-remap system exists to prevent, just unprotected here, showing
+    // up as stutter/rubberband while moving. "Normal" now relies purely on packetRotate() below
+    // (ServerboundMovePlayerPacket.Rot, no position, never touches mc.player's own field at all --
+    // genuinely independent of whatever the real movement packet reports that tick), same as
+    // "Packet" already did safely. The two modes are functionally identical now; kept as separate
+    // options for config/UI compatibility.
     public ModeSetting rotate = new ModeSetting("Rotate", "Automatically rotates to the crystal whenever attacking or placing.", new CategorySetting.Visibility(miscellaneousCategory), "MovementSync", new String[]{"None", "MovementSync", "Normal", "Packet"});
     public ModeSetting swing = new ModeSetting("Swing", "The hand that will be used for swinging.", new CategorySetting.Visibility(miscellaneousCategory), "Default", new String[]{"Default", "None", "Packet", "Mainhand", "Offhand", "Both"});
     public BooleanSetting yawStep = new BooleanSetting("YawStep", "Performs your rotations over multiple ticks.", new CategorySetting.Visibility(miscellaneousCategory), false);
@@ -285,7 +302,31 @@ public class AutoCrystalModule extends Module {
         // crystal, then stall. Give this map a floor that actually covers a full round trip.
         long placedTtl = Math.max(EUClient.SERVER_MANAGER.getPing() * 2L, 500L)
                 + (long) ((20 - attackSpeed.getValue().floatValue()) * 50L);
-        placedCrystals.entrySet().removeIf(entry -> System.currentTimeMillis() - entry.getValue() > placedTtl);
+        // Don't drop an expired entry while a live EndCrystal is STILL sitting exactly where we
+        // placed one -- that used to permanently strand it. attackCrystals()'s main scan (used
+        // whenever some OTHER placement target is also available this tick, i.e. flag=false)
+        // only recognises a crystal as "ours" via this map; once the entry aged out, an
+        // un-detonated self-placed crystal (target moved away before the attack landed, attack
+        // briefly blocked by something else, whatever delayed it past the round-trip TTL) became
+        // indistinguishable from a stranger's crystal -- skipped by the main scan forever, and
+        // only reachable by the obstruction fallback, which itself only runs when NO alternative
+        // placement exists. Reported: a crystal sitting untouched while the module moved on to
+        // place fresh ones elsewhere, clearable only by attacking it by hand. Keep refreshing the
+        // timestamp instead of removing as long as the crystal is provably still there and alive.
+        placedCrystals.entrySet().removeIf(entry -> {
+            if (System.currentTimeMillis() - entry.getValue() <= placedTtl) return false;
+
+            boolean stillLive = mc.level.getEntities((Entity) null, new AABB(entry.getKey().above()), e -> e instanceof EndCrystal)
+                    .stream().anyMatch(Entity::isAlive);
+            if (stillLive) {
+                // JDK25 ConcurrentHashMap.removeIf tests against a throwaway immutable
+                // entry (AbstractMap$SimpleImmutableEntry) -- setValue() on it throws
+                // UnsupportedOperationException. Write back through the map itself instead.
+                placedCrystals.put(entry.getKey(), System.currentTimeMillis());
+                return false;
+            }
+            return true;
+        });
         countedCrystals.entrySet().removeIf(entry -> System.currentTimeMillis() - entry.getValue() > Math.max(EUClient.SERVER_MANAGER.getPing() * 2L, minTtl));
 
         crystalsPerSecond = crystalCounter.getCount();
@@ -424,9 +465,8 @@ public class AutoCrystalModule extends Module {
         if (!WorldUtils.canSee(crystal) && (raytrace.getValue() || crystal.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > Mth.square(attackWallsRange.getValue().doubleValue())))
             return;
 
-        if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
+        if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
         if (rotate.getValue().equalsIgnoreCase("MovementSync")) attackRotations = calculateRotations(Vec3.atCenterOf(crystal.blockPosition()));
-        else if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(crystal.blockPosition())), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
 
         attack(crystal);
 
@@ -486,18 +526,22 @@ public class AutoCrystalModule extends Module {
         EUClient.RENDER_MANAGER.setRenderPosition(position);
 
         if (mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeRange.getValue().doubleValue())) return;
-        // `position` is the SOLID support block (obsidian/bedrock) the crystal sits on, not the
-        // crystal's own spot -- canSee(position) raycast to a solid block's own center, so it's
-        // hitting that exact block and never reports MISS. Effectively "!canSee" was true
-        // unconditionally for every candidate, so beyond PlaceWallsRange (4.5 blocks by default --
-        // easy to be past that just standing normally near a target) Raytrace's fallback gate
-        // silently rejected every single placement regardless of actual walls. Raycast to
-        // position.above() instead -- the actual air cell the crystal spawns into.
-        if (!WorldUtils.canSee(position.above()) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue())))
+        // `position` is the SOLID support block (obsidian/bedrock) the crystal sits on. Plain
+        // canSee(position) raycasts to that block's own center, so it's hitting that exact block
+        // and never reports MISS -- "!canSee" was true unconditionally for every candidate, so
+        // beyond PlaceWallsRange (4.5 blocks by default -- easy to be past that just standing
+        // normally near a target) Raytrace's fallback gate silently rejected every single
+        // placement regardless of actual walls. A prior fix raycast to position.above() instead
+        // (the air cell the crystal spawns into) -- but that demands line of sight to empty air a
+        // real player never needs: vanilla lets you place by clicking ANY visible face of the
+        // support block, underside included (standing directly under an overhang and placing on
+        // the block above your head works by hand, reported broken here). canSeeBlock(position)
+        // checks the actual thing that matters -- is there a WALL between the eye and this block,
+        // not "is the specific cell above it in view".
+        if (!WorldUtils.canSeeBlock(position) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue())))
             return;
 
         if (rotate.getValue().equalsIgnoreCase("MovementSync")) placeRotations = calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0));
-        else if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0)), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
         if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(position).add(0, 1, 0)));
 
         for (Entity entity : mc.level.getEntities((Entity) null, new AABB(position.above()), entity -> true).stream().filter(entity -> entity instanceof EndCrystal).toList()) {
@@ -637,18 +681,32 @@ public class AutoCrystalModule extends Module {
         EndCrystal overrideCrystal = null;
 
         // obstructions accumulates EVERY blocked candidate scanned, not just whatever's in the
-        // way of the spot we actually ended up placing at -- if a clear position was found
-        // elsewhere (getPosition() != null, meaning we already have our own crystal down and
-        // ready to detonate), a leftover obstruction from some other, unrelated candidate spot
-        // must not hijack the attack away from our own placed crystal. Only treat obstructions
-        // as attack-worthy when they're the reason NO placement could be made at all.
+        // way of the spot we actually ended up placing at. `flag` switches the SCAN SOURCE to
+        // obstructions-only for the case nothing could be placed anywhere; below that, `isKnown`
+        // separately recognizes an obstruction candidate as attack-worthy even while scanning
+        // entitiesForRendering() with getPosition() != null (an alternate spot WAS found).
+        //
+        // Was: only ever attack-worthy when getPosition() == null (nothing placeable anywhere).
+        // A crystal blocking one candidate (someone else's, a stale manually-placed one, whatever)
+        // that ISN'T also in placedCrystals got permanently ignored the instant calculatePlacements
+        // found ANY other valid spot for the target -- reported live: a FakePlayer target standing
+        // still, a manually-placed crystal sitting right next to it (never went through place(),
+        // so never entered placedCrystals), AutoCrystal found a different spot elsewhere and just
+        // left the manual crystal alone forever, attackable only by hand. calculatePlacements
+        // still recorded it in pt.obstructions every single cycle (see its own `exception == null
+        // && !obstructingCrystals.isEmpty()` branch, unconditional on whether optimalPosition was
+        // also found) -- this just never consulted that list unless it was the ONLY thing in `pt`.
+        // Attacking a real, currently-blocking obstruction doesn't cost anything even when a
+        // different spot also worked -- it's a separate action, not a hijack -- so recognize it
+        // here too instead of only in the getPosition()==null fallback.
         PlaceTarget pt = this.placeTarget;
         boolean flag = pt != null && pt.getPosition() == null && pt.obstructions != null && !pt.obstructions.isEmpty();
         for (Entity entity : flag ? pt.obstructions : mc.level.entitiesForRendering()) {
             if (!(entity instanceof EndCrystal crystal)) continue;
             if (!crystal.isAlive()) continue;
             if (inhibit.getValue() && attackedCrystals.containsKey(entity.getId())) continue;
-            if (!flag && !placedCrystals.containsKey(crystal.blockPosition().below())) continue;
+            boolean isKnownObstruction = !flag && pt != null && pt.obstructions != null && pt.obstructions.contains(crystal);
+            if (!flag && !isKnownObstruction && !placedCrystals.containsKey(crystal.blockPosition().below())) continue;
             if (crystal.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > Mth.square(attackRange.getValue().doubleValue())) continue;
             if (!mc.level.getWorldBorder().isWithinBounds(crystal.blockPosition())) continue;
             if (!WorldUtils.canSee(crystal) && (raytrace.getValue() || crystal.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > Mth.square(attackWallsRange.getValue().doubleValue())))
@@ -662,7 +720,6 @@ public class AutoCrystalModule extends Module {
         if (crystal == null) return;
 
         if (rotate.getValue().equalsIgnoreCase("MovementSync")) attackRotations = calculateRotations(Vec3.atCenterOf(crystal.blockPosition()));
-        else if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(crystal.blockPosition())), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
 
         if (!attackTimer.hasTimeElapsed(1000.0f - attackSpeed.getValue().floatValue() * 50.0f) || attackedSequentially) {
             if (attackedSequentially) attackedSequentially = false;
@@ -682,7 +739,7 @@ public class AutoCrystalModule extends Module {
 
         if (bailReason != null) return;
         attackRunnable = () -> {
-            if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
+            if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
 
             attack(crystal);
         };
@@ -709,11 +766,10 @@ public class AutoCrystalModule extends Module {
         if (!mc.level.getWorldBorder().isWithinBounds(position)) return;
         if (mc.level.getBlockState(position).getBlock() != Blocks.OBSIDIAN && mc.level.getBlockState(position).getBlock() != Blocks.BEDROCK) return;
         if (!mc.level.getBlockState(position.offset(0, 1, 0)).isAir() || (placements.getValue().equalsIgnoreCase("Protocol") && !mc.level.getBlockState(position.offset(0, 2, 0)).isAir())) return;
-        if (!WorldUtils.canSee(position.above()) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue()))) return;
+        if (!WorldUtils.canSeeBlock(position) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue()))) return;
         if (mc.level.getEntities((Entity) null, new AABB(position.offset(0, 1, 0)), entity -> true).stream().anyMatch(entity -> entity.isAlive() && !(entity instanceof ExperienceOrb) && !(entity instanceof EndCrystal))) return;
 
         if (rotate.getValue().equalsIgnoreCase("MovementSync")) placeRotations = calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0));
-        else if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0)), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
 
         if (!placeTimer.hasTimeElapsed(1000.0f - placeSpeed.getValue().floatValue() * 50.0f)) return;
         if (!sequential && placedSequentially) {
@@ -724,7 +780,7 @@ public class AutoCrystalModule extends Module {
         placeRunnable = () -> {
             boolean switched = false;
 
-            if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(position).add(0, 1, 0)));
+            if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(position).add(0, 1, 0)));
 
             if (mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
                 if (autoSwitch.getValue().equalsIgnoreCase("Normal") && swapBack.getValue() && savedSlot == -1) savedSlot = previousSlot;
@@ -883,7 +939,7 @@ public class AutoCrystalModule extends Module {
             if (mc.level.getBlockState(position).getBlock() != Blocks.OBSIDIAN && mc.level.getBlockState(position).getBlock() != Blocks.BEDROCK) continue;
             if (!mc.level.getBlockState(position.offset(0, 1, 0)).isAir() || (placements.getValue().equalsIgnoreCase("Protocol") && !mc.level.getBlockState(position.offset(0, 2, 0)).isAir())) continue;
 
-            if (!WorldUtils.canSee(position.above()) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue()))) continue;
+            if (!WorldUtils.canSeeBlock(position) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue()))) continue;
 
             // A placement module (SelfFill/Surround/...) reserved a cell this tick, meaning it's
             // actively trying to place a real block there. A crystal here (2x2x2 hitbox, spans the
@@ -960,21 +1016,27 @@ public class AutoCrystalModule extends Module {
 
     private void attack(EndCrystal crystal) {
         int previousSlot = mc.player.getInventory().getSelectedSlot();
-        boolean switched = false;
+        int switchedSlot = -1;
 
         if (!antiWeakness.getValue().equalsIgnoreCase("None") && mc.player.hasEffect(MobEffects.WEAKNESS)) {
             int slot = InventoryUtils.findBestSword(InventoryUtils.HOTBAR_START, InventoryUtils.HOTBAR_END);
             if (slot != -1) {
                 InventoryUtils.switchSlot(antiWeakness.getValue(), slot, previousSlot);
-                switched = true;
+                switchedSlot = slot;
             }
         }
 
         mc.getConnection().send(new ServerboundAttackPacket(crystal.getId()));
         mc.getConnection().send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
 
-        if (switched) {
-            InventoryUtils.switchBack(antiWeakness.getValue(), 0, previousSlot);
+        // Was switchBack(..., 0, previousSlot) -- a hardcoded 0 instead of the slot we actually
+        // switched TO. switchBack keys SILENT_RESTORE off that argument, so it removed key 0
+        // (never present) and left this switch's own entry in the map forever: the restore went to
+        // the stale client previousSlot instead of the real server slot, AND hasActiveSilentSwitch()
+        // stayed permanently true from the first weakness attack onward, which permanently disabled
+        // KillAura's Normal-mode switch (its guard at KillAuraModule:166).
+        if (switchedSlot != -1) {
+            InventoryUtils.switchBack(antiWeakness.getValue(), switchedSlot, previousSlot);
         }
 
         attackedCrystals.put(crystal.getId(), System.currentTimeMillis());
@@ -1062,7 +1124,9 @@ public class AutoCrystalModule extends Module {
             if (!mc.level.getBlockState(candidate).isAir()) continue;
             if (mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(candidate)) > Mth.square(placeRange.getValue().doubleValue())) continue;
             if (!mc.level.getWorldBorder().isWithinBounds(candidate)) continue;
-            if (!WorldUtils.canSee(candidate) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(candidate)) > Mth.square(placeWallsRange.getValue().doubleValue()))) continue;
+            // Same fix as the main placement path: check line of sight to the support block, not
+            // the air cell above it -- a real player places by clicking the block, not the air.
+            if (!WorldUtils.canSeeBlock(support) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(candidate)) > Mth.square(placeWallsRange.getValue().doubleValue()))) continue;
             if (mc.level.getEntities((Entity) null, new AABB(candidate), entity -> true).stream().anyMatch(entity -> entity.isAlive() && !(entity instanceof ExperienceOrb) && !(entity instanceof EndCrystal))) continue;
 
             AABB crystalBox = new AABB(candidate.getX() - 1, candidate.getY(), candidate.getZ() - 1, candidate.getX() + 2, candidate.getY() + 2, candidate.getZ() + 2);
@@ -1075,8 +1139,7 @@ public class AutoCrystalModule extends Module {
             }
 
             if (rotate.getValue().equalsIgnoreCase("MovementSync")) placeRotations = calculateRotations(Vec3.atCenterOf(candidate));
-            else if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(candidate)), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
-            if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(candidate)));
+            if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(candidate)));
 
             boolean switched = false;
             if (mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
@@ -1110,8 +1173,7 @@ public class AutoCrystalModule extends Module {
             if (!crystal.blockPosition().below().equals(placedPos)) continue;
 
             if (rotate.getValue().equalsIgnoreCase("MovementSync")) attackRotations = calculateRotations(Vec3.atCenterOf(crystal.blockPosition()));
-        else if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(crystal.blockPosition())), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
-            if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
+            if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
 
             attack(crystal);
             return;

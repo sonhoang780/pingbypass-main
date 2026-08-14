@@ -4,8 +4,8 @@ import eu.client.EUClient;
 import lombok.Getter;
 import eu.client.events.SubscribeEvent;
 import eu.client.events.impl.ClientRotationEvent;
+import eu.client.events.impl.PlayerMoveEvent;
 import eu.client.events.impl.PlayerUpdateEvent;
-import eu.client.events.impl.UpdateMovementEvent;
 import eu.client.mixins.accessors.ClientPlayerEntityAccessor;
 import eu.client.modules.Module;
 import eu.client.modules.RegisterModule;
@@ -191,9 +191,21 @@ public class SprintModule extends Module {
         }
     }
 
+    // Was UpdateMovementEvent + mc.player.setDeltaMovement() -- fires AFTER super.tick() has
+    // already called travel()/move() for this tick (see ClientPlayerEntityMixin's tick$AFTER),
+    // so the velocity written there only takes effect on the FOLLOWING tick's move() call, and
+    // that call is still full, un-intercepted vanilla travel() physics (friction/momentum
+    // blending toward the new velocity, not snapping to it). Reported as "0 -> 11.71 -> 20.62
+    // km/h thay vì nhảy thẳng" -- a 1-tick-late, friction-smoothed ramp instead of an instant
+    // snap, while AccelerateModule (same target speed, MovementUtils.DEFAULT_SPEED = 20.69km/h)
+    // jumps straight there in one step. Accelerate/Speed both hook PlayerMoveEvent instead,
+    // which this project's own move() mixin (ClientPlayerEntityMixin#move) posts from INSIDE
+    // travel() and lets cancel+replace the actual vector physics is about to apply THIS tick --
+    // the real "instant" hook. Moved Instant onto the same one.
     @SubscribeEvent
-    public void onUpdateMovement(UpdateMovementEvent event) {
+    public void onPlayerMove(PlayerMoveEvent event) {
         if (mc.player == null) return;
+        if (!mode.getValue().equalsIgnoreCase("Instant")) return;
 
         // Was setting the Instant speed override unconditionally off move-key state alone --
         // shouldSprint()'s hunger/lava gates (SprintA/lava's own GrimAC checks) only ever stopped
@@ -201,47 +213,53 @@ public class SprintModule extends Module {
         // moved at full Instant speed. Same low-hunger threshold shouldSprint() uses (<=6, matches
         // vanilla's own Player.canStartSprinting), plus dedicated Water/Lava toggles since Instant's
         // homing velocity write ignores vanilla's swimming/lava drag entirely unlike normal sprint.
+        // ElytraFly's Control mode drives horizontal velocity itself from inside PlayerTravelEvent,
+        // gated on exactly this condition (mode == Control && isFallFlying, see its onPlayerTravel).
+        // Instant hooks PlayerMoveEvent, which this project posts from inside travel() AFTER that --
+        // so it overwrote ElytraFly's flight velocity with its own ground-speed vector every tick
+        // the two were on together. Stand down for those ticks and let ElytraFly own the flight.
+        ElytraFlyModule elytra = EUClient.MODULE_MANAGER.getModule(ElytraFlyModule.class);
+        if (elytra.isToggled() && elytra.mode.getValue().equalsIgnoreCase("Control") && mc.player.isFallFlying()) return;
+
         boolean instantAllowed = mc.player.getFoodData().getFoodLevel() > 6
                 && (instantLava.getValue() || !mc.player.isInLava())
                 && (instantWater.getValue() || !mc.player.isInWater());
+        if (!instantAllowed) return;
 
-        if (mode.getValue().equalsIgnoreCase("Instant") && instantAllowed) {
-            Vec2 move = cachedMove;
-            Vec3 v = mc.player.getDeltaMovement();
+        Vec2 move = cachedMove;
 
-            if (move.x != 0.0f || move.y != 0.0f) {
-                // move (real vanilla getMoveVector()) is NOT guaranteed unit length here -- vanilla's
-                // own "square movement" input adjustment (KeyboardInput's modifyInputSpeedForSquareMovement,
-                // same one GrimAC's ModernInputTransformer mirrors) deliberately rescales a diagonal
-                // press back up toward sqrt(2) so normal per-axis-clamped movement doesn't get slower
-                // going diagonal. Rotating that straight into a velocity (below) carried the same
-                // sqrt(2) into Instant's OWN speed override -- same instantSpeed setting, but diagonal
-                // came out ~1.41x faster than straight ("cùng Speed nhưng tốc độ khác nhau khi đi
-                // thẳng và đi chéo"). Instant is a flat magnitude override, not a replica of vanilla's
-                // per-axis physics, so normalize the direction first and let instantSpeed alone decide
-                // the magnitude, same in every direction.
-                double moveLength = Math.sqrt(move.x * move.x + move.y * move.y);
-                double normX = move.x / moveLength, normY = move.y / moveLength;
+        if (move.x != 0.0f || move.y != 0.0f) {
+            // move (real vanilla getMoveVector()) is NOT guaranteed unit length here -- vanilla's
+            // own "square movement" input adjustment (KeyboardInput's modifyInputSpeedForSquareMovement,
+            // same one GrimAC's ModernInputTransformer mirrors) deliberately rescales a diagonal
+            // press back up toward sqrt(2) so normal per-axis-clamped movement doesn't get slower
+            // going diagonal. Rotating that straight into a velocity (below) carried the same
+            // sqrt(2) into Instant's OWN speed override -- same instantSpeed setting, but diagonal
+            // came out ~1.41x faster than straight ("cùng Speed nhưng tốc độ khác nhau khi đi
+            // thẳng và đi chéo"). Instant is a flat magnitude override, not a replica of vanilla's
+            // per-axis physics, so normalize the direction first and let instantSpeed alone decide
+            // the magnitude, same in every direction.
+            double moveLength = Math.sqrt(move.x * move.x + move.y * move.y);
+            double normX = move.x / moveLength, normY = move.y / moveLength;
 
-                // Inverse of the strafe/forward <- world-delta rotation (yaw rotates world->input
-                // via [xxa;zza] = [[cos,sin],[-sin,cos]]*[dx;dz], same formula HoleSnap's Strict
-                // mode uses the other direction) -- input->world is the transpose of that rotation.
-                double yawRad = Math.toRadians(cachedYaw);
-                double sin = Math.sin(yawRad), cos = Math.cos(yawRad);
-                double vx = normX * cos - normY * sin;
-                double vz = normX * sin + normY * cos;
-                double speed = instantSpeed.getValue().doubleValue();
+            // Inverse of the strafe/forward <- world-delta rotation (yaw rotates world->input
+            // via [xxa;zza] = [[cos,sin],[-sin,cos]]*[dx;dz], same formula HoleSnap's Strict
+            // mode uses the other direction) -- input->world is the transpose of that rotation.
+            double yawRad = Math.toRadians(cachedYaw);
+            double sin = Math.sin(yawRad), cos = Math.cos(yawRad);
+            double vx = normX * cos - normY * sin;
+            double vz = normX * sin + normY * cos;
+            double speed = instantSpeed.getValue().doubleValue();
 
-                mc.player.setDeltaMovement(vx * speed, v.y, vz * speed);
-            } else {
-                // No movement key held -- this only ever force-set horizontal velocity to full
-                // speed above, never back down, so releasing keys left vanilla's normal ground
-                // friction to decay it over several ticks (0.2 -> 24.29km/h instantly on press,
-                // but a gradual slide back to 0 on release instead of stopping the same way).
-                // Zero it outright, same instant-snap treatment, every tick no key is held.
-                mc.player.setDeltaMovement(0.0, v.y, 0.0);
-            }
+            event.setMovement(new Vec3(vx * speed, event.getMovement().y, vz * speed));
+        } else {
+            // No movement key held -- zero horizontal outright, same instant-snap treatment as
+            // the press case, instead of leaving vanilla's normal ground friction to decay it
+            // over several ticks on release.
+            event.setMovement(new Vec3(0.0, event.getMovement().y, 0.0));
         }
+
+        event.setCancelled(true);
     }
 
     @SubscribeEvent
@@ -272,6 +290,20 @@ public class SprintModule extends Module {
         // Rot packet and skips sendPosition() entirely while riding, so RotationManager's swap never
         // reaches the wire and the reported yaw would not match the physics yaw.
         if (mc.player.isFallFlying() || mc.player.isPassenger()) return;
+
+        // Freecam likewise: it reads mc.options.keyUp/Down/Left/Right/Jump/Shift.isDown() directly
+        // to drive the free-floating camera around, so it can only ever zero the DERIVED state
+        // (mc.player.input.keyPresses/moveVector, see FreecamModule's own doc on that fix) -- it
+        // cannot also zero the raw KeyMapping.isDown() bits without breaking its own camera
+        // movement. grimUpdate() reads those same raw bindings on purpose (class comment point c),
+        // which made it blind to Freecam's suppression entirely: the real hidden player kept
+        // getting the omni-sprint rotation swap + vanilla's own real jumpFromGround() sprint-boost
+        // (both driven by isSprinting()+yaw, independent of moveVector) off the operator's actual
+        // WASD while they thought only the camera was moving. Bail out here, same shape as the
+        // fall-flying/passenger exclusions above -- shouldSprint()'s Grim branch already falls
+        // back to reading mc.player.input.keyPresses (which Freecam zeroes) once isGrimCompensating()
+        // is false, so this alone silences the fake rotation AND the sprint-boost translation.
+        if (EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.visuals.FreecamModule.class).isToggled()) return;
 
         // Read the raw key bindings, NOT mc.player.input.keyPresses -- see class comment point (c).
         // Same convention as KeyboardInput.tick(): +Z is forward, +X is right.
@@ -399,6 +431,15 @@ public class SprintModule extends Module {
         if (mc.player.isFallFlying()) return false;
         if (mc.player.getFoodData().getFoodLevel() <= 6) return false;
 
+        // Was Legit-only (see below) -- Rage/Instant/Grim force-sprinting straight through eating
+        // regardless of NoSlow's own "should items still slow me down" setting meant this force-
+        // sprint fought vanilla's real per-tick isUsingItem-driven speed/state correction the whole
+        // time an item was in use, instead of respecting the same NoSlow toggle every other mode
+        // does. Reported as "ăn đồ ăn bị giật giật" (jitter while eating) -- move it up here so it's
+        // actually unconditional, matching what the comment below already claimed.
+        if (mc.player.isUsingItem() && (!EUClient.MODULE_MANAGER.getModule(NoSlowModule.class).isToggled() || !EUClient.MODULE_MANAGER.getModule(NoSlowModule.class).items.getValue()))
+            return false;
+
         if (mode.getValue().equalsIgnoreCase("Rage") || mode.getValue().equalsIgnoreCase("Instant") || isGrim()) {
             // GrimAC's real SprintE check ("Sprinting while colliding with a wall") flags/sets back
             // ANY tick where isSprinting is still true while horizontally colliding with a wall
@@ -410,6 +451,14 @@ public class SprintModule extends Module {
             // happens to touch a wall isn't blocked (matches SprintE's own startedSprintingThisTick
             // exemption).
             if (mc.player.horizontalCollision && !mc.player.minorHorizontalCollision && mc.player.isSprinting()) return false;
+
+            // RotationManager's octant remap (an aim module owns this tick's rotation and its target
+            // is more than 67.5 deg off the movement direction) has to report an input with no
+            // forward component. Grim pins forward to +1 only WHILE SPRINTING, so standing down is
+            // the thing that makes that octant predictable at all -- see computeMoveFix's own note.
+            // Without this, computeMoveFix's setSprinting(false) and this branch's force-sprint
+            // would fight every tick and spam START/STOP_SPRINTING.
+            if (EUClient.ROTATION_MANAGER.isMoveFixNoForward()) return false;
 
             // KeyboardInput.tick() builds moveVector as new Vec2(strafe, forward).normalized() --
             // keyboard input is always an exact unit vector (or zero), never a partial analog
@@ -429,10 +478,9 @@ public class SprintModule extends Module {
 
             return mc.player.input.keyPresses.forward() || mc.player.input.keyPresses.backward() || mc.player.input.keyPresses.left() || mc.player.input.keyPresses.right();
         } else {
-            // Blindness/fall-flying/lava/ladder/hunger are already checked above, unconditionally
-            // for every mode -- not duplicated here.
+            // Blindness/fall-flying/lava/ladder/hunger/using-item are already checked above,
+            // unconditionally for every mode -- not duplicated here.
             if (!((ClientPlayerEntityAccessor) mc.player).invokeIsWalking()) return false;
-            if (mc.player.isUsingItem() && (!EUClient.MODULE_MANAGER.getModule(NoSlowModule.class).isToggled() || !EUClient.MODULE_MANAGER.getModule(NoSlowModule.class).items.getValue())) return false;
             if (mc.player.horizontalCollision && !mc.player.minorHorizontalCollision) return false;
             return mc.player.input.hasForwardImpulse();
         }
