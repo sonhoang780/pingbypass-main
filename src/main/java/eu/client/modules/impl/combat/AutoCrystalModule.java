@@ -78,22 +78,16 @@ public class AutoCrystalModule extends Module {
     // is this project's ClientRotationEvent-arbitrated rewrite of the old "Normal" (kept, renamed,
     // default unchanged); Normal/Packet below are bản gốc 1.21.4's originals restored verbatim.
     //
-    // 2026-08-14: "Normal" no longer calls RotationManager.legacyRotate() -- that writes the
-    // fake yaw straight into mc.player's real field for a window spanning the SAME movement
-    // packet that reports your actual WASD direction that tick (see RotationManager's own note on
-    // why it bails outright whenever Sprint Grim is compensating -- two independent yaw fakes
-    // racing for the same field, last write wins). Two real, reported bugs: with Grim on, Grim's
-    // write always lost, so AutoCrystal's target yaw silently never reached the wire at all --
-    // calculatePlacements still rendered a valid target, but the interaction packet went out with
-    // whatever rotation the movement packet actually carried, and the server rejected it (no
-    // place/attack, ever). With Grim off, nothing reconciles the movement packet's real WASD
-    // report against the fake yaw riding along with it -- exactly the kind of rotation/movement
-    // mismatch Grim's whole octant-remap system exists to prevent, just unprotected here, showing
-    // up as stutter/rubberband while moving. "Normal" now relies purely on packetRotate() below
-    // (ServerboundMovePlayerPacket.Rot, no position, never touches mc.player's own field at all --
-    // genuinely independent of whatever the real movement packet reports that tick), same as
-    // "Packet" already did safely. The two modes are functionally identical now; kept as separate
-    // options for config/UI compatibility.
+    // 2026-08-14 (supersedes the previous note here): "Normal" is back to calling
+    // RotationManager.legacyRotate() at exactly the call sites bản gốc 1.21.4 called rotate() from,
+    // with the same priorities (attack = getModulePriority(this), place = +1 and module-keyed).
+    // The intermediate "Normal is just Packet" state was a workaround for a problem that lived in
+    // RotationManager, not here: the port had TWO independent yaw swaps racing for mc.player's field
+    // on the same event at the same priority, plus an always-on octant remap of the real WASD input
+    // that bản gốc never had (its own MovementFix is default OFF). Both are gone -- see
+    // RotationManager's "MovementFix: DELETED" note -- so Normal now behaves exactly as it does on
+    // 1.21.4: one yaw swap, only for the UpdateMovementEvent -> Post window that encloses
+    // sendPosition, real input and local physics untouched.
     public ModeSetting rotate = new ModeSetting("Rotate", "Automatically rotates to the crystal whenever attacking or placing.", new CategorySetting.Visibility(miscellaneousCategory), "MovementSync", new String[]{"None", "MovementSync", "Normal", "Packet"});
     public ModeSetting swing = new ModeSetting("Swing", "The hand that will be used for swinging.", new CategorySetting.Visibility(miscellaneousCategory), "Default", new String[]{"Default", "None", "Packet", "Mainhand", "Offhand", "Both"});
     public BooleanSetting yawStep = new BooleanSetting("YawStep", "Performs your rotations over multiple ticks.", new CategorySetting.Visibility(miscellaneousCategory), false);
@@ -465,7 +459,8 @@ public class AutoCrystalModule extends Module {
         if (!WorldUtils.canSee(crystal) && (raytrace.getValue() || crystal.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > Mth.square(attackWallsRange.getValue().doubleValue())))
             return;
 
-        if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
+        if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
+        if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(crystal.blockPosition())), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
         if (rotate.getValue().equalsIgnoreCase("MovementSync")) attackRotations = calculateRotations(Vec3.atCenterOf(crystal.blockPosition()));
 
         attack(crystal);
@@ -542,6 +537,7 @@ public class AutoCrystalModule extends Module {
             return;
 
         if (rotate.getValue().equalsIgnoreCase("MovementSync")) placeRotations = calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0));
+        if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0)), this, EUClient.ROTATION_MANAGER.getLegacyModulePriority(this) + 1); // place outranks attack, same +1 as ban goc 1.21.4
         if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(position).add(0, 1, 0)));
 
         for (Entity entity : mc.level.getEntities((Entity) null, new AABB(position.above()), entity -> true).stream().filter(entity -> entity instanceof EndCrystal).toList()) {
@@ -720,6 +716,7 @@ public class AutoCrystalModule extends Module {
         if (crystal == null) return;
 
         if (rotate.getValue().equalsIgnoreCase("MovementSync")) attackRotations = calculateRotations(Vec3.atCenterOf(crystal.blockPosition()));
+        if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(crystal.blockPosition())), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
 
         if (!attackTimer.hasTimeElapsed(1000.0f - attackSpeed.getValue().floatValue() * 50.0f) || attackedSequentially) {
             if (attackedSequentially) attackedSequentially = false;
@@ -739,7 +736,7 @@ public class AutoCrystalModule extends Module {
 
         if (bailReason != null) return;
         attackRunnable = () -> {
-            if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
+            if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
 
             attack(crystal);
         };
@@ -770,6 +767,7 @@ public class AutoCrystalModule extends Module {
         if (mc.level.getEntities((Entity) null, new AABB(position.offset(0, 1, 0)), entity -> true).stream().anyMatch(entity -> entity.isAlive() && !(entity instanceof ExperienceOrb) && !(entity instanceof EndCrystal))) return;
 
         if (rotate.getValue().equalsIgnoreCase("MovementSync")) placeRotations = calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0));
+        if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0)), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
 
         if (!placeTimer.hasTimeElapsed(1000.0f - placeSpeed.getValue().floatValue() * 50.0f)) return;
         if (!sequential && placedSequentially) {
@@ -780,7 +778,7 @@ public class AutoCrystalModule extends Module {
         placeRunnable = () -> {
             boolean switched = false;
 
-            if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(position).add(0, 1, 0)));
+            if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(position).add(0, 1, 0)));
 
             if (mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
                 if (autoSwitch.getValue().equalsIgnoreCase("Normal") && swapBack.getValue() && savedSlot == -1) savedSlot = previousSlot;
@@ -1139,6 +1137,7 @@ public class AutoCrystalModule extends Module {
             }
 
             if (rotate.getValue().equalsIgnoreCase("MovementSync")) placeRotations = calculateRotations(Vec3.atCenterOf(candidate));
+            if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(candidate)), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
             if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(candidate)));
 
             boolean switched = false;
@@ -1173,6 +1172,7 @@ public class AutoCrystalModule extends Module {
             if (!crystal.blockPosition().below().equals(placedPos)) continue;
 
             if (rotate.getValue().equalsIgnoreCase("MovementSync")) attackRotations = calculateRotations(Vec3.atCenterOf(crystal.blockPosition()));
+            if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(crystal.blockPosition())), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
             if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
 
             attack(crystal);

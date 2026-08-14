@@ -223,23 +223,18 @@ public abstract class LivingEntityMixin extends Entity implements IMinecraft {
         return sprint != null && sprint.isGrimCompensating();
     }
 
-    // Two mutually exclusive owners of the spoofed physics yaw, never both on the same tick:
-    //  - Sprint Grim, which picks the reported yaw itself so its compensation is exact (lossless);
-    //  - RotationManager's MovementFix, for a rotation dictated by an aim module, whose octant remap
-    //    of the input already ran this tick at the tail of KeyboardInput.tick() (LocalPlayer.aiStep
-    //    calls input.tick() before jumpFromGround() and before travel(), same ordering Grim relies
-    //    on). moveFixActive is false whenever that remap declined, so this never swaps the yaw
-    //    without the matching input compensation.
+    // Sprint Grim is now the ONLY owner of a spoofed physics yaw: it picks the reported yaw itself
+    // from the real input, so its compensation is exact (lossless). RotationManager's MovementFix
+    // used to be the second owner here -- deleted 2026-08-14, see RotationManager's own note. An
+    // aim-module rotation (Rotate=Normal) must leave local physics on the REAL yaw, which is what
+    // bản gốc 1.21.4 does.
     @Unique
     private boolean euclient$shouldSpoofRotation() {
-        return euclient$grimCompensating()
-                || (EUClient.ROTATION_MANAGER != null && EUClient.ROTATION_MANAGER.isMoveFixActive());
+        return euclient$grimCompensating();
     }
 
     @Unique
     private float euclient$spoofYaw() {
-        return euclient$grimCompensating()
-                ? EUClient.MODULE_MANAGER.getModule(SprintModule.class).getGrimYaw()
-                : EUClient.ROTATION_MANAGER.getMoveFixYaw();
+        return EUClient.MODULE_MANAGER.getModule(SprintModule.class).getGrimYaw();
     }
 }

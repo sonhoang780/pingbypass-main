@@ -55,25 +55,10 @@ public class KeyboardInputMixin extends ClientInput {
         //
         // jump/shift/sprint are carried through untouched -- Grim reads knownInput.jump()/shift()
         // for its own jump and sneak predictions, and those are genuinely unchanged by this mode.
-        // MovementFix, always on, for a rotation owned by anyone OTHER than Sprint Grim (AutoCrystal /
-        // SpeedMine / KillAura at Rotate=Normal). Must run every tick even when it declines, because
-        // computeMoveFix clears RotationManager's moveFixActive flag that LivingEntityMixin's physics
-        // yaw swap reads -- returning early here would leave it stale. It returns null (complete
-        // no-op, real WASD untouched) on a Sprint Grim tick, on a tick with no rotation at all, and on
-        // the sprinting-into-a-non-forward-octant case; see its doc for all three.
-        //
-        // Both fields are written, exactly like the Grim block below: moveVector is what vanilla
-        // physics moves by (at the spoofed yaw, courtesy of LivingEntityMixin) and keyPresses is
-        // verbatim what LocalPlayer.tick() puts in ServerboundPlayerInputPacket for GrimAC to predict
-        // from. Writing only one of the two was the previous implementation's central bug.
-        float[] fix = EUClient.ROTATION_MANAGER.computeMoveFix(-this.moveVector.x, this.moveVector.y);
-        if (fix != null) {
-            float right = fix[0], forward = fix[1];
-            this.keyPresses = new Input(forward > 0.0f, forward < 0.0f, right < 0.0f, right > 0.0f,
-                    this.keyPresses.jump(), this.keyPresses.shift(), this.keyPresses.sprint());
-            this.moveVector = new Vec2(-right, forward); // moveVector.x is the LEFT impulse
-        }
-
+        // 2026-08-14: the always-on MovementFix octant remap that used to sit here is gone -- see
+        // RotationManager's "MovementFix: DELETED" note. bản gốc 1.21.4 never rewrote the real input
+        // for an aim-module rotation (its own MovementFix is default OFF), and the remap was the
+        // rubberband/stutter source under Rotate=Normal. Sprint Grim's own block below is unchanged.
         SprintModule sprint = EUClient.MODULE_MANAGER == null ? null : EUClient.MODULE_MANAGER.getModule(SprintModule.class);
         if (sprint != null && sprint.isGrimCompensating()) {
             int strafe = sprint.getGrimStrafe();

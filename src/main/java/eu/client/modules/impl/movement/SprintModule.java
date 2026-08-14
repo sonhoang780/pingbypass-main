@@ -452,14 +452,6 @@ public class SprintModule extends Module {
             // exemption).
             if (mc.player.horizontalCollision && !mc.player.minorHorizontalCollision && mc.player.isSprinting()) return false;
 
-            // RotationManager's octant remap (an aim module owns this tick's rotation and its target
-            // is more than 67.5 deg off the movement direction) has to report an input with no
-            // forward component. Grim pins forward to +1 only WHILE SPRINTING, so standing down is
-            // the thing that makes that octant predictable at all -- see computeMoveFix's own note.
-            // Without this, computeMoveFix's setSprinting(false) and this branch's force-sprint
-            // would fight every tick and spam START/STOP_SPRINTING.
-            if (EUClient.ROTATION_MANAGER.isMoveFixNoForward()) return false;
-
             // KeyboardInput.tick() builds moveVector as new Vec2(strafe, forward).normalized() --
             // keyboard input is always an exact unit vector (or zero), never a partial analog
             // value, so pure diagonal movement (e.g. W+D) normalizes to (~0.707, ~0.707) on BOTH
