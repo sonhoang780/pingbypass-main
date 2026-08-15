@@ -46,14 +46,18 @@ public class BreakHighlightModule extends Module {
         // re-invoking this listener on a stale/repurposed ID). Skip instead of blind-casting.
         if (!(mc.level.getEntity(event.getActorID()) instanceof Player actor)) return;
 
-        Mine mine = new Mine(event.getActorID(), WorldUtils.getBreakTime(actor, mc.level.getBlockState(event.getPosition())), System.currentTimeMillis());
-        // Always overwrite (not "only if this actor's tracked position differs") -- a fresh
-        // PlayerMineEvent at this exact position always means "this mine attempt just
-        // (re)started" (e.g. the same player re-sending a mining-start packet at the SAME block
-        // to restart/reset the break timer), so the highlight's start time/breakTime should
-        // always refresh to match, whether it's a brand new position or a restart of one already
-        // tracked.
-        mineMap.put(event.getPosition(), mine);
+        // 2026-08-15 REVERT (reported: "làm hỏng breakhighlight"). Was unconditional put() on
+        // every PlayerMineEvent -- PlayerMineEvent fires repeatedly while a mine is ONGOING, not
+        // just once when it starts, so this was resetting mine.time (and the Easing animation
+        // driven by it) practically every tick a player kept mining the same block, never letting
+        // the highlight actually progress/complete. Only (re)create the entry when it's genuinely
+        // new: no tracked mine at this position yet, or a DIFFERENT actor just started mining a
+        // block someone else was already mining (a real restart, not just the same ongoing one).
+        Mine existing = mineMap.get(event.getPosition());
+        if (existing == null || existing.actorId != event.getActorID()) {
+            Mine mine = new Mine(event.getActorID(), WorldUtils.getBreakTime(actor, mc.level.getBlockState(event.getPosition())), System.currentTimeMillis());
+            mineMap.put(event.getPosition(), mine);
+        }
     }
 
     @SubscribeEvent
