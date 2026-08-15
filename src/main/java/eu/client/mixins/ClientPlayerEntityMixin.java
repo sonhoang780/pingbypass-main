@@ -39,31 +39,6 @@ public abstract class ClientPlayerEntityMixin extends AbstractClientPlayer {
 
     @Shadow @Final public ClientPacketListener connection;
 
-    @Shadow private float xRotLast;
-
-    // Ported verbatim from NamiDevelopment/nami-public's MixinLocalPlayer
-    // (sendMovementPackets1/2) -- see RotationManager.silentSyncRequired's own doc for why.
-    private float originalSilentXRot;
-
-    @Inject(method = "sendPosition", at = @At("HEAD"))
-    private void silentSync$pre(CallbackInfo ci) {
-        if (!EUClient.ROTATION_MANAGER.isSilentSyncRequired()) return;
-
-        this.originalSilentXRot = this.getXRot();
-        this.xRotLast -= 4;
-        float f = (float) ((Math.random() * 2.0 - 1.0) * 0.001f);
-        float f2 = net.minecraft.util.Mth.clamp(this.originalSilentXRot + f, -90.0F, 90.0F);
-        this.setXRot(f2);
-    }
-
-    @Inject(method = "sendPosition", at = @At("RETURN"))
-    private void silentSync$post(CallbackInfo ci) {
-        if (!EUClient.ROTATION_MANAGER.isSilentSyncRequired()) return;
-
-        this.setXRot(this.originalSilentXRot);
-        EUClient.ROTATION_MANAGER.setSilentSyncRequired(false);
-    }
-
     @Inject(method = "tick", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/player/AbstractClientPlayer;tick()V", shift = At.Shift.BEFORE))
     private void tick$BEFORE(CallbackInfo info) {
         EUClient.EVENT_HANDLER.post(new PlayerUpdateEvent());
