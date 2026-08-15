@@ -8,7 +8,6 @@ import eu.client.modules.impl.movement.SpeedModule;
 import eu.client.modules.impl.movement.VelocityModule;
 import eu.client.modules.impl.player.ReachModule;
 import eu.client.utils.IMinecraft;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.MoverType;
@@ -42,14 +41,20 @@ public abstract class PlayerEntityMixin extends LivingEntity implements IMinecra
     // (setDeltaMovement(...multiply(0.6, 1.0, 0.6)) + setSprinting(false)), a GrimAC quirk this
     // toggle skips for the local player only. Two @Redirects instead of cancelling the whole
     // method, since the target-push logic above those two calls must still run unconditionally.
-    @Redirect(method = "causeExtraKnockback", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/Entity;setDeltaMovement(Lnet/minecraft/world/phys/Vec3;)V"))
-    private void grimAttackVelocity$setDeltaMovement(Entity instance, Vec3 deltaMovement) {
+    // 2026-08-15 (crash fix, verified via javap on the real compiled class): both invokevirtual
+    // instructions inside causeExtraKnockback() omit an explicit owner in the constant pool --
+    // javac compiles unqualified this.method() calls with the owner set to the ENCLOSING class
+    // (Player) itself, not wherever the method happens to be declared in the hierarchy (Entity/
+    // LivingEntity, tried first -- both wrong, crashed the whole mixin transform with "0 targets
+    // scanned" since Mixin found no invoke matching that owner+name+descriptor at all).
+    @Redirect(method = "causeExtraKnockback", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/player/Player;setDeltaMovement(Lnet/minecraft/world/phys/Vec3;)V"))
+    private void grimAttackVelocity$setDeltaMovement(Player instance, Vec3 deltaMovement) {
         if ((Object) this == mc.player && EUClient.MODULE_MANAGER.getModule(PatchModule.class).grimAttackVelocity.getValue()) return;
         instance.setDeltaMovement(deltaMovement);
     }
 
-    @Redirect(method = "causeExtraKnockback", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/Entity;setSprinting(Z)V"))
-    private void grimAttackVelocity$setSprinting(Entity instance, boolean sprinting) {
+    @Redirect(method = "causeExtraKnockback", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/player/Player;setSprinting(Z)V"))
+    private void grimAttackVelocity$setSprinting(Player instance, boolean sprinting) {
         if ((Object) this == mc.player && EUClient.MODULE_MANAGER.getModule(PatchModule.class).grimAttackVelocity.getValue()) return;
         instance.setSprinting(sprinting);
     }
