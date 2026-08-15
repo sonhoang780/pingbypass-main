@@ -1,6 +1,7 @@
 package eu.client.managers;
 
 import lombok.Getter;
+import lombok.Setter;
 import eu.client.EUClient;
 import eu.client.events.SubscribeEvent;
 import eu.client.events.impl.*;
@@ -374,32 +375,29 @@ public class RotationManager implements IMinecraft {
         silentRotate(rotations[0], rotations[1]);
     }
 
-    // "Silent" rotate mode, rewritten 2026-08-15 against NamiDevelopment/nami-public's own
-    // Rotations -> Silent (RotationRequestHandler.performSilent() / RotationTickHandler's dead
-    // copy of the same, both in nami-api's core.rotation package) -- confirmed by the user to run
-    // Surround + AutoCrystal + AutoTotem together on a live GrimAC server without ever getting
-    // kicked, the exact combo this project's own Rotate=Normal + Sprint=Grim flag report was
-    // chasing a workaround for. Nami's "Silent" does NOT send a bare Rot packet: it sends
-    // ServerboundMovePlayerPacket.PosRot with the player's REAL current position and the faked
-    // yaw/pitch -- byte-for-byte the same packet shape packetRotate() already sends here. The
-    // previous version of this method sent Rot-only (no position) on a theory that pre-1.21.2
-    // vanilla's Rot packet was somehow the "real" silent-rotation trick and would only land clean
-    // over a ViaFabricPlus 1.20.x downgrade -- Nami's actual working reference contradicts that
-    // outright (same PosRot on every protocol, no separate downgrade-only path), so the theory is
-    // dropped rather than kept. What actually makes Nami's combo survive GrimAC isn't the packet
-    // shape at all -- it's that every interaction (see nami-api's InteractionUtils.placeBlock/
-    // interactBlockAt/breakBlock, all called from TrapComponent for Surround and
-    // AutoCrystalFeature) submits its OWN one-shot rotation request synchronously, immediately
-    // before its own action packet, every single time -- never through a shared per-tick
-    // arbitration queue where a higher-priority module (their Sprint equivalent) could win the
-    // tick and leave the action packet's rotation stale. That ordering guarantee has to come from
-    // each caller (AutoCrystal/Surround/SelfTrap already call this right before their own
-    // place/attack packet, same shape) -- this method only owns the wire format now.
+    // Read by ClientPlayerEntityMixin's sendPosition HEAD/RETURN hooks -- ported verbatim from
+    // Nami's RotationStateHandler.silentSyncRequired / MixinLocalPlayer.sendMovementPackets1/2.
+    // Set true the instant silentRotate() fires its own immediate packet (below); the VERY NEXT
+    // sendPosition() call (same tick -- LocalPlayer.tick() calls it unconditionally every tick)
+    // sees this flag, nudges xRotLast/XRot so vanilla's own per-tick packet doesn't independently
+    // report a contradicting REAL camera rotation in the same tick as the fake one just sent, then
+    // clears it. Nami's own comment on this: "Do not ask me exactly why is it so weird, it just
+    // works" -- ported as-is rather than reinterpreted, given this project's last two attempts to
+    // improve on the exact wire mechanics here both regressed.
+    @Getter @Setter private boolean silentSyncRequired = false;
+
+    // "Silent" rotate mode. Sends ServerboundMovePlayerPacket.PosRot immediately (byte-for-byte
+    // Nami's own RotationRequestHandler.performSilent()) and arms silentSyncRequired so the
+    // sendPosition hook (see that flag's own doc) can keep vanilla's OWN per-tick packet from
+    // contradicting it. The PosRot shape alone, WITHOUT the sendPosition hook, was tried and
+    // reverted twice this session (see git history) -- it's the hook that actually prevents the
+    // flag/stutter-while-moving report, not the packet shape by itself.
     public void silentRotate(float yawIn, float pitchIn) {
         float[] jittered = applyJitter(yawIn, pitchIn);
         final float yaw = jittered[0], pitch = jittered[1];
         if (serverYaw == yaw && serverPitch == pitch) return;
         lastPacketRotateTime = System.currentTimeMillis();
+        silentSyncRequired = true;
         eu.client.pingbypass.server.ProxyServerTickListener.allowSend(() ->
                 mc.getConnection().send(new ServerboundMovePlayerPacket.PosRot(
                         EUClient.POSITION_MANAGER.getServerX(), EUClient.POSITION_MANAGER.getServerY(),
