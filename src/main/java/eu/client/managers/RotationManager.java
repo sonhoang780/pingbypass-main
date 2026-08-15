@@ -345,15 +345,9 @@ public class RotationManager implements IMinecraft {
     }
 
     public void packetRotate(float yawIn, float pitchIn) {
-        // Dedup on the TRUE requested target, before jitter -- jitter randomizes the value every
-        // single call, so checking dedup against the already-jittered result never matched
-        // (serverYaw/Pitch never equals a value that's different every time by construction),
-        // silently defeating this dedup entirely and turning every AutoCrystal/SpeedMine call
-        // into a guaranteed real packet send. Reported as a factor in a "kicked after 2 totem
-        // pops" combo test.
-        if (serverYaw == yawIn && serverPitch == pitchIn) return;
         float[] jittered = applyJitter(yawIn, pitchIn);
         final float yaw = jittered[0], pitch = jittered[1];
+        if (serverYaw == yaw && serverPitch == pitch) return;
         lastPacketRotateTime = System.currentTimeMillis();
         // Same call on both sides -- mc.getConnection() on the proxy IS the real server
         // connection (see ProxyServer.setServerConnection callers), so this needs no
@@ -380,30 +374,36 @@ public class RotationManager implements IMinecraft {
         silentRotate(rotations[0], rotations[1]);
     }
 
-    // "Silent" rotate mode. 2026-08-15: briefly rewritten to send PosRot (matching
-    // NamiDevelopment/nami-public's own Silent, which sends ServerboundMovePlayerPacket.PosRot,
-    // not Rot-only) -- REVERTED the same day after live testing on THIS project surfaced exactly
-    // the regression its own prior comment already warned about: moving with Rotate=Silent
-    // flagged/stuttered regardless of Sprint state, Nami has no such issue. Root cause is the
-    // SAME one AutoCrystalModule's own onDestroyBlock note already documents for its duplicate
-    // packetRotate call -- on a native (non-downgraded) 1.21.x connection, a PosRot sent OUTSIDE
-    // vanilla's own per-tick sendPosition() cadence is an extra position-carrying packet the
-    // server's ServerboundClientTickEndPacket accounting doesn't expect, and AutoCrystal calls
-    // this on every place/attack (i.e. constantly while active) -- each one stacks another extra
-    // packet on top of that tick's real movement packet. Nami's own combo working doesn't
-    // contradict this: their SprintFeature never touches rotation at all (confirmed by grep) and
-    // their own testing/server may simply not trip the same tick-accounting check GrimAC applies
-    // here -- copying their packet SHAPE without that context reintroduced a bug this project had
-    // already found and fixed. Rot-only (no position field at all) is the part of the old design
-    // that actually avoided it; kept.
+    // "Silent" rotate mode, rewritten 2026-08-15 against NamiDevelopment/nami-public's own
+    // Rotations -> Silent (RotationRequestHandler.performSilent() / RotationTickHandler's dead
+    // copy of the same, both in nami-api's core.rotation package) -- confirmed by the user to run
+    // Surround + AutoCrystal + AutoTotem together on a live GrimAC server without ever getting
+    // kicked, the exact combo this project's own Rotate=Normal + Sprint=Grim flag report was
+    // chasing a workaround for. Nami's "Silent" does NOT send a bare Rot packet: it sends
+    // ServerboundMovePlayerPacket.PosRot with the player's REAL current position and the faked
+    // yaw/pitch -- byte-for-byte the same packet shape packetRotate() already sends here. The
+    // previous version of this method sent Rot-only (no position) on a theory that pre-1.21.2
+    // vanilla's Rot packet was somehow the "real" silent-rotation trick and would only land clean
+    // over a ViaFabricPlus 1.20.x downgrade -- Nami's actual working reference contradicts that
+    // outright (same PosRot on every protocol, no separate downgrade-only path), so the theory is
+    // dropped rather than kept. What actually makes Nami's combo survive GrimAC isn't the packet
+    // shape at all -- it's that every interaction (see nami-api's InteractionUtils.placeBlock/
+    // interactBlockAt/breakBlock, all called from TrapComponent for Surround and
+    // AutoCrystalFeature) submits its OWN one-shot rotation request synchronously, immediately
+    // before its own action packet, every single time -- never through a shared per-tick
+    // arbitration queue where a higher-priority module (their Sprint equivalent) could win the
+    // tick and leave the action packet's rotation stale. That ordering guarantee has to come from
+    // each caller (AutoCrystal/Surround/SelfTrap already call this right before their own
+    // place/attack packet, same shape) -- this method only owns the wire format now.
     public void silentRotate(float yawIn, float pitchIn) {
-        // See packetRotate's own note -- dedup on the true target, before jitter.
-        if (serverYaw == yawIn && serverPitch == pitchIn) return;
         float[] jittered = applyJitter(yawIn, pitchIn);
         final float yaw = jittered[0], pitch = jittered[1];
+        if (serverYaw == yaw && serverPitch == pitch) return;
         lastPacketRotateTime = System.currentTimeMillis();
         eu.client.pingbypass.server.ProxyServerTickListener.allowSend(() ->
-                mc.getConnection().send(new ServerboundMovePlayerPacket.Rot(yaw, pitch,
+                mc.getConnection().send(new ServerboundMovePlayerPacket.PosRot(
+                        EUClient.POSITION_MANAGER.getServerX(), EUClient.POSITION_MANAGER.getServerY(),
+                        EUClient.POSITION_MANAGER.getServerZ(), yaw, pitch,
                         EUClient.POSITION_MANAGER.isServerOnGround(), mc.player.horizontalCollision)));
     }
 
