@@ -64,10 +64,18 @@ public abstract class LivingEntityRendererMixin<T extends LivingEntity, S extend
         ((eu.client.utils.mixins.ISelfState) state).euclient$setSelf(entity == mc.player);
 
         if (entity == mc.player && EUClient.ROTATION_MANAGER.inRenderTime()) {
-            float[] renderRotations = EUClient.ROTATION_MANAGER.getRenderRotations();
-            state.bodyRot = renderRotations[0];
-            state.yRot = net.minecraft.util.Mth.wrapDegrees(renderRotations[0] - state.bodyRot);
-            state.xRot = renderRotations[1];
+            // bản gốc 1.21.4 (Desktop copy) calls getRenderRotations() THREE separate times here,
+            // not once -- and that method is stateful (every call steps prevRenderYaw/prevRenderPitch
+            // forward by another lerp increment before returning, see RotationManager's own code).
+            // The port had "cleaned up" this into a single call + local var, which is more correct
+            // by normal engineering standards but changes the ACTUAL observed speed: bản gốc's three
+            // calls per frame advance the interpolation three times per frame, i.e. visibly ~3x
+            // faster than the literal Easing.toDelta(lastRenderTime, 1000) constant alone suggests.
+            // Restored verbatim -- three separate calls, matching bản gốc's real behavior exactly,
+            // not the "intended" single-call behavior this port assumed was equivalent.
+            state.bodyRot = EUClient.ROTATION_MANAGER.getRenderRotations()[0];
+            state.yRot = net.minecraft.util.Mth.wrapDegrees(EUClient.ROTATION_MANAGER.getRenderRotations()[0] - state.bodyRot);
+            state.xRot = EUClient.ROTATION_MANAGER.getRenderRotations()[1];
         }
     }
 }

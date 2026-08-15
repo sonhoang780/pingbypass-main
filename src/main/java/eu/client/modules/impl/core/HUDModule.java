@@ -61,6 +61,7 @@ public class HUDModule extends Module {
     public CategorySetting moduleListCategory = new CategorySetting("ModuleList", "The settings for the client's list of enabled modules.");
     public BooleanSetting moduleList = new BooleanSetting("ModuleList", "Enabled", "Renders every enabled module in an organized list.", new CategorySetting.Visibility(moduleListCategory), true);
     public BooleanSetting metaData = new BooleanSetting("MetaData", "Whether or not to show module metadata in the module list.", new CategorySetting.Visibility(moduleListCategory), true);
+    public BooleanSetting bindOnly = new BooleanSetting("BindOnly", "Only lists modules that have a keybind set.", new CategorySetting.Visibility(moduleListCategory), false);
     public ModeSetting moduleColorMode = new ModeSetting("ModuleColor", "Color", "The color mode for the modules on the list.", new CategorySetting.Visibility(moduleListCategory), "Default", new String[]{"Default", "Rainbow", "Random"});
     public ModeSetting moduleListSorting = new ModeSetting("ModuleListSorting", "Sorting", "The sorting for the modules on the list.", new CategorySetting.Visibility(moduleListCategory), "Width", new String[]{"Width", "Alphabetical"});
 
@@ -134,13 +135,13 @@ public class HUDModule extends Module {
     public PositionSetting coordinatesPosition = new PositionSetting("CoordinatesPosition", "Drag offset for the coordinates HUD element.");
 
     {
-        HudElementRegistry.register("Watermark", watermark, watermarkPosition);
-        HudElementRegistry.register("Welcomer", welcomer, welcomerPosition);
-        HudElementRegistry.register("ModuleList", moduleList, moduleListPosition);
-        HudElementRegistry.register("PlayerRadar", playerRadar, playerRadarPosition);
-        HudElementRegistry.register("Items", itemsElement, itemsPosition);
-        HudElementRegistry.register("Information", informationElement, informationPosition);
-        HudElementRegistry.register("Coordinates", coordinates, coordinatesPosition);
+        HudElementRegistry.register("Watermark", watermark, watermarkPosition, watermarkCategory);
+        HudElementRegistry.register("Welcomer", welcomer, welcomerPosition, welcomerCategory);
+        HudElementRegistry.register("ModuleList", moduleList, moduleListPosition, moduleListCategory);
+        HudElementRegistry.register("PlayerRadar", playerRadar, playerRadarPosition, playerRadarCategory);
+        HudElementRegistry.register("Items", itemsElement, itemsPosition, itemsCategory);
+        HudElementRegistry.register("Information", informationElement, informationPosition, informationCategory);
+        HudElementRegistry.register("Coordinates", coordinates, coordinatesPosition, positionCategory);
     }
 
     private final Animation potionsAnimation = new Animation(300, Easing.Method.EASE_OUT_CUBIC);
@@ -163,6 +164,7 @@ public class HUDModule extends Module {
             List<Module> modules = EUClient.MODULE_MANAGER.getModules().stream()
                     .filter(module -> module.isToggled() || module.getAnimationOffset().get(0) > 0)
                     .filter(module -> module.drawn.getValue())
+                    .filter(module -> !bindOnly.getValue() || module.getBind() != 0)
                     .sorted(moduleListSorting.getValue().equalsIgnoreCase("Width") ? widthComparator : alphabeticalComparator)
                     .toList();
 

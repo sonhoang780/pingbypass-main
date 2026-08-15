@@ -21,7 +21,7 @@ import org.lwjgl.glfw.GLFW;
 
 //@RegisterModule(name = "ChorusControl", description = "Allows you to control the position that you will be teleported to when chorusing.", category = Module.Category.PLAYER)
 public class ChorusControlModule extends Module {
-    public BindSetting confirm = new BindSetting("Confirm", "The key that will be used to confirm the teleportation.", GLFW.GLFW_KEY_LEFT_SHIFT);
+    public BindSetting confirm = new BindSetting("Confirm", "The key that will be used to confirm the teleportation.", GLFW.GLFW_KEY_LEFT_SHIFT).disableHoldModes();
 
     public ModeSetting mode = new ModeSetting("Mode", "The rendering that will be applied to the target block.", "Both", new String[]{"None", "Fill", "Outline", "Both"});
     public ColorSetting fillColor = new ColorSetting("FillColor", "The color that will be used for the fill rendering.", new ModeSetting.Visibility(mode, "Fill", "Both"), ColorUtils.getDefaultFillColor());

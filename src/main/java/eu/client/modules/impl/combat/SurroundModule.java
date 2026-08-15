@@ -193,6 +193,16 @@ public class SurroundModule extends Module {
 
         Set<BlockPos> helpBlockedPositions = advoidHelp.getValue() ? computeHelpBlocked() : Set.of();
 
+        // A surround cell sitting on a hardness-0 block (flowers/mushroom/tall grass/dead bush/
+        // saplings) is otherwise permanently skipped by isPlaceable's canBeReplaced() check --
+        // vanilla can clear these in one hit regardless of tool, so break instead of giving up on
+        // the cell. Fire-and-forget: the block clears server-side within this tick, isPlaceable
+        // picks it up naturally next cycle (this module already runs every tick).
+        targetPositions.stream()
+                .filter(position -> mc.player.distanceToSqr(Vec3.atCenterOf(position)) <= Mth.square(range.getValue().doubleValue()))
+                .filter(position -> !WorldUtils.isPlaceable(position) && WorldUtils.isInstantBreakable(position))
+                .forEach(position -> WorldUtils.instantBreak(position, Direction.UP));
+
         HitboxDesyncModule module = EUClient.MODULE_MANAGER.getModule(HitboxDesyncModule.class);
         List<BlockPos> positions = targetPositions.stream().filter(position -> mc.player.distanceToSqr(Vec3.atCenterOf(position)) <= Mth.square(range.getValue().doubleValue()))
                 .filter(position -> WorldUtils.isPlaceable(position, module.isToggled() && !module.close.getValue()))

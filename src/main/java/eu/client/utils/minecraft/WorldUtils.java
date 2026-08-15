@@ -89,7 +89,30 @@ public class WorldUtils implements IMinecraft {
         // own UpdateMovementEvent.Post placement).
         EUClient.WORLD_MANAGER.reservePlacement(position);
 
+        // Snapshotted before the rotate, restored after the place, iff RotationsModule.SnapBack is
+        // on -- verbatim from bản gốc 1.21.4's own placeBlock. The port had dropped both this and
+        // the setting itself (see RotationsModule's restore note); packetRotate has no restore of
+        // its own, so without this the server keeps believing the last faked look indefinitely.
+        float prevYaw = EUClient.ROTATION_MANAGER.getServerYaw();
+        float prevPitch = EUClient.ROTATION_MANAGER.getServerPitch();
+
+        // 2026-08-15 FIX (reported: Surround/SelfTrap with Rotate off can't place at all on a
+        // native 1.21.x connection, works fine via 1.20.x). Mojang's 1.21.2 networking rewrite
+        // added server-side interaction-consistency validation: ServerboundUseItemOnPacket is
+        // checked against the player's last-KNOWN rotation (from the most recent movement packet
+        // that carried one), and a clicked face too far outside that look gets rejected outright
+        // -- a real vanilla server behavior, not a specific anticheat's. Pre-1.21.2 protocols
+        // never had this check, so ViaFabricPlus's 1.20.x translation never triggers it (the real
+        // server it talks to is native 1.21.x, but nothing in the OLD packet shape asks for the
+        // validation vanilla now gates on). rotate=false used to mean "send no rotation update at
+        // all", which is exactly what a native connection now rejects: the server's last-known
+        // rotation is whatever the camera happened to be facing tick ago, essentially never
+        // pointed at `position`. Silent packet-only rotation (see RotationManager.silentRotate's
+        // own doc) satisfies that server-side check the same way Normal/Packet rotate does,
+        // without moving the camera or touching movement -- exactly what "Rotate off" means to
+        // the user (no VISIBLE rotate), not "tell the server nothing".
         if (rotate) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(vec3d.x, vec3d.y, vec3d.z));
+        else EUClient.ROTATION_MANAGER.silentRotate(RotationUtils.getRotations(vec3d.x, vec3d.y, vec3d.z));
         if (crystalDestruction) {
             Direction finalDirection = direction;
             // Retry the instant the server confirms the blocking crystal is actually dead
@@ -114,6 +137,9 @@ public class WorldUtils implements IMinecraft {
         BlockHitResult blockHitResult = new BlockHitResult(vec3d, direction.getOpposite(), offsetPosition, false);
         NetworkUtils.sendSequencedPacket(sequence -> new ServerboundUseItemOnPacket(hand, blockHitResult, sequence));
         mc.getConnection().send(new ServerboundSwingPacket(hand));
+
+        if (rotate && EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.core.RotationsModule.class).snapBack.getValue())
+            EUClient.ROTATION_MANAGER.packetRotate(prevYaw, prevPitch);
 
         EUClient.WORLD_MANAGER.getPlaceTimer().reset();
 
@@ -146,14 +172,36 @@ public class WorldUtils implements IMinecraft {
         return isPlaceable(position, false);
     }
 
+    // An arrow stuck in/near the target cell has no placement-blocking collision in vanilla --
+    // right-clicking a block with an arrow sticking out of it places fine (reported live: "vanilla
+    // làm được thì client làm được"). AbstractArrow covers both Arrow and SpectralArrow.
     public static boolean isPlaceable(BlockPos position, boolean excludeSelf) {
         if (!mc.level.getBlockState(position).canBeReplaced()) return false;
-        return mc.level.getEntities((Entity) null, new AABB(position), entity -> true).stream().noneMatch(entity -> !(entity instanceof EndCrystal) && !(entity instanceof ExperienceOrb) && !(entity instanceof ItemEntity) && !(entity.equals(mc.player) && excludeSelf));
+        return mc.level.getEntities((Entity) null, new AABB(position), entity -> true).stream().noneMatch(entity -> !(entity instanceof EndCrystal) && !(entity instanceof ExperienceOrb) && !(entity instanceof ItemEntity) && !(entity instanceof net.minecraft.world.entity.projectile.arrow.AbstractArrow) && !(entity.equals(mc.player) && excludeSelf));
     }
 
     public static boolean isCrystalPlaceable(BlockPos position) {
         if (!mc.level.getBlockState(position).canBeReplaced()) return false;
-        return mc.level.getEntities((Entity) null, new AABB(position), entity -> true).stream().noneMatch(entity -> !(entity instanceof EndCrystal) && !(entity instanceof ExperienceOrb));
+        return mc.level.getEntities((Entity) null, new AABB(position), entity -> true).stream().noneMatch(entity -> !(entity instanceof EndCrystal) && !(entity instanceof ExperienceOrb) && !(entity instanceof net.minecraft.world.entity.projectile.arrow.AbstractArrow));
+    }
+
+    // Hardness-0 blocks (flowers, mushrooms, tall grass, dead bush, saplings, ...) break in a
+    // single hit regardless of tool/gamemode -- getDestroySpeed(level, pos) returns 0 for exactly
+    // these. Used to let Surround/placement modules clear their own way instead of just skipping
+    // the cell, matching "vanilla có thể phá rồi đặt thì client cũng phải làm được".
+    public static boolean isInstantBreakable(BlockPos position) {
+        BlockState state = mc.level.getBlockState(position);
+        if (state.isAir() || state.canBeReplaced()) return false;
+        return state.getDestroySpeed(mc.level, position) == 0.0f;
+    }
+
+    // Single-tick break attempt, no wait for the animation -- hardness-0 blocks break server-side
+    // off the very first START_DESTROY_BLOCK regardless of tool, so STOP/swing right after is safe.
+    // Same pattern as RekitModule.instantBreak.
+    public static void instantBreak(BlockPos position, Direction direction) {
+        mc.getConnection().send(new net.minecraft.network.protocol.game.ServerboundPlayerActionPacket(net.minecraft.network.protocol.game.ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, position, direction));
+        mc.getConnection().send(new net.minecraft.network.protocol.game.ServerboundPlayerActionPacket(net.minecraft.network.protocol.game.ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, position, direction));
+        mc.getConnection().send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
     }
 
     public static boolean destroyCrystals(BlockPos position) {

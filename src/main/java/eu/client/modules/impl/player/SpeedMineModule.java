@@ -5,7 +5,6 @@ import lombok.Setter;
 import eu.client.EUClient;
 import eu.client.events.SubscribeEvent;
 import eu.client.events.impl.*;
-import eu.client.managers.RotationPriorities;
 import eu.client.modules.Module;
 import eu.client.modules.RegisterModule;
 import eu.client.settings.impl.*;
@@ -68,16 +67,12 @@ public class SpeedMineModule extends Module {
     // Overrides the Speed setting outright while on (doesn't blend with it) and does NOT touch
     // Range/doubleMine/instant -- confirmed against boze's actual in-game behavior, not assumed.
     public BooleanSetting farReach = new BooleanSetting("FarReach", "Bypass for Duration 0.7 on Grim. Try this if normal AutoMine doesn't work.", false);
-    // MovementSync is this project's rewrite of the port's old "Normal" (rotation-only proxy
-    // packet + ClientRotationEvent arbitration, see RotationManager's class doc) -- kept under a
-    // new name. Normal/Packet below are bản gốc 1.21.4's original implementations, restored
-    // verbatim (self-contained here, not routed through RotationManager's shared queue -- that
-    // queue API was removed entirely in the ClientRotationEvent rewrite). Both reintroduce a
-    // known trade-off MovementSync/the current Packet fix exist specifically to avoid: on the
-    // real server, GrimAC runs a full movement-prediction cycle for ANY packet carrying a
-    // position, so proxy-side Normal/Packet here can rubberband on Grim servers (see
-    // RotationManager.packetRotate's 2026-08-13 comment for the original diagnosis).
-    public ModeSetting rotate = new ModeSetting("Rotate", "Automatically rotates to the block when mining it.", "Packet", new String[]{"None", "MovementSync", "Normal", "Packet"});
+    // 2026-08-14: reverted to master + diffed against bản gốc 1.21.4 (Desktop copy). "MovementSync"
+    // was invented within this session's branch (ClientRotationEvent arbitration), never merged to
+    // master and with no equivalent in bản gốc -- removed. Normal/Packet below are bản gốc's
+    // originals, routed through RotationManager.legacyRotate()/packetRotate() (its verbatim port of
+    // bản gốc's own rotate()/PriorityBlockingQueue<Rotation>).
+    public ModeSetting rotate = new ModeSetting("Rotate", "Automatically rotates to the block when mining it.", "Packet", new String[]{"None", "Normal", "Packet", "Silent"});
 
     public BooleanSetting auto = new BooleanSetting("Auto", "Automatically mines blocks deemed optimal for defeating your opponents.", false);
     public BooleanSetting cityOnly = new BooleanSetting("CityOnly", "Only mines the target's city positions.", new BooleanSetting.Visibility(auto, true), false);
@@ -356,21 +351,6 @@ public class SpeedMineModule extends Module {
         return prev + (current - prev) * t;
     }
 
-    // Primary only -- the secondary is passive and sends nothing, so there is nothing for it to
-    // rotate towards (homovore's tickSecondary() has no rotation either).
-    @SubscribeEvent(priority = RotationPriorities.SPEED_MINE)
-    public void onClientRotation(ClientRotationEvent event) {
-        if (event.isCancelled()) return;
-
-        Action active = primary != null && primary.isRotateActive() ? primary : null;
-        if (active == null) return;
-
-        Direction direction = WorldUtils.getClosestDirection(active.getPosition(), true);
-        float[] rotations = RotationUtils.getRotations(WorldUtils.getHitVector(active.getPosition(), direction));
-        event.setYaw(rotations[0]);
-        event.setPitch(rotations[1]);
-    }
-
     @SubscribeEvent
     public void onPlayerUpdate(PlayerUpdateEvent event) {
         if (isDeferringToProxy()) return;
@@ -411,7 +391,17 @@ public class SpeedMineModule extends Module {
         Target target = getTarget();
 
         if (doubleMine.getValue()) {
-            if (!mineTimer.hasTimeElapsed(350L)) return;
+            // 2026-08-15 FIX (reported: "speedmine chưa mine xong thì địch đã crawl phase sang vị
+            // trí khác" -- auto not reacting fast enough). This gate freezes the ENTIRE
+            // inside/outside/bed re-target sweep below for 350ms after every block break/burst
+            // (mineTimer.reset() at both call sites) -- 7 ticks where a crawl-phasing enemy's new
+            // surround/hole position is never even looked at, let alone mined. hasSecondarySlot()
+            // right below already caps concurrent slots to one, and handle() itself no-ops a
+            // position already being mined -- nothing here actually needed 350ms of external
+            // spacing to stay correct, it was just throttled far more than combat reactivity can
+            // afford. One tick (the fastest this can possibly re-run anyway, PlayerUpdateEvent is
+            // itself per-tick) instead of seven.
+            if (!mineTimer.hasTimeElapsed(50L)) return;
 
             if (antiCrawl.getValue() && mc.player.isVisuallyCrawling()) {
                 BlockPos position;
@@ -1132,11 +1122,6 @@ public class SpeedMineModule extends Module {
         // retries it every tick (see the top of process()) until it's safe.
         private boolean started;
 
-        // Reasserted every tick from SpeedMineModule.onClientRotation below instead of the old
-        // one-shot rotate() call -- see RotationManager class doc. Reset at the top of every
-        // process() call so a tick that no longer clears the late-mining gate stops holding it.
-        private boolean rotateActive;
-
         public Action(BlockPos position, int priority) {
             this.position = position;
             this.state = mc.level.getBlockState(position);
@@ -1201,8 +1186,6 @@ public class SpeedMineModule extends Module {
         }
 
         public boolean process() {
-            rotateActive = false;
-
             if (isOutOfRange(position)) {
                 cancel();
                 return true;
@@ -1321,42 +1304,18 @@ public class SpeedMineModule extends Module {
                 prevProgress = progress;
                 progress = Mth.clamp(progress + delta, 0.0f, getSpeed());
 
-                if ((rotate.getValue().equalsIgnoreCase("MovementSync") || rotate.getValue().equalsIgnoreCase("Normal")) && progress + (delta * 2) >= getSpeed()) {
+                // bản gốc 1.21.4 verbatim, both sides (reverted to master 2026-08-14 -- MovementSync
+                // was invented within this session's branch, never merged, no equivalent in bản gốc).
+                // Proxy sends a full Pos+Rot packet built from mc.player's live coordinates. Local
+                // uses RotationManager.legacyRotate(), its verbatim port of bản gốc's own rotate().
+                if (rotate.getValue().equalsIgnoreCase("Normal") && progress + (delta * 2) >= getSpeed()) {
                     float[] rots = RotationUtils.getRotations(WorldUtils.getHitVector(position, direction));
-                    if (rotate.getValue().equalsIgnoreCase("MovementSync")) {
-                        if (isProxyActive()) {
-                            // Rot-only (no X/Y/Z) -- see RotationManager.packetRotate's comment.
-                            // Sending position built from mc.player's proxy-mirrored coordinates
-                            // races the client's own movement packets already being forwarded,
-                            // causing rubberbanding on the real server.
-                            serverSend(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.Rot(
-                                    rots[0], rots[1],
-                                    eu.client.pingbypass.PingBypassFlags.clientOnGround,
-                                    eu.client.pingbypass.PingBypassFlags.clientHorizontalCollision));
-                        } else {
-                            rotateActive = true;
-                        }
+                    if (isProxyActive()) {
+                        serverSend(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.PosRot(
+                                mc.player.getX(), mc.player.getY(), mc.player.getZ(),
+                                rots[0], rots[1], mc.player.onGround(), mc.player.horizontalCollision));
                     } else {
-                        // "Normal" -- bản gốc 1.21.4 verbatim, both sides. Proxy sends a full
-                        // Pos+Rot packet built from mc.player's live coordinates (known trade-off:
-                        // GrimAC runs a full movement-prediction cycle for any packet carrying a
-                        // position -- MovementSync exists to avoid exactly this). Local uses the
-                        // OLD PriorityBlockingQueue<LegacyRotation> mechanism ported back verbatim
-                        // (RotationManager.legacyRotate) -- deliberately NOT rotateActive/
-                        // ClientRotationEvent: that system's computeMoveFix octant-remap didn't
-                        // exist in bản gốc at all (a from-scratch addition of this port to fix a
-                        // GrimAC issue THAT model introduces) and "Normal" was never meant to go
-                        // through it -- confirmed live: Sprint Instant + Rotate=Normal, turning
-                        // away from a mining target and pressing S moved at ~1-2km/h instead of
-                        // full speed, because the remap (built for vanilla's own travel()) got
-                        // read by Instant's separate direct-velocity path instead.
-                        if (isProxyActive()) {
-                            serverSend(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.PosRot(
-                                    mc.player.getX(), mc.player.getY(), mc.player.getZ(),
-                                    rots[0], rots[1], mc.player.onGround(), mc.player.horizontalCollision));
-                        } else {
-                            EUClient.ROTATION_MANAGER.legacyRotate(rots, EUClient.ROTATION_MANAGER.getLegacyModulePriority(SpeedMineModule.this));
-                        }
+                        EUClient.ROTATION_MANAGER.legacyRotate(rots, EUClient.ROTATION_MANAGER.getLegacyModulePriority(SpeedMineModule.this));
                     }
                 }
 
@@ -1495,27 +1454,14 @@ public class SpeedMineModule extends Module {
                 prevProgress = progress;
                 progress = Mth.clamp(progress + delta, 0.0f, getSpeed());
 
-                if ((rotate.getValue().equalsIgnoreCase("MovementSync") || rotate.getValue().equalsIgnoreCase("Normal")) && progress + (delta * 2) >= getSpeed()) {
+                if (rotate.getValue().equalsIgnoreCase("Normal") && progress + (delta * 2) >= getSpeed()) {
                     float[] rots = RotationUtils.getRotations(WorldUtils.getHitVector(position, direction));
-                    if (rotate.getValue().equalsIgnoreCase("MovementSync")) {
-                        if (isProxyActive()) {
-                            serverSend(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.Rot(
-                                    rots[0], rots[1],
-                                    eu.client.pingbypass.PingBypassFlags.clientOnGround,
-                                    eu.client.pingbypass.PingBypassFlags.clientHorizontalCollision));
-                        } else {
-                            rotateActive = true;
-                        }
+                    if (isProxyActive()) {
+                        serverSend(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.PosRot(
+                                mc.player.getX(), mc.player.getY(), mc.player.getZ(),
+                                rots[0], rots[1], mc.player.onGround(), mc.player.horizontalCollision));
                     } else {
-                        // Same as the current model's Normal branch -- legacyRotate, not
-                        // rotateActive (see that comment).
-                        if (isProxyActive()) {
-                            serverSend(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.PosRot(
-                                    mc.player.getX(), mc.player.getY(), mc.player.getZ(),
-                                    rots[0], rots[1], mc.player.onGround(), mc.player.horizontalCollision));
-                        } else {
-                            EUClient.ROTATION_MANAGER.legacyRotate(rots, EUClient.ROTATION_MANAGER.getLegacyModulePriority(SpeedMineModule.this));
-                        }
+                        EUClient.ROTATION_MANAGER.legacyRotate(rots, EUClient.ROTATION_MANAGER.getLegacyModulePriority(SpeedMineModule.this));
                     }
                 }
 
@@ -1556,14 +1502,21 @@ public class SpeedMineModule extends Module {
         private void legacyFireBreakBurst(Direction direction, int slot, boolean isSecondaryRole) {
             EUClient.EVENT_HANDLER.post(new DestroyBlockEvent(position));
 
-            if (rotate.getValue().equalsIgnoreCase("Packet")) {
+            if (rotate.getValue().equalsIgnoreCase("Packet") || rotate.getValue().equalsIgnoreCase("Silent")) {
                 float[] rots = RotationUtils.getRotations(WorldUtils.getHitVector(position, direction));
                 if (isProxyActive()) {
-                    serverSend(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.PosRot(
-                            mc.player.getX(), mc.player.getY(), mc.player.getZ(),
-                            rots[0], rots[1], mc.player.onGround(), mc.player.horizontalCollision));
+                    // Silent's proxy-side equivalent of packetRotate's manual PosRot below --
+                    // Rot-only, no position field. See RotationManager.silentRotate's own doc.
+                    if (rotate.getValue().equalsIgnoreCase("Silent")) {
+                        serverSend(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.Rot(
+                                rots[0], rots[1], mc.player.onGround(), mc.player.horizontalCollision));
+                    } else {
+                        serverSend(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.PosRot(
+                                mc.player.getX(), mc.player.getY(), mc.player.getZ(),
+                                rots[0], rots[1], mc.player.onGround(), mc.player.horizontalCollision));
+                    }
                 } else {
-                    EUClient.ROTATION_MANAGER.packetRotate(rots);
+                    EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), rots);
                 }
             }
 
@@ -1634,18 +1587,25 @@ public class SpeedMineModule extends Module {
         private void fireBreakBurst(Direction direction, int slot, boolean demote, boolean armCooldown) {
             if (!demote) EUClient.EVENT_HANDLER.post(new DestroyBlockEvent(position));
 
-            if (rotate.getValue().equalsIgnoreCase("Packet")) {
+            if (rotate.getValue().equalsIgnoreCase("Packet") || rotate.getValue().equalsIgnoreCase("Silent")) {
                 // bản gốc 1.21.4 verbatim: full Pos+Rot packet built from mc.player's live
                 // coordinates. Known trade-off -- see RotationManager.packetRotate's 2026-08-13
                 // comment: GrimAC runs a full movement-prediction cycle for ANY packet carrying
                 // a position, so this can rubberband on Grim servers exactly like it used to.
+                // Silent sidesteps that entirely: Rot-only, no position field at all -- see
+                // RotationManager.silentRotate's own doc.
+                float[] rots = RotationUtils.getRotations(WorldUtils.getHitVector(position, direction));
                 if (isProxyActive()) {
-                    float[] rots = RotationUtils.getRotations(WorldUtils.getHitVector(position, direction));
-                    serverSend(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.PosRot(
-                            mc.player.getX(), mc.player.getY(), mc.player.getZ(),
-                            rots[0], rots[1], mc.player.onGround(), mc.player.horizontalCollision));
+                    if (rotate.getValue().equalsIgnoreCase("Silent")) {
+                        serverSend(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.Rot(
+                                rots[0], rots[1], mc.player.onGround(), mc.player.horizontalCollision));
+                    } else {
+                        serverSend(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.PosRot(
+                                mc.player.getX(), mc.player.getY(), mc.player.getZ(),
+                                rots[0], rots[1], mc.player.onGround(), mc.player.horizontalCollision));
+                    }
                 } else {
-                    EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(WorldUtils.getHitVector(position, direction)));
+                    EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), rots);
                 }
             }
 

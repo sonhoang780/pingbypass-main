@@ -5,11 +5,10 @@ import lombok.Getter;
 import eu.client.EUClient;
 import eu.client.events.SubscribeEvent;
 import eu.client.events.impl.*;
-import eu.client.managers.RotationPriorities;
 import eu.client.modules.Module;
 import eu.client.modules.RegisterModule;
 import eu.client.modules.impl.player.SpeedMineModule;
-import eu.client.modules.impl.player.ThrowXPModule;
+import eu.client.modules.impl.player.KeyActionModule;
 import eu.client.settings.impl.*;
 import eu.client.utils.color.ColorUtils;
 import eu.client.utils.minecraft.DamageUtils;
@@ -64,7 +63,7 @@ public class AutoCrystalModule extends Module {
 
     public CategorySetting placeCategory = new CategorySetting("Place", "The category for settings related to placing crystals.");
     public BooleanSetting place = new BooleanSetting("Place", "Enabled", "Automatically places crystals on positions that are deemed safe and lethal enough.", new CategorySetting.Visibility(placeCategory), true);
-    public NumberSetting placeSpeed = new NumberSetting("PlaceSpeed", "Speed", "The speed at which crystals will be placed.", new CategorySetting.Visibility(placeCategory), 20.0f, 0.1f, 20.0f);
+    public NumberSetting placeSpeed = new NumberSetting("PlaceSpeed", "Speed", "The speed at which crystals will be placed.", new CategorySetting.Visibility(placeCategory), 10.0f, 0.1f, 20.0f);
     public NumberSetting placeRange = new NumberSetting("PlaceRange", "Range", "The maximum distance at which positions will be placed on.", new CategorySetting.Visibility(placeCategory), 4.5, 0.0, 8.0);
     public NumberSetting placeWallsRange = new NumberSetting("PlaceWallsRange", "WallsRange", "The maximum distance at which positions will be placed on through walls.", new CategorySetting.Visibility(placeCategory), 4.5, 0.0, 8.0);
     public ModeSetting placements = new ModeSetting("Placements", "The version of the game that will be used for crystal placement calculations.", new CategorySetting.Visibility(placeCategory), "Native", new String[]{"Native", "Protocol"});
@@ -74,21 +73,15 @@ public class AutoCrystalModule extends Module {
 
     public CategorySetting miscellaneousCategory = new CategorySetting("Miscellaneous", "The category for all miscellaneous settings.");
     public ModeSetting sequential = new ModeSetting("Sequential", "The sequence that the module's processes will be run in.", new CategorySetting.Visibility(miscellaneousCategory), "Strong", new String[]{"None", "Strict", "Strong"});
-    // See ServerAutoCrystal's identical setting for the full rationale (ported 1:1): MovementSync
-    // is this project's ClientRotationEvent-arbitrated rewrite of the old "Normal" (kept, renamed,
-    // default unchanged); Normal/Packet below are bản gốc 1.21.4's originals restored verbatim.
-    //
-    // 2026-08-14 (supersedes the previous note here): "Normal" is back to calling
-    // RotationManager.legacyRotate() at exactly the call sites bản gốc 1.21.4 called rotate() from,
-    // with the same priorities (attack = getModulePriority(this), place = +1 and module-keyed).
-    // The intermediate "Normal is just Packet" state was a workaround for a problem that lived in
-    // RotationManager, not here: the port had TWO independent yaw swaps racing for mc.player's field
-    // on the same event at the same priority, plus an always-on octant remap of the real WASD input
-    // that bản gốc never had (its own MovementFix is default OFF). Both are gone -- see
-    // RotationManager's "MovementFix: DELETED" note -- so Normal now behaves exactly as it does on
-    // 1.21.4: one yaw swap, only for the UpdateMovementEvent -> Post window that encloses
-    // sendPosition, real input and local physics untouched.
-    public ModeSetting rotate = new ModeSetting("Rotate", "Automatically rotates to the crystal whenever attacking or placing.", new CategorySetting.Visibility(miscellaneousCategory), "MovementSync", new String[]{"None", "MovementSync", "Normal", "Packet"});
+    // 2026-08-14: reverted to master (github.com/sonhoang780/pingbypass-main) + diffed against
+    // bản gốc 1.21.4 (Desktop copy). "MovementSync" was a ClientRotationEvent-arbitrated rewrite of
+    // "Normal" invented entirely within this session's branch, never merged to master and with no
+    // equivalent in bản gốc -- removed outright rather than kept as a third option. Normal/Packet
+    // below, and every call site using them, are bản gốc 1.21.4's originals: one yaw swap, only for
+    // the UpdateMovementEvent -> Post window that encloses sendPosition, real input and local
+    // physics untouched. legacyRotate()/legacyQueue is RotationManager's verbatim port of bản gốc's
+    // own rotate()/PriorityBlockingQueue<Rotation> -- same method, kept under its port-era name.
+    public ModeSetting rotate = new ModeSetting("Rotate", "Automatically rotates to the crystal whenever attacking or placing.", new CategorySetting.Visibility(miscellaneousCategory), "Normal", new String[]{"None", "Normal", "Packet", "Silent"});
     public ModeSetting swing = new ModeSetting("Swing", "The hand that will be used for swinging.", new CategorySetting.Visibility(miscellaneousCategory), "Default", new String[]{"Default", "None", "Packet", "Mainhand", "Offhand", "Both"});
     public BooleanSetting yawStep = new BooleanSetting("YawStep", "Performs your rotations over multiple ticks.", new CategorySetting.Visibility(miscellaneousCategory), false);
     public NumberSetting yawStepThreshold = new NumberSetting("YawStepThreshold", "Threshold", "The threshold in order for yaw to be modified.", new BooleanSetting.Visibility(yawStep, true), 75, 1, 180);
@@ -116,6 +109,11 @@ public class AutoCrystalModule extends Module {
     public BooleanSetting mineIgnore = new BooleanSetting("MineIgnore", "Pre-places a crystal on the block SpeedMine is about to break, and detonates it the instant that block is gone.", new CategorySetting.Visibility(miscellaneousCategory), false);
     public NumberSetting mineIgnoreTicks = new NumberSetting("MineIgnoreTicks", "Tick", "How many ticks before the block breaks to place the crystal.", new BooleanSetting.Visibility(mineIgnore, true), 3, 0, 10);
     public BooleanSetting asynchronous = new BooleanSetting("Asynchronous", "Performs calculations on separate threads.", new CategorySetting.Visibility(miscellaneousCategory), true);
+    // 2026-08-15 (requested): "AutoCrystal khi thấy block secondary đã tới thời điểm vỡ thì dừng
+    // lại, để block kia vỡ rồi mới autocrystal tiếp". Both SpeedMine secondary models are covered
+    // (FarReach's Secondary hold/release latch vs the legacy dual-Action pair), same branch
+    // mineTargetSecondary already uses to tell which one is live.
+    public BooleanSetting pauseOnSecondaryMine = new BooleanSetting("PauseOnSecondaryMine", "Pauses AutoCrystal for one tick while SpeedMine's secondary block is about to break, so it finishes first.", new CategorySetting.Visibility(miscellaneousCategory), true);
     public BooleanSetting gameLoop = new BooleanSetting("GameLoop", "Runs the module on loop instead of ticks.", new CategorySetting.Visibility(miscellaneousCategory), false);
     public NumberSetting loopDelay = new NumberSetting("LoopDelay", "The delay that has to be waited out before running the module again.", new BooleanSetting.Visibility(gameLoop, true), 50, 0, 1000);
     public ModeSetting whileEating = new ModeSetting("WhileEating", "Places and attacks crystal while eating or using items.", new CategorySetting.Visibility(miscellaneousCategory), "Both", new String[]{"None", "Attack", "Place", "Both"});
@@ -190,6 +188,17 @@ public class AutoCrystalModule extends Module {
     // and skip resubmitting while one is still running instead of queueing another -- only the
     // latest calculation is ever useful anyway.
     private volatile java.util.concurrent.Future<?> pendingCalc = null;
+    // 2026-08-15: see onUpdateMovement's own doc -- the background executor thread now keeps
+    // itself running continuously (each pass immediately resubmits the next one) instead of
+    // waiting for the next GAME TICK to even consider resubmitting. This flag is the loop's own
+    // off-switch: onDisable()/async-toggled-off clears it so the chain actually stops instead of
+    // resubmitting forever.
+    private volatile boolean asyncLoopActive = false;
+    // Reserved-cell snapshot, refreshed every tick on the main thread (cheap: WorldManager's own
+    // set copy) -- the background loop just reads whatever's newest here each pass instead of
+    // being handed a single snapshot per submission. Up to one tick stale at worst, same as
+    // before; only POSITION staleness (the actual reported bug) is what the loop change fixes.
+    private volatile Set<BlockPos> latestReservedPlacements = Set.of();
 
     private Runnable attackRunnable = null;
     private Runnable placeRunnable = null;
@@ -220,18 +229,15 @@ public class AutoCrystalModule extends Module {
     private EndCrystal attackTarget = null;
     private PlaceTarget placeTarget = null;
     private PlaceTarget mineTarget = null;
-
-    // Reasserted every tick from onClientRotation below instead of the old one-shot rotate() calls
-    // -- see RotationManager class doc. Holds the already-computed calculateRotations() result (that
-    // method yaw-steps off the CURRENT server yaw, so it must still only be called once per site, at
-    // the exact same points rotate()/Normal used to fire from: attackCrystals()/placeCrystals()'s own
-    // per-tick pass -- already recomputed every tick this module runs, same as before -- AND the
-    // onEntitySpawn/onDestroyBlock instant-reaction paths, which nudge it a tick early and then get
-    // overwritten or cleared by the next regular pass same as before). Cleared on every path that
-    // would previously NOT have called rotate() that pass, so staleness can't outlive the tick that
-    // stopped wanting it.
-    private float[] attackRotations = null;
-    private float[] placeRotations = null;
+    // 2026-08-15 FIX (reported: "block xanh vỡ trước, block đỏ vỡ sau, AutoCrystal lại đợi 2
+    // block vỡ hết mới autocrystal" -- SpeedMine Double breaking 2 blocks at once). mineTarget
+    // above is (and always was) computed from SpeedMineModule.getPrimary() ONLY -- see
+    // runCalculation. Whichever of primary/secondary happens to break FIRST, if it's the
+    // secondary, its position never matched mineTarget's tracked exception at all, so
+    // onDestroyBlock's own staleness check discarded it as unrelated and never reacted --
+    // looked exactly like "waiting for both", when really it was just never watching the
+    // secondary block in the first place. A second tracked target for the secondary closes that.
+    private PlaceTarget mineTargetSecondary = null;
 
     // MineIgnore tracking: which SpeedMine target we've already pre-placed a crystal for, and where
     // that crystal actually landed (may not be directly above minePos -- see mineIgnoreTick).
@@ -344,6 +350,17 @@ public class AutoCrystalModule extends Module {
     // after every module's PlayerUpdateEvent handler for this tick has already run -- moving the
     // submission here (not the attack/place EXECUTION further below, unrelated) guarantees any
     // reservation made this tick is visible before the read.
+    // 2026-08-15 FIX (reported: can't place/break while moving with Asynchronous on -- target
+    // chronically stale/out-of-range). The old design resubmitted the background calc at most
+    // once per GAME TICK, and only once the PREVIOUS pass had finished -- so freshness was capped
+    // at "once per completed calculation", and every tick in between kept reading a
+    // placeTarget/mineTarget computed against wherever the player WAS during the last pass, not
+    // where they are now. calculatePlacements already reads mc.player's position LIVE, every
+    // iteration -- the actual fix is keeping the background thread running CONTINUOUSLY (each
+    // pass immediately kicks off the next one, see asyncLoopStep) instead of gating resubmission
+    // on tick timing. Freshness is now bounded by how fast one scan completes, not by the tick
+    // rate -- still entirely off the main/render thread, which only ever does the cheap
+    // reservedPlacements snapshot below.
     @SubscribeEvent
     public void onUpdateMovement(UpdateMovementEvent event) {
         if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
@@ -353,35 +370,77 @@ public class AutoCrystalModule extends Module {
 
         // Snapshot NOW, synchronously, on the main thread -- see the big comment on the
         // (BlockPos, Set<BlockPos>) overload of calculatePlacements for why a live read from
-        // inside the async Runnable below is a race against WorldManager's per-tick clear().
-        Set<BlockPos> reservedPlacements = Set.copyOf(EUClient.WORLD_MANAGER.getReservedPlacements());
-
-        Runnable runnable = () -> {
-            long startTime = System.nanoTime();
-
-            attackTarget = calculateCrystals();
-            placeTarget = calculatePlacements(null, reservedPlacements);
-
-            long calcNanos = System.nanoTime() - startTime;
-            calculationTime = new DecimalFormat("0.00").format(calcNanos / 1000000.0) + "ms";
-            calculationCount = placeTarget == null ? 0 : placeTarget.getCalculations();
-            calculationDamage = placeTarget == null ? "0.00" : new DecimalFormat("0.00").format(placeTarget.getDamage());
-
-            target = placeTarget == null ? null : placeTarget.getPlayer();
-
-            if (blockDestruction.getValue() && asynchronous.getValue()) {
-                SpeedMineModule module = EUClient.MODULE_MANAGER.getModule(SpeedMineModule.class);
-                BlockPos position = null;
-
-                if (module.getPrimary() != null && module.getPrimary().isMining()) position = module.getPrimary().getPosition();
-                if (position != null) mineTarget = calculatePlacements(position, reservedPlacements);
-            }
-        };
+        // inside the background loop is a race against WorldManager's per-tick clear(). Refreshed
+        // every tick regardless of where the loop currently is -- its next pass just picks up
+        // whatever's newest here.
+        latestReservedPlacements = Set.copyOf(EUClient.WORLD_MANAGER.getReservedPlacements());
 
         if (asynchronous.getValue()) {
-            if (pendingCalc == null || pendingCalc.isDone()) pendingCalc = executor.submit(runnable);
+            if (!asyncLoopActive) {
+                asyncLoopActive = true;
+                pendingCalc = executor.submit(this::asyncLoopStep);
+            }
         } else {
-            runnable.run();
+            asyncLoopActive = false;
+            runCalculation(latestReservedPlacements, false);
+        }
+    }
+
+    // One pass, then immediately resubmits itself (still on the SAME single background thread --
+    // never more than one calculation in flight, same invariant the old isDone() gate enforced,
+    // just without waiting for a tick to re-arm it) as long as the module still wants async
+    // running. asyncLoopActive is the off-switch onDisable()/the sync-mode branch above use to
+    // actually stop the chain instead of it resubmitting forever.
+    private void asyncLoopStep() {
+        if (!asyncLoopActive || !asynchronous.getValue()) {
+            asyncLoopActive = false;
+            return;
+        }
+
+        runCalculation(latestReservedPlacements, true);
+
+        if (asyncLoopActive && asynchronous.getValue()) {
+            pendingCalc = executor.submit(this::asyncLoopStep);
+        } else {
+            asyncLoopActive = false;
+        }
+    }
+
+    private void runCalculation(Set<BlockPos> reservedPlacements, boolean async) {
+        long startTime = System.nanoTime();
+
+        attackTarget = calculateCrystals();
+        placeTarget = calculatePlacements(null, reservedPlacements);
+
+        long calcNanos = System.nanoTime() - startTime;
+        calculationTime = new DecimalFormat("0.00").format(calcNanos / 1000000.0) + "ms";
+        calculationCount = placeTarget == null ? 0 : placeTarget.getCalculations();
+        calculationDamage = placeTarget == null ? "0.00" : new DecimalFormat("0.00").format(placeTarget.getDamage());
+
+        target = placeTarget == null ? null : placeTarget.getPlayer();
+
+        // Verbatim original condition (blockDestruction && asynchronous) -- in the sync branch
+        // this is always skipped, matching the old behavior exactly: onDestroyBlock's own
+        // `stale && !asynchronous.getValue()` fallback is what keeps mineTarget fresh when async
+        // is off, not this method.
+        if (blockDestruction.getValue() && async) {
+            SpeedMineModule module = EUClient.MODULE_MANAGER.getModule(SpeedMineModule.class);
+            BlockPos position = null;
+
+            if (module.getPrimary() != null && module.getPrimary().isMining()) position = module.getPrimary().getPosition();
+            if (position != null) mineTarget = calculatePlacements(position, reservedPlacements);
+
+            // 2026-08-15 FIX: was primary-only -- see mineTargetSecondary's own field doc. Double
+            // mode's second block lives in a different field depending on FarReach (Secondary's
+            // hold/release latch model vs the plain dual-Action legacySecondary), same branch
+            // onPlayerUpdate itself already uses to decide which one is live.
+            BlockPos secondaryPosition = null;
+            if (module.farReach.getValue()) {
+                if (module.getSecondary() != null && module.getSecondary().isMining()) secondaryPosition = module.getSecondary().getPosition();
+            } else {
+                if (module.getLegacySecondary() != null && module.getLegacySecondary().isMining()) secondaryPosition = module.getLegacySecondary().getPosition();
+            }
+            if (secondaryPosition != null) mineTargetSecondary = calculatePlacements(secondaryPosition, reservedPlacements);
         }
     }
 
@@ -408,6 +467,8 @@ public class AutoCrystalModule extends Module {
     }
 
     private void run() {
+        if (pauseForSecondaryMine()) return;
+
         attackRunnable = null;
         placeRunnable = null;
 
@@ -431,6 +492,34 @@ public class AutoCrystalModule extends Module {
             if (place.getValue()) placeCrystals(false);
         }
     }
+
+    // 2026-08-15 (requested): let SpeedMine's secondary block finish breaking before AutoCrystal
+    // fires again, instead of racing it. Secondary (FarReach on) has no getTicksRemaining() of
+    // its own -- getProgress() (0..1, clamped) is the closest equivalent, so that branch uses a
+    // ratio threshold instead of an exact tick count.
+    private static final int SECONDARY_PAUSE_TICKS = 2;
+    private static final float SECONDARY_PAUSE_PROGRESS = 0.85f;
+
+    private boolean pauseForSecondaryMine() {
+        if (!pauseOnSecondaryMine.getValue()) return false;
+
+        SpeedMineModule module = EUClient.MODULE_MANAGER.getModule(SpeedMineModule.class);
+        if (module.farReach.getValue()) {
+            SpeedMineModule.Secondary secondary = module.getSecondary();
+            return secondary != null && secondary.getProgress() >= SECONDARY_PAUSE_PROGRESS;
+        } else {
+            SpeedMineModule.Action legacySecondary = module.getLegacySecondary();
+            return legacySecondary != null && legacySecondary.isMining() && legacySecondary.getTicksRemaining() <= SECONDARY_PAUSE_TICKS;
+        }
+    }
+
+    // 2026-08-15: the Rotate=Normal + MovementFix + Sprint=Grim + AutoCrystal diagonal-flag combo
+    // (see this file's git history / SESSION_2026-08-15_VIA121X_FLAG_FIX.md) used to be worked
+    // around by deferring AutoCrystal's action a whole tick whenever Sprint's Grim mode won
+    // rotation arbitration that tick. Removed on request: MovementFix already keeps position/yaw
+    // resynced the same way Sprint=Legit does (which never needed this defer at all, since Legit
+    // never takes ClientRotationEvent ownership), so the extra tick of latency is no longer
+    // buying anything Sprint needs.
 
     @SubscribeEvent
     public void onUpdateMovement$POST(UpdateMovementEvent.Post event) {
@@ -459,9 +548,8 @@ public class AutoCrystalModule extends Module {
         if (!WorldUtils.canSee(crystal) && (raytrace.getValue() || crystal.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > Mth.square(attackWallsRange.getValue().doubleValue())))
             return;
 
-        if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
+        if (rotate.getValue().equalsIgnoreCase("Packet") || rotate.getValue().equalsIgnoreCase("Silent")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
         if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(crystal.blockPosition())), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
-        if (rotate.getValue().equalsIgnoreCase("MovementSync")) attackRotations = calculateRotations(Vec3.atCenterOf(crystal.blockPosition()));
 
         attack(crystal);
 
@@ -498,7 +586,6 @@ public class AutoCrystalModule extends Module {
         if (!autoSwitch.getValue().equalsIgnoreCase("None") && slot == -1 && (mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL))
             return;
 
-        PlaceTarget mineTarget = this.mineTarget == null ? null : this.mineTarget.clone();
         // calculatePlacements() is the full, non-early-exit radius x players scan (see the big
         // comment on that method) -- fine off the async executor thread (onUpdateMovement already
         // recomputes it there every tick when blockDestruction+asynchronous are both on), but
@@ -507,20 +594,57 @@ public class AutoCrystalModule extends Module {
         // cost landed on the render thread directly, scaling with target count -- reported as severe
         // FPS drop with multiple real players nearby. Only fall back to a synchronous recompute when
         // there genuinely isn't an async one already keeping this fresh.
-        boolean stale = mineTarget == null || (mineTarget.getPosition() != null && !minedPosition.equals(mineTarget.getException()));
-        // blockDestruction is already guaranteed true here (checked above) -- asynchronous is the
-        // only thing deciding whether onUpdateMovement is already keeping this.mineTarget fresh off
-        // this thread.
-        if (stale && !asynchronous.getValue()) mineTarget = calculatePlacements(minedPosition);
+        //
+        // 2026-08-15 FIX (reported: "SpeedMine Double, block xanh vỡ trước, block đỏ vỡ sau, mà
+        // AutoCrystal đợi 2 block vỡ hết mới phản ứng"). This used to check ONLY this.mineTarget,
+        // which runCalculation only ever populates from SpeedMine's PRIMARY -- whichever block
+        // broke FIRST, if it was the secondary, its position never matched and got treated as
+        // stale/unrelated every time, so AutoCrystal silently never reacted to it at all (looked
+        // like "waiting for both" when it was really "only ever watching one of the two"). Try
+        // BOTH tracked targets against the block that actually just broke.
+        PlaceTarget primaryCandidate = this.mineTarget == null ? null : this.mineTarget.clone();
+        PlaceTarget secondaryCandidate = this.mineTargetSecondary == null ? null : this.mineTargetSecondary.clone();
+
+        PlaceTarget mineTarget;
+        if (primaryCandidate != null && primaryCandidate.getPosition() != null && minedPosition.equals(primaryCandidate.getException())) {
+            mineTarget = primaryCandidate;
+        } else if (secondaryCandidate != null && secondaryCandidate.getPosition() != null && minedPosition.equals(secondaryCandidate.getException())) {
+            mineTarget = secondaryCandidate;
+        } else if (!asynchronous.getValue()) {
+            // blockDestruction is already guaranteed true here (checked above) -- asynchronous is
+            // the only thing deciding whether onUpdateMovement is already keeping these fresh off
+            // this thread.
+            mineTarget = calculatePlacements(minedPosition);
+        } else {
+            // Async on, but neither tracked target's last snapshot was for this exact block (its
+            // own async pass just hasn't landed yet) -- fall back to whichever still exists
+            // rather than dropping the reaction outright.
+            mineTarget = primaryCandidate != null ? primaryCandidate : secondaryCandidate;
+        }
         if (mineTarget == null || mineTarget.getPosition() == null) {
             EUClient.RENDER_MANAGER.setRenderPosition(null);
             return;
         }
 
         BlockPos position = mineTarget.getPosition();
-        EUClient.RENDER_MANAGER.setRenderPosition(position);
 
-        if (mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeRange.getValue().doubleValue())) return;
+        // 2026-08-15 FIX (reported: "place render đặt chỗ xa lắc xa lơ" while moving, correct
+        // while standing still). calculatePlacements can run off the async executor thread (see
+        // its own doc) and land here a tick or more after the target was actually computed --
+        // while moving, the player can easily have covered several blocks in that gap, so a
+        // position that WAS in range the moment it was calculated is stale and out of PlaceRange
+        // by the time it gets here. The range check below already correctly refuses to ACT on a
+        // stale target (no packet ever goes out for it) -- the bug was only that the render call
+        // used to run BEFORE that check, so the stale ghost position still got drawn every time,
+        // even though nothing was ever placed there. Standing still hides the bug entirely
+        // (position never goes stale if the player never moves), which is exactly why it only
+        // showed up while moving. Not Rotate=Silent's doing -- Silent never touches mc.player's
+        // real position, this is the same staleness for every Rotate mode.
+        if (mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeRange.getValue().doubleValue())) {
+            EUClient.RENDER_MANAGER.setRenderPosition(null);
+            return;
+        }
+        EUClient.RENDER_MANAGER.setRenderPosition(position);
         // `position` is the SOLID support block (obsidian/bedrock) the crystal sits on. Plain
         // canSee(position) raycasts to that block's own center, so it's hitting that exact block
         // and never reports MISS -- "!canSee" was true unconditionally for every candidate, so
@@ -536,12 +660,23 @@ public class AutoCrystalModule extends Module {
         if (!WorldUtils.canSeeBlock(position) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue())))
             return;
 
-        if (rotate.getValue().equalsIgnoreCase("MovementSync")) placeRotations = calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0));
         if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0)), this, EUClient.ROTATION_MANAGER.getLegacyModulePriority(this) + 1); // place outranks attack, same +1 as ban goc 1.21.4
-        if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(position).add(0, 1, 0)));
+        // 2026-08-15: was `!equalsIgnoreCase("None")` (bản gốc 1.21.4's own verbatim behaviour --
+        // fires packetRotate at this SAME target even in Normal mode, on top of the legacyRotate
+        // line above). Deliberate deviation from bản gốc, on request: that duplicate is an EXTRA
+        // ServerboundMovePlayerPacket.PosRot outside the tick's normal sendPosition() cadence --
+        // invisible to a 1.20.x-downgraded connection (ViaFabricPlus strips
+        // ServerboundClientTickEndPacket, so the server has no per-tick packet count to compare
+        // against) but exposed on a 1.21.x connection (native tick-end marker lets the server see
+        // an extra position-carrying packet landed outside the accounted-for tick) -- reported
+        // live as "Normal + MovementFix ổn ở via 1.20.x, flag khi di chuyển + AutoCrystal ở via
+        // 1.21.x". legacyRotate's own queued rotation already reaches the wire next tick through
+        // the ordinary sendPosition() packet; Packet mode has no legacyRotate call at all and
+        // still needs this line as its only delivery mechanism.
+        if (rotate.getValue().equalsIgnoreCase("Packet") || rotate.getValue().equalsIgnoreCase("Silent")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), RotationUtils.getRotations(Vec3.atCenterOf(position).add(0, 1, 0)));
 
         for (Entity entity : mc.level.getEntities((Entity) null, new AABB(position.above()), entity -> true).stream().filter(entity -> entity instanceof EndCrystal).toList()) {
-            if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(entity));
+            if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), RotationUtils.getRotations(entity));
 
             mc.player.connection.send(new ServerboundAttackPacket(entity.getId()));
             mc.player.connection.send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
@@ -599,6 +734,9 @@ public class AutoCrystalModule extends Module {
 
     @Override
     public void onDisable() {
+        // Must clear BEFORE cancel() -- asyncLoopStep only stops resubmitting once it observes
+        // this false, so setting it after would still let an in-flight pass queue one more.
+        asyncLoopActive = false;
         if (pendingCalc != null) {
             pendingCalc.cancel(false);
             pendingCalc = null;
@@ -637,35 +775,6 @@ public class AutoCrystalModule extends Module {
         lastPlayerCacheTime = 0L;
     }
 
-    // place outranks attack when both are live the same tick -- matches the old queue's
-    // getModulePriority(this) + 1 for place. Both fields are gated on rotate.getValue() == "Normal"
-    // at write time already (see the various call sites above); re-checking it here too covers the
-    // case where the user switches Rotate away from Normal while a fake is still mid-flight, and the
-    // attack.getValue()/place.getValue() checks cover the equivalent case for those two toggles.
-    // "Normal" mode's bản gốc 1.21.4 replica -- the OLD PriorityBlockingQueue<LegacyRotation>
-    // mechanism (RotationManager.legacyRotate), ported back verbatim, not routed through
-    // ClientRotationEvent at all. That system's computeMoveFix octant-remap didn't exist in bản
-    // gốc -- it's this port's own addition to fix a GrimAC issue the arbitrated `rotation` model
-    // introduces -- and "Normal" was never meant to go through it; confirmed live via SpeedMine
-    // (same underlying RotationManager): Sprint Instant + Rotate=Normal moved at ~1-2km/h instead
-    // of full speed because the remap (built for vanilla's own travel()) got read by Instant's
-    // separate direct-velocity path instead. MovementSync is this project's own rewrite and stays
-    // on ClientRotationEvent.
-    @SubscribeEvent(priority = RotationPriorities.AUTO_CRYSTAL)
-    public void onClientRotation(ClientRotationEvent event) {
-        if (!rotate.getValue().equalsIgnoreCase("MovementSync") || event.isCancelled()) return;
-
-        if (place.getValue() && placeRotations != null) {
-            event.setYaw(placeRotations[0]);
-            event.setPitch(placeRotations[1]);
-            return;
-        }
-
-        if (attack.getValue() && attackRotations != null) {
-            event.setYaw(attackRotations[0]);
-            event.setPitch(attackRotations[1]);
-        }
-    }
 
     @Override
     public String getMetaData() {
@@ -673,7 +782,6 @@ public class AutoCrystalModule extends Module {
     }
 
     private void attackCrystals() {
-        attackRotations = null;
         EndCrystal overrideCrystal = null;
 
         // obstructions accumulates EVERY blocked candidate scanned, not just whatever's in the
@@ -715,7 +823,6 @@ public class AutoCrystalModule extends Module {
         EndCrystal crystal = overrideCrystal == null ? attackTarget : overrideCrystal;
         if (crystal == null) return;
 
-        if (rotate.getValue().equalsIgnoreCase("MovementSync")) attackRotations = calculateRotations(Vec3.atCenterOf(crystal.blockPosition()));
         if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(crystal.blockPosition())), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
 
         if (!attackTimer.hasTimeElapsed(1000.0f - attackSpeed.getValue().floatValue() * 50.0f) || attackedSequentially) {
@@ -736,14 +843,13 @@ public class AutoCrystalModule extends Module {
 
         if (bailReason != null) return;
         attackRunnable = () -> {
-            if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
+            if (rotate.getValue().equalsIgnoreCase("Packet") || rotate.getValue().equalsIgnoreCase("Silent")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
 
             attack(crystal);
         };
     }
 
     private void placeCrystals(boolean sequential) {
-        placeRotations = null;
         PlaceTarget placeTarget = this.placeTarget == null ? null : this.placeTarget.clone();
         if (placeTarget == null || placeTarget.getPosition() == null) {
             EUClient.RENDER_MANAGER.setRenderPosition(null);
@@ -757,16 +863,23 @@ public class AutoCrystalModule extends Module {
             return;
 
         BlockPos position = placeTarget.getPosition();
+
+        // See onDestroyBlock's identical 2026-08-15 fix for the full rationale -- render position
+        // is only committed once the target has been confirmed still in range, so a target that
+        // went stale (calculatePlacements ran a tick or more ago, off the async executor thread,
+        // and the player has since moved) never draws a ghost placement out at its old distance.
+        if (mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeRange.getValue().doubleValue())) {
+            EUClient.RENDER_MANAGER.setRenderPosition(null);
+            return;
+        }
         EUClient.RENDER_MANAGER.setRenderPosition(position);
 
-        if (mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeRange.getValue().doubleValue())) return;
         if (!mc.level.getWorldBorder().isWithinBounds(position)) return;
         if (mc.level.getBlockState(position).getBlock() != Blocks.OBSIDIAN && mc.level.getBlockState(position).getBlock() != Blocks.BEDROCK) return;
         if (!mc.level.getBlockState(position.offset(0, 1, 0)).isAir() || (placements.getValue().equalsIgnoreCase("Protocol") && !mc.level.getBlockState(position.offset(0, 2, 0)).isAir())) return;
         if (!WorldUtils.canSeeBlock(position) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue()))) return;
         if (mc.level.getEntities((Entity) null, new AABB(position.offset(0, 1, 0)), entity -> true).stream().anyMatch(entity -> entity.isAlive() && !(entity instanceof ExperienceOrb) && !(entity instanceof EndCrystal))) return;
 
-        if (rotate.getValue().equalsIgnoreCase("MovementSync")) placeRotations = calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0));
         if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0)), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
 
         if (!placeTimer.hasTimeElapsed(1000.0f - placeSpeed.getValue().floatValue() * 50.0f)) return;
@@ -778,7 +891,7 @@ public class AutoCrystalModule extends Module {
         placeRunnable = () -> {
             boolean switched = false;
 
-            if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(position).add(0, 1, 0)));
+            if (rotate.getValue().equalsIgnoreCase("Packet") || rotate.getValue().equalsIgnoreCase("Silent")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), RotationUtils.getRotations(Vec3.atCenterOf(position).add(0, 1, 0)));
 
             if (mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
                 if (autoSwitch.getValue().equalsIgnoreCase("Normal") && swapBack.getValue() && savedSlot == -1) savedSlot = previousSlot;
@@ -793,7 +906,7 @@ public class AutoCrystalModule extends Module {
             }
 
             if (godSync.getValue()) {
-                boolean flag = !antiKick.getValue() || !(mc.player.getMainHandItem().getItem() instanceof ExperienceBottleItem) && !(mc.player.getOffhandItem().getItem() instanceof ExperienceBottleItem) && !EUClient.MODULE_MANAGER.getModule(ThrowXPModule.class).isToggled();
+                boolean flag = !antiKick.getValue() || !(mc.player.getMainHandItem().getItem() instanceof ExperienceBottleItem) && !(mc.player.getOffhandItem().getItem() instanceof ExperienceBottleItem) && !EUClient.MODULE_MANAGER.getModule(KeyActionModule.class).isXpActive();
                 if ((!antiKick.getValue() || kickTicks > kickThreshold.getValue().intValue()) && flag) {
                     if (!fast.getValue()) {
                         for (Entity entity : mc.level.entitiesForRendering()) {
@@ -1136,9 +1249,11 @@ public class AutoCrystalModule extends Module {
                 if (antiSuicide.getValue() && selfDamage > mc.player.getHealth() + mc.player.getAbsorptionAmount()) continue;
             }
 
-            if (rotate.getValue().equalsIgnoreCase("MovementSync")) placeRotations = calculateRotations(Vec3.atCenterOf(candidate));
             if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(candidate)), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
-            if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(candidate)));
+            // 2026-08-15: was `!equalsIgnoreCase("None")` -- see the mineIgnore place site's own
+            // note (same duplicate-target pattern, same fix, same reason: via 1.21.x exposes the
+            // extra out-of-cadence packet, via 1.20.x doesn't).
+            if (rotate.getValue().equalsIgnoreCase("Packet") || rotate.getValue().equalsIgnoreCase("Silent")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), RotationUtils.getRotations(Vec3.atCenterOf(candidate)));
 
             boolean switched = false;
             if (mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
@@ -1171,9 +1286,10 @@ public class AutoCrystalModule extends Module {
             if (!(entity instanceof EndCrystal crystal) || !crystal.isAlive()) continue;
             if (!crystal.blockPosition().below().equals(placedPos)) continue;
 
-            if (rotate.getValue().equalsIgnoreCase("MovementSync")) attackRotations = calculateRotations(Vec3.atCenterOf(crystal.blockPosition()));
             if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(crystal.blockPosition())), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
-            if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
+            // 2026-08-15: was `!equalsIgnoreCase("None")` -- same duplicate-target fix as the
+            // other mineIgnore/place sites above.
+            if (rotate.getValue().equalsIgnoreCase("Packet") || rotate.getValue().equalsIgnoreCase("Silent")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
 
             attack(crystal);
             return;

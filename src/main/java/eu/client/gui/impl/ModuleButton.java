@@ -6,6 +6,7 @@ import eu.client.EUClient;
 import eu.client.gui.ClickGuiScreen;
 import eu.client.modules.Module;
 import eu.client.gui.api.Button;
+import eu.client.gui.api.ExpandableRow;
 import eu.client.gui.api.Frame;
 import eu.client.settings.Setting;
 import eu.client.settings.impl.*;
@@ -20,7 +21,7 @@ import java.awt.*;
 import java.util.ArrayList;
 
 @Getter @Setter
-public class ModuleButton extends Button {
+public class ModuleButton extends Button implements ExpandableRow {
     private final Module module;
     private boolean open = false;
     private final ArrayList<Button> buttons = new ArrayList<>();
@@ -43,8 +44,14 @@ public class ModuleButton extends Button {
     // CategorySetting.openAnim if left at the field-initializer default.
     private final Animation fillAnim;
 
+    @Override
     public float getOpenAmount() {
         return openAnim.get(open ? 1f : 0f);
+    }
+
+    @Override
+    public String getRowName() {
+        return module.getName();
     }
 
     public ModuleButton(Module module, Frame parent, int height) {

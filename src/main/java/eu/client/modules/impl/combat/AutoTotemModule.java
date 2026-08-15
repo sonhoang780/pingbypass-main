@@ -98,7 +98,23 @@ public class AutoTotemModule extends Module {
 
         if (slot == -1) return;
 
-        InventoryUtils.swap("Pickup", slot, 45);
+        // 2026-08-15 (reported, root-caused against NamiDevelopment/nami-public's own
+        // AutoTotemFeature): popping a totem while free-falling and eating made the swap retry
+        // every tick and never land -- only releasing right-click let it through. Root cause was
+        // "Pickup" mode's 3-click pickup/place/place-back sequence: mid-use, one of those clicks
+        // could land on a container state that had shifted between the calls, leaving the
+        // sequence stuck forever. Nami's own AutoTotem never hits this at all because its default
+        // swap (swapSlot / fastSwap="Alternative") is a single atomic SWAP-type click -- both
+        // slots exchange in ONE click, nothing to interleave with. "Swap" mode already exists in
+        // InventoryUtils for this exact reason; using it here instead of "Pickup" removes the
+        // failure mode outright rather than working around it. releaseUsingItem() kept as a cheap
+        // extra guarantee -- harmless if the swap no longer needs it.
+        if (mc.player.isUsingItem()) mc.gameMode.releaseUsingItem(mc.player);
+
+        // "Swap" mode's targetSlot is vanilla's SWAP button param, not a raw container slot id --
+        // must be exactly 40 (the offhand constant AbstractContainerMenu.clicked() checks for),
+        // NOT 45 (offhand's own slot id, what "Pickup" mode used instead).
+        InventoryUtils.swap("Swap", slot, 40);
         ticks = 2 + EUClient.SERVER_MANAGER.getPingDelay();
     }
 

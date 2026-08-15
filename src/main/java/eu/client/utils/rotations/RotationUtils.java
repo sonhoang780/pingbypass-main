@@ -32,28 +32,21 @@ public class RotationUtils implements IMinecraft {
         float yaw = (float) Mth.wrapDegrees(Math.toDegrees(Math.atan2(deltaZ, deltaX)) - 90.0);
         float pitch = (float) Mth.clamp(Mth.wrapDegrees(Math.toDegrees(Math.atan2(deltaY, distance))), -90f, 90f);
 
-        // Was: yaw/pitch each offset by (Math.random() - 0.5) * 4, i.e. +-2 degrees of uniform noise
-        // on EVERY rotation this project computes. Inherited from eu-client with no setting, no
-        // comment and no mechanism behind it; Shoreline's equivalent (RotationUtil.getRotationTo)
-        // returns the exact angles. Deleted, for two concrete reasons:
+        // RESTORED 2026-08-14 -- bản gốc 1.21.4 offsets yaw AND pitch by (Math.random() - 0.5) * 4,
+        // i.e. +-2 degrees of uniform noise, on EVERY rotation it computes. The port had deleted it.
+        // This is not cosmetic for Rotate=Normal: without it calculateRotations() returns the SAME
+        // yaw every tick a target holds still, so LocalPlayer.sendPosition()'s own
+        // `dYaw = getYRot() - yRotLast` comes out 0 and vanilla sends a Pos-ONLY packet -- the
+        // reported rotation stops being refreshed on the wire for the entire hold, while local
+        // physics keeps running at the real yaw. With the noise every tick differs, so PosRot goes
+        // out every tick exactly as it does in bản gốc. Restored verbatim.
         //
-        //  1. It defeated RotationManager.packetRotate's own dedup outright. That method opens with
-        //     `if (serverYaw == yaw && serverPitch == pitch) return;` -- with fresh noise on every
-        //     call that comparison is never true, so a standing-still player attacking the same
-        //     crystal position fired a brand new ServerboundMovePlayerPacket.Rot on every single
-        //     attack/place instead of none at all. On 1.21.2+ the client also delimits its ticks
-        //     with ServerboundClientTickEndPacket, so those extra rotation packets land inside a
-        //     tick the server can actually see is already accounted for -- on a 1.20.x connection
-        //     (ViaFabricPlus strips that marker) they are indistinguishable from normal aim.
-        //  2. The reported yaw stopped landing on the client's own sensitivity grid. Vanilla yaw
-        //     only ever moves in mouse-sensitivity-derived increments; uniform noise does not, and
-        //     that is exactly the signal rotation checks key off.
-        //
-        // Matches the observation this came from: every Rotate mode (Normal/Packet/MovementSync)
-        // routes through here and was capped at 3-7 CPS on native protocol, Rotate=None -- the only
-        // mode that never calls this -- was faster, and the same 1.20.x connection was unaffected
-        // in every mode.
-        return new float[]{yaw, pitch};
+        // Known trade-off, kept as a note rather than a divergence: fresh noise per call also
+        // defeats RotationManager.packetRotate's `if (serverYaw == yaw && serverPitch == pitch)
+        // return;` dedup, which measurably capped Rotate=Packet/MovementSync at 3-7 CPS on a NATIVE
+        // 26.1.2 connection (the same 1.20.x ViaFabricPlus connection was unaffected in every mode).
+        // bản gốc has that same property and is the reference being matched.
+        return new float[]{yaw + (((float) Math.random() - 0.5f) * 4), pitch + (((float) Math.random() - 0.5f) * 4)};
     }
 
     public static float[] getRotations(Direction direction) {

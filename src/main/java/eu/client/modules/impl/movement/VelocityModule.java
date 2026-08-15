@@ -17,14 +17,27 @@ import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
 import net.minecraft.network.protocol.game.ClientboundExplodePacket;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.sounds.SoundSource;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.util.Mth;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.VoxelShape;
 
 @RegisterModule(name = "Velocity", description = "Modifies the amount of knockback that you receive.", category = Module.Category.MOVEMENT)
 public class VelocityModule extends Module {
-    public ModeSetting mode = new ModeSetting("Mode", "The method that will be used to achieve the knockback modification.", "Normal", new String[]{"Normal", "Cancel", "Grim"});
-    public NumberSetting horizontal = new NumberSetting("Horizontal", "The amount of horizontal knockback that you will receive.", new ModeSetting.Visibility(mode, "Normal"), 0, 0, 100);
-    public NumberSetting vertical = new NumberSetting("Vertical", "The amount of vertical knockback that you will receive.", new ModeSetting.Visibility(mode, "Normal"), 0, 0, 100);
+    // "Walls" ported 2026-08-15 from NamiDevelopment/nami-public's VelocityFeature (Mode.WALLS).
+    // Unlike Normal (scales EVERY knockback packet, all the time -- an obvious tell to any
+    // velocity-consistency check) it only touches knockback while isPhased() is true, i.e. the
+    // player's own hitbox is actually overlapping solid block collision that tick (Surround/
+    // SelfTrap/scaffold-clip situations) -- full, unmodified vanilla knockback the rest of the
+    // time. Reducing KB only during the exact window a wall would otherwise shove you out/desync
+    // you is far less suspicious than blanket-reducing everything.
+    public ModeSetting mode = new ModeSetting("Mode", "The method that will be used to achieve the knockback modification.", "Normal", new String[]{"Normal", "Walls", "Cancel", "Grim"});
+    public NumberSetting horizontal = new NumberSetting("Horizontal", "The amount of horizontal knockback that you will receive.", new ModeSetting.Visibility(mode, "Normal", "Walls"), 0, 0, 100);
+    public NumberSetting vertical = new NumberSetting("Vertical", "The amount of vertical knockback that you will receive.", new ModeSetting.Visibility(mode, "Normal", "Walls"), 0, 0, 100);
+    public BooleanSetting onlyOnGround = new BooleanSetting("OnlyOnGround", "Only reduces knockback while phased AND on the ground.", new ModeSetting.Visibility(mode, "Walls"), false);
     public BooleanSetting explosions = new BooleanSetting("Explosions", "Modifies knockback received from explosions.", true);
     public BooleanSetting pause = new BooleanSetting("Pause", "Pauses the velocity for a certain duration whenever you get rubberbanded.", new ModeSetting.Visibility(mode, "Cancel", "Grim"), true);
 
@@ -57,16 +70,10 @@ public class VelocityModule extends Module {
             if (packet.id() != mc.player.getId()) return;
 
             switch (mode.getValue()) {
-                case "Normal" -> {
-                    Vec3 velocity = mc.player.getDeltaMovement();
-                    Vec3 target = packet.movement();
-
-                    double x = (target.x - velocity.x) * (horizontal.getValue().doubleValue() / 100.0) + velocity.x;
-                    double y = (target.y - velocity.y) * (vertical.getValue().doubleValue() / 100.0) + velocity.y;
-                    double z = (target.z - velocity.z) * (horizontal.getValue().doubleValue() / 100.0) + velocity.z;
-
-                    event.setCancelled(true);
-                    mc.player.lerpMotion(new Vec3(x, y, z));
+                case "Normal" -> scaleVelocity(event, packet);
+                case "Walls" -> {
+                    if (!isPhased(mc.player) || (onlyOnGround.getValue() && !mc.player.onGround())) return;
+                    scaleVelocity(event, packet);
                 }
                 case "Cancel" -> {
                     if (pause.getValue() && !EUClient.SERVER_MANAGER.getSetbackTimer().hasTimeElapsed(100L)) return;
@@ -84,10 +91,9 @@ public class VelocityModule extends Module {
 
         if (event.getPacket() instanceof ClientboundExplodePacket packet && explosions.getValue()) {
             switch (mode.getValue()) {
-                case "Normal" -> {
-                    if (packet.playerKnockback().isPresent()) ((Vec3dAccessor) packet.playerKnockback().get()).setX((float) (packet.playerKnockback().get().x * (horizontal.getValue().doubleValue() / 100.0)));
-                    if (packet.playerKnockback().isPresent()) ((Vec3dAccessor) packet.playerKnockback().get()).setY((float) (packet.playerKnockback().get().y * (vertical.getValue().doubleValue() / 100.0)));
-                    if (packet.playerKnockback().isPresent()) ((Vec3dAccessor) packet.playerKnockback().get()).setZ((float) (packet.playerKnockback().get().z * (horizontal.getValue().doubleValue() / 100.0)));
+                case "Normal" -> scaleExplosion(packet);
+                case "Walls" -> {
+                    if (isPhased(mc.player)) scaleExplosion(packet);
                 }
                 case "Cancel" -> {
                     if (pause.getValue() && !EUClient.SERVER_MANAGER.getSetbackTimer().hasTimeElapsed(100L)) return;
@@ -110,6 +116,47 @@ public class VelocityModule extends Module {
                 });
             }
         }
+    }
+
+    private void scaleVelocity(PacketReceiveEvent event, ClientboundSetEntityMotionPacket packet) {
+        Vec3 velocity = mc.player.getDeltaMovement();
+        Vec3 target = packet.movement();
+
+        double x = (target.x - velocity.x) * (horizontal.getValue().doubleValue() / 100.0) + velocity.x;
+        double y = (target.y - velocity.y) * (vertical.getValue().doubleValue() / 100.0) + velocity.y;
+        double z = (target.z - velocity.z) * (horizontal.getValue().doubleValue() / 100.0) + velocity.z;
+
+        event.setCancelled(true);
+        mc.player.lerpMotion(new Vec3(x, y, z));
+    }
+
+    private void scaleExplosion(ClientboundExplodePacket packet) {
+        if (packet.playerKnockback().isPresent()) ((Vec3dAccessor) packet.playerKnockback().get()).setX((float) (packet.playerKnockback().get().x * (horizontal.getValue().doubleValue() / 100.0)));
+        if (packet.playerKnockback().isPresent()) ((Vec3dAccessor) packet.playerKnockback().get()).setY((float) (packet.playerKnockback().get().y * (vertical.getValue().doubleValue() / 100.0)));
+        if (packet.playerKnockback().isPresent()) ((Vec3dAccessor) packet.playerKnockback().get()).setZ((float) (packet.playerKnockback().get().z * (horizontal.getValue().doubleValue() / 100.0)));
+    }
+
+    // Ported from Nami's PlayerUtils.isPhased(): true iff the entity's own hitbox actually
+    // overlaps solid block collision this tick (the player is clipped into a wall/scaffold, not
+    // just standing next to one).
+    private boolean isPhased(Entity entity) {
+        if (entity == null || mc.level == null) return false;
+
+        AABB box = entity.getBoundingBox();
+        int minX = Mth.floor(box.minX), maxX = Mth.ceil(box.maxX);
+        int minY = Mth.floor(box.minY), maxY = Mth.ceil(box.maxY);
+        int minZ = Mth.floor(box.minZ), maxZ = Mth.ceil(box.maxZ);
+
+        for (int x = minX; x < maxX; x++) {
+            for (int y = minY; y < maxY; y++) {
+                for (int z = minZ; z < maxZ; z++) {
+                    BlockPos pos = new BlockPos(x, y, z);
+                    VoxelShape shape = mc.level.getBlockState(pos).getCollisionShape(mc.level, pos);
+                    if (!shape.isEmpty() && shape.bounds().move(pos).intersects(box)) return true;
+                }
+            }
+        }
+        return false;
     }
 
     @Override

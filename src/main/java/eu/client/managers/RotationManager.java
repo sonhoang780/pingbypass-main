@@ -4,7 +4,9 @@ import lombok.Getter;
 import eu.client.EUClient;
 import eu.client.events.SubscribeEvent;
 import eu.client.events.impl.*;
+import eu.client.mixins.accessors.EntityAccessor;
 import eu.client.modules.Module;
+import eu.client.modules.impl.core.RotationsModule;
 import eu.client.utils.IMinecraft;
 import eu.client.utils.animations.Easing;
 import eu.client.utils.rotations.Rotation;
@@ -65,10 +67,28 @@ public class RotationManager implements IMinecraft {
         // single PriorityBlockingQueue<Rotation> and a single onUpdateMovement/POST pair. The port had
         // grown a SECOND, independent swap (the legacyQueue's own onUpdateMovement$Legacy at the same
         // MAX_VALUE priority) racing this one for mc.player's yaw field with undefined ordering --
-        // that alone is a per-tick coin flip between two different reported yaws, i.e. stutter.
-        // The legacy queue is now just another SOURCE for the single `rotation` below; ClientRotationEvent
-        // (MovementSync / Sprint Grim) still wins when anyone cancels it, otherwise the queue's head
-        // (Rotate=Normal) is used, otherwise there is no rotation at all.
+        // that alone is a per-tick coin flip between two different reported yaws, i.e. stutter. Fixed
+        // by folding both sources into one swap (below).
+        //
+        // 2026-08-14, third pass: legacyQueue IS bản gốc's own rotate()/PriorityBlockingQueue
+        // mechanism, ported verbatim (LegacyRotation == bản gốc's Rotation.java field-for-field, see
+        // its own doc) -- "Rotate=Normal" on every module (KillAura/AutoCrystal/SpeedMine) goes
+        // through it. ClientRotationEvent/MovementSync is this project's own addition on top, with
+        // no equivalent in bản gốc at all (its callers -- Sprint Grim, AutoCrystal MovementSync --
+        // never touched RotationManager in bản gốc's own source, confirmed against the Desktop
+        // copy).
+        //
+        // 2026-08-14, fourth pass: "legacyQueue always wins outright" was too blunt -- Sprint's
+        // Grim mode needs to win over AutoCrystal/SpeedMine's Rotate=Normal specifically (its
+        // reported yaw has to be EXACTLY what it computed for GrimAC's diagonal-speed prediction,
+        // see SprintModule's own class doc; losing that tick's rotation to a lower-stakes aim
+        // module is a guaranteed setback, not just a cosmetic loss). Back to a real priority
+        // comparison, but keyed off the SAME table legacyQueue itself already uses -- Sprint is
+        // just another priority in it now (4, between SpeedMine=3 and SelfFill=5), not a special
+        // case. Only SprintModule ever calls ClientRotationEvent.setOwner() (see that class's own
+        // doc), so every OTHER ClientRotationEvent caller (KillAura/AutoCrystal-MovementSync/
+        // AutoWeb/SelfFill/...) still defaults to priority 0 and keeps losing to legacyQueue exactly
+        // as before -- this only changes Sprint's own standing.
         legacyQueue.removeIf(r -> System.currentTimeMillis() - r.getTime() > 100);
         eu.client.utils.rotations.LegacyRotation legacy = legacyQueue.peek();
 
@@ -76,13 +96,16 @@ public class RotationManager implements IMinecraft {
         ClientRotationEvent rotationEvent = new ClientRotationEvent(snapshot);
         EUClient.EVENT_HANDLER.post(rotationEvent);
 
-        if (rotationEvent.isCancelled()) {
-            rotation = snapshot;
-            rotationOwner = rotationEvent.getOwner();
-            lastRenderTime = System.currentTimeMillis();
-        } else if (legacy != null) {
+        int eventPriority = rotationEvent.isCancelled() && rotationEvent.getOwner() != null
+                ? getLegacyModulePriority(rotationEvent.getOwner()) : rotationEvent.isCancelled() ? 0 : -1;
+
+        if (legacy != null && legacy.getPriority() > eventPriority) {
             rotation = new Rotation(legacy.getYaw(), legacy.getPitch());
             rotationOwner = legacy.getModule();
+            lastRenderTime = System.currentTimeMillis();
+        } else if (rotationEvent.isCancelled()) {
+            rotation = snapshot;
+            rotationOwner = rotationEvent.getOwner();
             lastRenderTime = System.currentTimeMillis();
         } else {
             rotation = null;
@@ -138,7 +161,12 @@ public class RotationManager implements IMinecraft {
         LEGACY_PRIORITIES.put("KillAura", 1);
         LEGACY_PRIORITIES.put("AutoCrystal", 2);
         LEGACY_PRIORITIES.put("SpeedMine", 3);
-        LEGACY_PRIORITIES.put("SelfFill", 4);
+        // Sprint (Grim mode, via ClientRotationEvent -- not a legacyQueue caller itself) ranked
+        // above AutoCrystal/SpeedMine's Normal on request: its reported yaw has to be exactly what
+        // grimUpdate() computed for GrimAC's prediction to stay exact, so losing arbitration to a
+        // lower-stakes aim module is a guaranteed setback. See onPlayerUpdate's own note.
+        LEGACY_PRIORITIES.put("Sprint", 4);
+        LEGACY_PRIORITIES.put("SelfFill", 5);
     }
 
     public int getLegacyModulePriority(Module module) {
@@ -169,22 +197,76 @@ public class RotationManager implements IMinecraft {
         legacyQueue.add(new eu.client.utils.rotations.LegacyRotation(yaw, pitch, module, priority));
     }
 
-    // ---- MovementFix: DELETED 2026-08-14 ------------------------------------------------------
+    // ---- MovementFix: bản gốc 1.21.4's own, restored verbatim 2026-08-14 ----------------------
     //
-    // bản gốc 1.21.4 has a MovementFix too (RotationsModule.movementFix -> onUpdateVelocity /
-    // onKeyboardTick / onPlayerJump) and it is DEFAULT OFF, i.e. the known-good behaviour the user
-    // is comparing against is: silent rotation touches mc.player yaw/pitch ONLY for the
-    // UpdateMovementEvent -> UpdateMovementEvent.Post window that encloses sendPosition, and the
-    // real WASD input, the reported key bits and the local physics yaw are never touched at all.
+    // What was deleted on 2026-08-14 was the PORT's own invention: an ALWAYS-ON octant remap
+    // (computeMoveFix/OCTANTS) that rewrote ClientInput.moveVector AND keyPresses every tick a
+    // rotation was held, swapped local physics onto the spoofed yaw and force-desprinted whenever
+    // the snapped octant had no forward component. That was correctly removed -- it is the
+    // rubberband/stutter source under Rotate=Normal and bản gốc never had anything like it.
     //
-    // The port had grown an always-on octant remap on top of that: it rewrote ClientInput.moveVector
-    // AND keyPresses every tick a rotation was held, swapped local physics onto the spoofed yaw
-    // (LivingEntityMixin) and force-desprinted whenever the snapped octant had no forward component.
-    // That is the rubberband/stutter: the player physically walks up to 22.5 deg off from where they
-    // pressed, the reported key bits flip between octants as the aim target swings around them, and
-    // sprint is toggled on/off tick by tick. None of it existed in bản gốc. Removed outright rather
-    // than put behind a toggle -- Rotate=Packet stays available for the cases that genuinely want a
-    // rotation the movement packet never carries.
+    // But bản gốc DOES have a MovementFix, a completely different and much smaller one, gated
+    // behind RotationsModule.movementFix (default OFF), and the port deleted that too. These three
+    // handlers are it, ported field-for-field from bản gốc's RotationManager:
+    //   * onUpdateVelocity  -- recompute the movement vector at the spoofed yaw instead of the real
+    //                          one, via Entity.getInputVector (bản gốc: movementInputToVelocity);
+    //   * onKeyboardTick    -- rotate the real (forward, sideways) input by (realYaw - spoofedYaw)
+    //                          and Math.round() it, so what is reported still resembles key input;
+    //   * onPlayerJump/POST -- swap the yaw across jumpFromGround, which reads getYRot() itself and
+    //                          sits outside the UpdateMovementEvent window entirely.
+    // Note this touches keyPresses NOWHERE -- bản gốc doesn't, so neither does this. Verbatim, not
+    // a reinterpretation: the port already tried "improving" this shape once and that is what the
+    // deleted computeMoveFix was.
+
+    private float prevFixYaw;
+
+    @SubscribeEvent
+    public void onUpdateVelocity(UpdateVelocityEvent event) {
+        if (mc.player == null) return;
+        if (!EUClient.MODULE_MANAGER.getModule(RotationsModule.class).movementFix.getValue()) return;
+        if (rotation == null) return;
+
+        event.setVelocity(EntityAccessor.invokeMovementInputToVelocity(event.getMovementInput(), event.getSpeed(), rotation.getYaw()));
+        event.setCancelled(true);
+    }
+
+    @SubscribeEvent
+    public void onKeyboardTick(KeyboardTickEvent event) {
+        if (mc.player == null || mc.level == null || mc.player.isPassenger()) return;
+        if (!EUClient.MODULE_MANAGER.getModule(RotationsModule.class).movementFix.getValue()) return;
+        if (rotation == null) return;
+
+        float movementForward = event.getMovementForward();
+        float movementSideways = event.getMovementSideways();
+
+        float delta = (mc.player.getYRot() - rotation.getYaw()) * Mth.DEG_TO_RAD;
+
+        float cos = Mth.cos(delta);
+        float sin = Mth.sin(delta);
+
+        event.setMovementForward(Math.round(movementForward * cos + movementSideways * sin));
+        event.setMovementSideways(Math.round(movementSideways * cos - movementForward * sin));
+        event.setCancelled(true);
+    }
+
+    @SubscribeEvent
+    public void onPlayerJump(PlayerJumpEvent event) {
+        if (mc.player == null || mc.level == null || mc.player.isPassenger()) return;
+        if (!EUClient.MODULE_MANAGER.getModule(RotationsModule.class).movementFix.getValue()) return;
+        if (rotation == null) return;
+
+        prevFixYaw = mc.player.getYRot();
+        mc.player.setYRot(rotation.getYaw());
+    }
+
+    @SubscribeEvent
+    public void onPlayerJump$POST(PlayerJumpEvent.Post event) {
+        if (mc.player == null || mc.level == null || mc.player.isPassenger()) return;
+        if (!EUClient.MODULE_MANAGER.getModule(RotationsModule.class).movementFix.getValue()) return;
+        if (rotation == null) return;
+
+        mc.player.setYRot(prevFixYaw);
+    }
 
     @SubscribeEvent
     public void onPacketSend(PacketSendEvent event) {
@@ -200,6 +282,23 @@ public class RotationManager implements IMinecraft {
 
     public void packetRotate(float[] rotations) {
         packetRotate(rotations[0], rotations[1]);
+    }
+
+    // See RotationsModule.jitter's own doc for the reasoning; ported from Nami's JitterMode. Both
+    // packetRotate and silentRotate run every fake rotation through this before the dedup check
+    // (so consecutive sends at the "same" target aren't deduped into never actually varying).
+    private float[] applyJitter(float yaw, float pitch) {
+        String mode = EUClient.MODULE_MANAGER.getModule(RotationsModule.class).jitter.getValue();
+        if ("Grim".equalsIgnoreCase(mode)) {
+            pitch = Mth.clamp(pitch + (float) ((Math.random() * 2.0 - 1.0) * 0.001f), -90f, 90f);
+        } else if ("Normal".equalsIgnoreCase(mode)) {
+            float min = 1.25f, max = 2.5f;
+            float jitterYaw = (min + (float) (Math.random() * (max - min))) * (Math.random() < 0.5 ? -1 : 1);
+            float jitterPitch = (min + (float) (Math.random() * (max - min))) * (Math.random() < 0.5 ? -1 : 1);
+            yaw += jitterYaw;
+            pitch = Mth.clamp(pitch + jitterPitch, -90f, 90f);
+        }
+        return new float[]{yaw, pitch};
     }
 
     // Set whenever packetRotate actually sends a lie, read by ClientPlayNetworkHandlerMixin to
@@ -223,7 +322,9 @@ public class RotationManager implements IMinecraft {
         return System.currentTimeMillis() - lastPacketRotateTime < 500L;
     }
 
-    public void packetRotate(float yaw, float pitch) {
+    public void packetRotate(float yawIn, float pitchIn) {
+        float[] jittered = applyJitter(yawIn, pitchIn);
+        final float yaw = jittered[0], pitch = jittered[1];
         if (serverYaw == yaw && serverPitch == pitch) return;
         lastPacketRotateTime = System.currentTimeMillis();
         // Same call on both sides -- mc.getConnection() on the proxy IS the real server
@@ -245,6 +346,51 @@ public class RotationManager implements IMinecraft {
                         EUClient.POSITION_MANAGER.getServerX(), EUClient.POSITION_MANAGER.getServerY(),
                         EUClient.POSITION_MANAGER.getServerZ(), yaw, pitch,
                         EUClient.POSITION_MANAGER.isServerOnGround(), mc.player.horizontalCollision)));
+    }
+
+    public void silentRotate(float[] rotations) {
+        silentRotate(rotations[0], rotations[1]);
+    }
+
+    // "Silent" rotate mode, rewritten 2026-08-15 against NamiDevelopment/nami-public's own
+    // Rotations -> Silent (RotationRequestHandler.performSilent() / RotationTickHandler's dead
+    // copy of the same, both in nami-api's core.rotation package) -- confirmed by the user to run
+    // Surround + AutoCrystal + AutoTotem together on a live GrimAC server without ever getting
+    // kicked, the exact combo this project's own Rotate=Normal + Sprint=Grim flag report was
+    // chasing a workaround for. Nami's "Silent" does NOT send a bare Rot packet: it sends
+    // ServerboundMovePlayerPacket.PosRot with the player's REAL current position and the faked
+    // yaw/pitch -- byte-for-byte the same packet shape packetRotate() already sends here. The
+    // previous version of this method sent Rot-only (no position) on a theory that pre-1.21.2
+    // vanilla's Rot packet was somehow the "real" silent-rotation trick and would only land clean
+    // over a ViaFabricPlus 1.20.x downgrade -- Nami's actual working reference contradicts that
+    // outright (same PosRot on every protocol, no separate downgrade-only path), so the theory is
+    // dropped rather than kept. What actually makes Nami's combo survive GrimAC isn't the packet
+    // shape at all -- it's that every interaction (see nami-api's InteractionUtils.placeBlock/
+    // interactBlockAt/breakBlock, all called from TrapComponent for Surround and
+    // AutoCrystalFeature) submits its OWN one-shot rotation request synchronously, immediately
+    // before its own action packet, every single time -- never through a shared per-tick
+    // arbitration queue where a higher-priority module (their Sprint equivalent) could win the
+    // tick and leave the action packet's rotation stale. That ordering guarantee has to come from
+    // each caller (AutoCrystal/Surround/SelfTrap already call this right before their own
+    // place/attack packet, same shape) -- this method only owns the wire format now.
+    public void silentRotate(float yawIn, float pitchIn) {
+        float[] jittered = applyJitter(yawIn, pitchIn);
+        final float yaw = jittered[0], pitch = jittered[1];
+        if (serverYaw == yaw && serverPitch == pitch) return;
+        lastPacketRotateTime = System.currentTimeMillis();
+        eu.client.pingbypass.server.ProxyServerTickListener.allowSend(() ->
+                mc.getConnection().send(new ServerboundMovePlayerPacket.PosRot(
+                        EUClient.POSITION_MANAGER.getServerX(), EUClient.POSITION_MANAGER.getServerY(),
+                        EUClient.POSITION_MANAGER.getServerZ(), yaw, pitch,
+                        EUClient.POSITION_MANAGER.isServerOnGround(), mc.player.horizontalCollision)));
+    }
+
+    // Rotate=Packet and Rotate=Silent are both "fire a standalone rotation packet at this target"
+    // -- only the packet shape differs (PosRot vs Rot-only, see silentRotate's own doc). One
+    // dispatcher so every call site just names the mode string instead of re-testing it.
+    public void wireRotate(String mode, float[] rotations) {
+        if ("Silent".equalsIgnoreCase(mode)) silentRotate(rotations);
+        else packetRotate(rotations);
     }
 
     public boolean inRenderTime() {

@@ -3,10 +3,9 @@ package eu.client.pingbypass.modules.submodules.crystal;
 import eu.client.EUClient;
 import eu.client.events.SubscribeEvent;
 import eu.client.events.impl.*;
-import eu.client.managers.RotationPriorities;
 import eu.client.modules.impl.combat.SuicideModule;
 import eu.client.modules.impl.player.SpeedMineModule;
-import eu.client.modules.impl.player.ThrowXPModule;
+import eu.client.modules.impl.player.KeyActionModule;
 import eu.client.pingbypass.modules.PbModule;
 import eu.client.settings.Setting;
 import eu.client.settings.impl.*;
@@ -79,14 +78,13 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
     public BooleanSetting swapBack = new BooleanSetting("SwapBack", "Switches back to the item you were holding before the module started switching to crystals.", false);
 
     public ModeSetting sequential = new ModeSetting("Sequential", "The sequence that the module's processes will be run in.", "Strong", new String[]{"None", "Strict", "Strong"});
-    // MovementSync is this project's rewrite of the port's old "Normal" (ClientRotationEvent
-    // arbitration, see onClientRotation below) -- kept under a new name, default unchanged so
-    // existing configs keep today's behavior. Normal/Packet are bản gốc 1.21.4's originals,
-    // restored verbatim: Normal is a self-contained one-shot yaw/pitch write (that old queue API,
-    // ROTATION_MANAGER.rotate(rotations, priority), was removed entirely -- see RotationManager's
-    // class doc); Packet's call site was already identical to bản gốc (packetRotate(rots), fired
-    // for every mode except None -- unchanged below).
-    public ModeSetting rotate = new ModeSetting("Rotate", "Automatically rotates to the crystal whenever attacking or placing.", "MovementSync", new String[]{"None", "MovementSync", "Normal", "Packet"});
+    // 2026-08-14: reverted to master + diffed against bản gốc 1.21.4 (Desktop copy), same as
+    // AutoCrystalModule/SpeedMineModule -- MovementSync removed (invented within this session's
+    // branch, never merged, no bản gốc equivalent). "Normal" is a deliberate no-op here (see
+    // setYawPitch's doc: this class only ever runs on the proxy, where bản gốc's "Normal" never
+    // touched the camera either); Packet/Silent's call site is unchanged (wireRotate(mode, rots),
+    // fired for every mode except None -- see RotationManager.wireRotate's own doc for Silent).
+    public ModeSetting rotate = new ModeSetting("Rotate", "Automatically rotates to the crystal whenever attacking or placing.", "Normal", new String[]{"None", "Normal", "Packet", "Silent"});
     public ModeSetting swing = new ModeSetting("Swing", "The hand that will be used for swinging.", "Default", new String[]{"Default", "None", "Packet", "Mainhand", "Offhand", "Both"});
     public BooleanSetting yawStep = new BooleanSetting("YawStep", "Performs your rotations over multiple ticks.", false);
     public NumberSetting yawStepThreshold = new NumberSetting("YawStepThreshold", "The threshold in order for yaw to be modified.", 75, 1, 180);
@@ -147,11 +145,6 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
     private EndCrystal attackTarget = null;
     private PlaceTarget placeTarget = null;
     private PlaceTarget mineTarget = null;
-
-    // See AutoCrystalModule's identical fields for the full rationale (ported 1:1) --
-    // ClientRotationEvent-driven reassertion instead of the old one-shot rotate() calls.
-    private float[] attackRotations = null;
-    private float[] placeRotations = null;
 
     private String calculationTime = "0.00ms";
     private int calculationCount = 0;
@@ -319,8 +312,7 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
         if (!WorldUtils.canSee(crystal) && (raytrace.getValue() || crystal.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > Mth.square(attackWallsRange.getValue().doubleValue())))
             return;
 
-        if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
-        if (rotate.getValue().equalsIgnoreCase("MovementSync")) attackRotations = calculateRotations(Vec3.atCenterOf(crystal.blockPosition()));
+        if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
         // "Normal" is a deliberate no-op here -- see setYawPitch's doc, this class only ever
         // runs on the proxy, where bản gốc's "Normal" never touched the camera either.
 
@@ -359,17 +351,23 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
         }
 
         BlockPos position = mineTarget.getPosition();
+
+        // See AutoCrystalModule's identical 2026-08-15 fix -- render position only committed once
+        // confirmed still in range, so a stale (async-computed, since-moved-away-from) target
+        // never draws a ghost placement out at its old distance.
+        if (mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeRange.getValue().doubleValue())) {
+            EUClient.RENDER_MANAGER.setRenderPosition(null);
+            return;
+        }
         EUClient.RENDER_MANAGER.setRenderPosition(position);
 
-        if (mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeRange.getValue().doubleValue())) return;
         if (!WorldUtils.canSeeBlock(position) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue())))
             return;
 
-        if (rotate.getValue().equalsIgnoreCase("MovementSync")) placeRotations = calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0));
-        if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(position).add(0, 1, 0)));
+        if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), RotationUtils.getRotations(Vec3.atCenterOf(position).add(0, 1, 0)));
 
         for (Entity entity : mc.level.getEntities((Entity) null, new AABB(position.above()), entity -> true).stream().filter(entity -> entity instanceof EndCrystal).toList()) {
-            if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(entity));
+            if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), RotationUtils.getRotations(entity));
 
             mc.player.connection.send(new ServerboundAttackPacket(entity.getId()));
             mc.player.connection.send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
@@ -426,25 +424,8 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
         return calculationTime + ", " + calculationCount + ", " + calculationDamage + ", " + crystalsPerSecond;
     }
 
-    // See AutoCrystalModule's identical handler for the full rationale (ported 1:1).
-    @SubscribeEvent(priority = RotationPriorities.AUTO_CRYSTAL)
-    public void onClientRotation(ClientRotationEvent event) {
-        if (!rotate.getValue().equalsIgnoreCase("MovementSync") || event.isCancelled()) return;
-
-        if (place.getValue() && placeRotations != null) {
-            event.setYaw(placeRotations[0]);
-            event.setPitch(placeRotations[1]);
-            return;
-        }
-
-        if (attack.getValue() && attackRotations != null) {
-            event.setYaw(attackRotations[0]);
-            event.setPitch(attackRotations[1]);
-        }
-    }
 
     private void attackCrystals() {
-        attackRotations = null;
         EndCrystal overrideCrystal = null;
 
         // obstructions accumulates EVERY blocked candidate scanned, not just whatever's in the
@@ -472,7 +453,6 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
         EndCrystal crystal = overrideCrystal == null ? attackTarget : overrideCrystal;
         if (crystal == null) return;
 
-        if (rotate.getValue().equalsIgnoreCase("MovementSync")) attackRotations = calculateRotations(Vec3.atCenterOf(crystal.blockPosition()));
         // "Normal" is a deliberate no-op here -- see setYawPitch's doc, this class only ever
         // runs on the proxy, where bản gốc's "Normal" never touched the camera either.
 
@@ -495,14 +475,13 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
         if (bailReason != null) return;
 
         attackRunnable = () -> {
-            if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
+            if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
 
             attack(crystal);
         };
     }
 
     private void placeCrystals(boolean sequential) {
-        placeRotations = null;
         PlaceTarget placeTarget = this.placeTarget == null ? null : this.placeTarget.clone();
         if (placeTarget == null || placeTarget.getPosition() == null) {
             EUClient.RENDER_MANAGER.setRenderPosition(null);
@@ -516,16 +495,20 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
             return;
 
         BlockPos position = placeTarget.getPosition();
+
+        // See AutoCrystalModule's identical 2026-08-15 fix for the full rationale.
+        if (mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeRange.getValue().doubleValue())) {
+            EUClient.RENDER_MANAGER.setRenderPosition(null);
+            return;
+        }
         EUClient.RENDER_MANAGER.setRenderPosition(position);
 
-        if (mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeRange.getValue().doubleValue())) return;
         if (!mc.level.getWorldBorder().isWithinBounds(position)) return;
         if (mc.level.getBlockState(position).getBlock() != Blocks.OBSIDIAN && mc.level.getBlockState(position).getBlock() != Blocks.BEDROCK) return;
         if (!mc.level.getBlockState(position.offset(0, 1, 0)).isAir() || (placements.getValue().equalsIgnoreCase("Protocol") && !mc.level.getBlockState(position.offset(0, 2, 0)).isAir())) return;
         if (!WorldUtils.canSeeBlock(position) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue()))) return;
         if (mc.level.getEntities((Entity) null, new AABB(position.offset(0, 1, 0)), entity -> true).stream().anyMatch(entity -> entity.isAlive() && !(entity instanceof ExperienceOrb) && !(entity instanceof EndCrystal))) return;
 
-        if (rotate.getValue().equalsIgnoreCase("MovementSync")) placeRotations = calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0));
 
         if (!placeTimer.hasTimeElapsed(1000.0f - placeSpeed.getValue().floatValue() * 50.0f)) return;
         if (!sequential && placedSequentially) {
@@ -536,7 +519,7 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
         placeRunnable = () -> {
             boolean switched = false;
 
-            if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(Vec3.atCenterOf(position).add(0, 1, 0)));
+            if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), RotationUtils.getRotations(Vec3.atCenterOf(position).add(0, 1, 0)));
 
             if (mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
                 if (autoSwitch.getValue().equalsIgnoreCase("Normal") && swapBack.getValue() && savedSlot == -1) savedSlot = previousSlot;
@@ -551,7 +534,7 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
             }
 
             if (godSync.getValue()) {
-                boolean flag = !antiKick.getValue() || !(mc.player.getMainHandItem().getItem() instanceof ExperienceBottleItem) && !(mc.player.getOffhandItem().getItem() instanceof ExperienceBottleItem) && !EUClient.MODULE_MANAGER.getModule(ThrowXPModule.class).isToggled();
+                boolean flag = !antiKick.getValue() || !(mc.player.getMainHandItem().getItem() instanceof ExperienceBottleItem) && !(mc.player.getOffhandItem().getItem() instanceof ExperienceBottleItem) && !EUClient.MODULE_MANAGER.getModule(KeyActionModule.class).isXpActive();
                 if ((!antiKick.getValue() || kickTicks > kickThreshold.getValue().intValue()) && flag) {
                     if (!fast.getValue()) {
                         for (Entity entity : mc.level.entitiesForRendering()) {

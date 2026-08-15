@@ -22,4 +22,16 @@ public interface RenderPipelinesAccessor {
     static RenderPipeline.Snippet getItemSnippet() {
         throw new AssertionError();
     }
+
+    // Added for DeathEffects' Meme mode (killeffect_meme.fsh) -- entity-shaped textured world
+    // quads with fog/lightmap support, the same snippet pair vanilla's own entity renderer uses.
+    @Accessor("ENTITY_SNIPPET")
+    static RenderPipeline.Snippet getEntitySnippet() {
+        throw new AssertionError();
+    }
+
+    @Accessor("GLOBALS_SNIPPET")
+    static RenderPipeline.Snippet getGlobalsSnippet() {
+        throw new AssertionError();
+    }
 }

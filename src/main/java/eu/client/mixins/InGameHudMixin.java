@@ -4,18 +4,22 @@ import com.llamalad7.mixinextras.injector.v2.WrapWithCondition;
 import eu.client.EUClient;
 import eu.client.events.impl.RenderOverlayEvent;
 import eu.client.modules.impl.core.HUDModule;
+import eu.client.modules.impl.movement.ElytraFlyModule;
 import eu.client.modules.impl.visuals.NoRenderModule;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.Gui;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.resources.Identifier;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(Gui.class)
@@ -65,5 +69,25 @@ public class InGameHudMixin {
             return !(EUClient.MODULE_MANAGER.getModule(NoRenderModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(NoRenderModule.class).pumpkinOverlay.getValue());
         }
         return true;
+    }
+
+    // ElytraFly ControlRocket + GrimV3 genuinely swaps a hotbar item (real clicks, see
+    // ElytraFlyModule.grimSwapCycle's 2026-08-15 note) to park the elytra out of the chest slot for
+    // one tick per cycle. extractItemHotbar reads Inventory.getItem(i) fresh every FRAME (no
+    // interpolation) for each of the 9 hotbar slots, so whichever real hotbar slot the cycle uses
+    // shows the elytra for that one real tick -- perceived as the reported "elytra dao động giữa
+    // chestplate và elytra ở hotbar". Redirect just this one read: while a swap-out is in flight and
+    // this loop's index is the parked slot, hand back what that slot looked like BEFORE the swap
+    // instead of its real (temporarily different) content. Container state itself is untouched --
+    // this only lies to the render call, same principle as LivingEntityMixin's getItemBySlot(CHEST)
+    // fix for the 3rd-person model, just for the hotbar icon instead.
+    @Redirect(method = "extractItemHotbar", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/world/entity/player/Inventory;getItem(I)Lnet/minecraft/world/item/ItemStack;"))
+    private ItemStack euclient$grimHotbarVisual(Inventory inventory, int slot) {
+        ItemStack real = inventory.getItem(slot);
+        if (EUClient.MODULE_MANAGER == null) return real;
+        ElytraFlyModule elytraFly = EUClient.MODULE_MANAGER.getModule(ElytraFlyModule.class);
+        if (elytraFly.getGrimParkedSlot() == slot) return elytraFly.getGrimParkedDisplaced();
+        return real;
     }
 }

@@ -89,7 +89,7 @@ public class RekitModule extends Module {
     // Keybind version of place->open->pull->close->break, WITHOUT the ender chest fetch/return --
     // operates on whatever shulker is already in the inventory. Reuses the same AutoState machine,
     // entered directly at PLACE_SHULKER.
-    public BindSetting autoPlaceBind = new BindSetting("AutoPlace", "Keybind: places the shulker in your inventory, opens it, pulls kit items, closes, then breaks it. No ender chest -- one-shot version of Auto.", 0);
+    public BindSetting autoPlaceBind = new BindSetting("AutoPlace", "Keybind: places the shulker in your inventory, opens it, pulls kit items, closes, then breaks it. No ender chest -- one-shot version of Auto.", 0).disableHoldModes();
 
     public enum PickaxePref { Efficiency, SilkTouch }
     public enum ArmorPref { Blast, Prot }

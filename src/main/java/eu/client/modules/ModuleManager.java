@@ -41,7 +41,11 @@ public class ModuleManager implements IMinecraft {
 
                 module.getSettings().add(module.chatNotify);
                 module.getSettings().add(module.drawn);
-                module.getSettings().add(module.bind);
+                // A persistent module's setToggled() is a permanent no-op (see Module's own doc),
+                // so "the keybind that toggles this module" represents nothing for one -- reported
+                // on KeyActionModule specifically ("Bind tổng ở KeyAction ... không đại diện cho
+                // cái gì cả"), but the same is true for every persistent module, not just that one.
+                if (!module.isPersistent()) module.getSettings().add(module.bind);
 
                 if (module.isProxyEnhanced() && module.proxyMode != null) {
                     module.getSettings().add(module.proxyMode);

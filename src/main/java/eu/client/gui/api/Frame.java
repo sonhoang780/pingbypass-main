@@ -19,6 +19,10 @@ import java.util.List;
 @Getter @Setter
 public class Frame {
     private final Module.Category category;
+    // Set instead of category when this Frame is built via the (headerLabel, buttons) constructor
+    // -- a column of ExpandableRow buttons not backed by ModuleManager/Module.Category at all
+    // (HUDEditorScreen's settings column). getHeaderText() picks whichever is set.
+    private final String headerLabel;
     private int x, y, width, height, totalHeight, dragX = 0, dragY = 0, textPadding = 3;
     public boolean open = true, dragging = false;
     private final ArrayList<Button> buttons = new ArrayList<>();
@@ -48,12 +52,31 @@ public class Frame {
 
     public Frame(Module.Category category, int x, int y, int width, int height) {
         this.category = category;
+        this.headerLabel = null;
         this.x = x;
         this.y = y;
         this.width = width;
         this.height = height;
 
         for(Module module : EUClient.MODULE_MANAGER.getModules(category)) buttons.add(new ModuleButton(module, this, height));
+    }
+
+    // Same Frame -- same header/border/scroll/open-close animation, same per-row shader fill --
+    // just pre-built ExpandableRow buttons instead of one ModuleButton per Module.Category member.
+    // See ExpandableRow's own doc for why this didn't need a ModuleButton subclass instead.
+    public Frame(String headerLabel, List<Button> prebuiltButtons, int x, int y, int width, int height) {
+        this.category = null;
+        this.headerLabel = headerLabel;
+        this.x = x;
+        this.y = y;
+        this.width = width;
+        this.height = height;
+
+        this.buttons.addAll(prebuiltButtons);
+    }
+
+    private String getHeaderText() {
+        return category != null ? category.getName() : headerLabel;
     }
 
     public void render(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta) {
@@ -86,16 +109,16 @@ public class Frame {
             totalHeight += 1;
             for(Button button : buttons) {
                 // Filter by search query
-                if(searching && button instanceof ModuleButton moduleButton) {
-                    if(!moduleButton.getModule().getName().toLowerCase().contains(searchQuery.toLowerCase())) {
+                if(searching && button instanceof ExpandableRow row) {
+                    if(!row.getRowName().toLowerCase().contains(searchQuery.toLowerCase())) {
                         button.setVisible(false);
                         continue;
                     }
                     button.setVisible(true);
-                    moduleButton.setSearchQuery(searchQuery); // Pass search query for highlighting
-                } else if(!searching && button instanceof ModuleButton moduleButton) {
+                    row.setSearchQuery(searchQuery); // Pass search query for highlighting
+                } else if(!searching && button instanceof ExpandableRow row) {
                     button.setVisible(true);
-                    moduleButton.setSearchQuery(""); // Clear search query
+                    row.setSearchQuery(""); // Clear search query
                 }
 
                 if(!button.isVisible()) continue;
@@ -104,7 +127,7 @@ public class Frame {
                 button.setY(y + totalHeight);
                 totalHeight += button.getHeight();
 
-                if(button instanceof ModuleButton moduleButton) {
+                if(button instanceof ExpandableRow row) {
                     // Rows sit at their FULL, un-scaled Y offsets (never compressed) -- what used
                     // to shrink every row's spacing continuously while still drawing full-size
                     // text crammed multiple rows into an ever-shrinking gap right before fully
@@ -112,13 +135,13 @@ public class Frame {
                     // steps to dodge the overlap, but that turned the slide into a chunky pop-in
                     // ("như 30fps, không có gia tốc") since the easing curve was still evaluated
                     // continuously but only ever visible at row-count granularity.
-                    // Now: rows keep full spacing, and ModuleButton.render() scissor-clips them to
-                    // revealHeight (continuous, same eased openAmount curve as before) -- the
+                    // Now: rows keep full spacing, and the row's own render() scissor-clips them
+                    // to revealHeight (continuous, same eased openAmount curve as before) -- the
                     // panel genuinely slides open/closed pixel-by-pixel with full acceleration,
                     // and a row can never show more of itself than the clip allows, so nothing
                     // overlaps.
-                    float openAmount = moduleButton.getOpenAmount();
-                    java.util.List<Button> settingButtons = moduleButton.getButtons();
+                    float openAmount = row.getOpenAmount();
+                    java.util.List<Button> settingButtons = row.getButtons();
                     float childOffset = 0f;
                     float fullHeight = 0f;
                     for (Button b : settingButtons) {
@@ -145,9 +168,28 @@ public class Frame {
                         fullHeight += rowHeight;
                     }
 
+                    // 2026-08-15: totalHeight (and therefore maxScroll a few lines down, AND every
+                    // button laid out below this one) used to advance by the ANIMATED revealHeight
+                    // (fullHeight * openAmount) instead of the module's FINAL target height -- so
+                    // while a module's settings were still sliding open (180ms), the scroll bounds
+                    // and every row below it were BOTH still growing toward their final position on
+                    // the same frame-by-frame curve. Reported live: opening a long module (e.g.
+                    // KillAura) pushes a bottom-of-list module (Surround) down, but you can't scroll
+                    // far enough to reach it until the open animation finishes catching up -- "kéo
+                    // lên không kịp", a moving target you also can't out-scroll. Layout now commits
+                    // to the module's FINAL target height immediately (isOpen(), the settled boolean,
+                    // not the mid-flight openAmount) -- scroll bounds and rows below settle in one
+                    // frame whether opening OR closing. Only the visual reveal (ModuleButton's own
+                    // scissor clip, still keyed off openAmount) animates.
                     int revealHeight = Math.round(fullHeight * openAmount);
-                    moduleButton.setRevealHeight(revealHeight);
-                    totalHeight += revealHeight;
+                    row.setRevealHeight(revealHeight);
+                    // Opening: commit to the full target height immediately (the fix above).
+                    // Closing: keep following the animated (shrinking) revealHeight -- committing to
+                    // 0 immediately here would snap every row below upward while this module's
+                    // content is still visibly rendered mid-close (revealHeight > 0), overlapping it.
+                    // Closing was never the reported problem (nothing becomes harder to reach by
+                    // collapsing), so it keeps the original smooth-shrink behavior.
+                    totalHeight += row.isOpen() ? Math.round(fullHeight) : revealHeight;
                 }
             }
         }
@@ -170,8 +212,8 @@ public class Frame {
             for (Button button : buttons) {
                 if (!button.isVisible()) continue;
                 button.setY(button.getY() + shift);
-                if (button instanceof ModuleButton moduleButton) {
-                    for (Button b : moduleButton.getButtons()) {
+                if (button instanceof ExpandableRow row) {
+                    for (Button b : row.getButtons()) {
                         if (b.isVisible()) b.setY(b.getY() + shift);
                     }
                 }
@@ -182,7 +224,7 @@ public class Frame {
         Renderer2D.renderQuad(context, x, y, x + width, y + height, new Color(20, 20, 25, 200));
         Color accentColor = ClickGuiScreen.getButtonColor(y, 200);
         Renderer2D.renderQuad(context, x, y + height - 1, x + width, y + height, accentColor);
-        EUClient.FONT_MANAGER.drawTextWithShadow(context, category.getName(), x + textPadding, y + 2, Color.WHITE);
+        EUClient.FONT_MANAGER.drawTextWithShadow(context, getHeaderText(), x + textPadding, y + 2, Color.WHITE);
 
         float frameOpenAmount = openAnim.get(open ? 1f : 0f);
         int fullContentHeight = totalHeight - height - 1;
@@ -244,8 +286,8 @@ public class Frame {
         if (x <= mouseX && x + width > mouseX) {
             boolean whitelistHandling = false;
             for (Button b : buttons) {
-                if (b instanceof ModuleButton moduleButton && moduleButton.isOpen()) {
-                    List<Button> wbButtons = moduleButton.getButtons().stream().filter(button -> button instanceof WhitelistButton).toList();
+                if (b instanceof ExpandableRow row && row.isOpen()) {
+                    List<Button> wbButtons = row.getButtons().stream().filter(button -> button instanceof WhitelistButton).toList();
                     for (Button whitelistButton : wbButtons) {
                         if (whitelistButton instanceof WhitelistButton wb) {
                             if (wb.isHandlingScroll(mouseX, mouseY)) {

@@ -103,6 +103,10 @@ public class ElytraFlyModule extends Module {
     private int crGrimTicks;
     /** Inventory slot the elytra is parked in for the current GrimV3 swap-out, or -1. */
     private int crParkedSlot = -1;
+    /** What crParkedSlot actually looked like right before this swap-out (a spare chestplate, or
+     *  empty) -- cached so the GUI/hotbar render mixins can keep SHOWING that instead of the real
+     *  elytra that lands there for the cycle. See getGrimParkedDisplaced()'s own doc. */
+    private net.minecraft.world.item.ItemStack crParkedDisplaced = net.minecraft.world.item.ItemStack.EMPTY;
 
     private float pitch;
 
@@ -274,6 +278,7 @@ public class ElytraFlyModule extends Module {
             if (crParkedSlot != -1) {
                 InventoryUtils.swapEquipment(crParkedSlot, 6);
                 crParkedSlot = -1;
+                crParkedDisplaced = ItemStack.EMPTY;
             }
             return;
         }
@@ -407,6 +412,7 @@ public class ElytraFlyModule extends Module {
         if (crParkedSlot != -1) {
             InventoryUtils.swapEquipment(crParkedSlot, 6);
             crParkedSlot = -1;
+            crParkedDisplaced = ItemStack.EMPTY;
             crGrimTicks = 0;
             if (!mc.player.onGround())
                 mc.getConnection().send(new ServerboundPlayerCommandPacket(mc.player, ServerboundPlayerCommandPacket.Action.START_FALL_FLYING));
@@ -420,15 +426,36 @@ public class ElytraFlyModule extends Module {
         // slot's real content was "nothing" server-side. Reported: "GrimV3 phải swap giữa elytra
         // và giáp, sao lại tháo ra không". The classic version of this trick swaps with an actual
         // chestplate, not a bare inventory slot -- functionally identical for the durability reset
-        // (canGlide() fails either way, see this method's own doc), but matches the real trick and
-        // means anyone whose local render override missed a frame sees a chestplate, not a gap.
+        // (canGlide() fails either way, see this method's own doc), but matches the real trick.
         // Falls back to an empty slot if the player is carrying no spare chestplate at all, rather
-        // than silently skipping the whole cycle.
+        // than silently skipping the whole cycle. Hotbar and main inventory are BOTH fair game
+        // (bản gốc never restricted this to main inventory -- a spare chestplate parked in the
+        // hotbar is exactly the real trick a human plays) -- see this method's 2026-08-15 note
+        // below for why that no longer costs a visible flicker.
+        //
+        // 2026-08-15, SECOND PASS (reported: fix #1 below was "sai bản chất" -- wrong at the root.
+        // The user's actual repro carries exactly one elytra + one spare chestplate, BOTH already
+        // in the hotbar; there is no main-inventory slot to relocate the trick onto, so confining
+        // parkSlot there (the first attempt) either does nothing for this setup or, worse, silently
+        // fails the whole cycle when the main inventory has no empty slot either. The real bug was
+        // never WHICH slot gets used -- swapEquipment's clicks are genuine, so whatever slot it
+        // touches WILL hold the elytra for real, for one real tick, no matter where. The fix has to
+        // be at the RENDER layer: keep letting the trick use the hotbar (bản gốc's own design,
+        // reverted above), and instead lie to the two GUI read paths the same way
+        // getGrimHiddenElytra()/LivingEntityMixin already lies to the 3rd-person model's armor
+        // layer -- see GuiHotbarMixin (in-game hotbar) and HandledScreenMixin's slot-render redirect
+        // (inventory/container screens), both driven off getGrimParkedSlot()/getGrimParkedDisplaced()
+        // below. Neither of those two mixins is a movement/timing fix and neither touches
+        // swapEquipment's clicks -- the swap is still real, only its two REAL render call sites
+        // (Gui.extractItemHotbar's Inventory.getItem, AbstractContainerScreen.extractSlot's
+        // Slot.getItem) are redirected to keep showing the pre-swap identity for exactly the one
+        // slot the cycle is using.
         int chestplateSlot = findChestplateSlot();
         int parkSlot = chestplateSlot != -1 ? chestplateSlot
                 : InventoryUtils.findEmptySlot(InventoryUtils.HOTBAR_START, InventoryUtils.INVENTORY_END);
         if (parkSlot == -1) return;
 
+        crParkedDisplaced = mc.player.getInventory().getItem(parkSlot).copy();
         InventoryUtils.swapEquipment(parkSlot, 6);
         crParkedSlot = parkSlot;
     }
@@ -446,6 +473,22 @@ public class ElytraFlyModule extends Module {
         return -1;
     }
 
+    /** Inventory index (project convention: 0-8 hotbar-relative, 9+ raw container number) currently
+     *  holding the parked elytra, or -1 if no swap-out is in flight. Read by GuiHotbarMixin --
+     *  compares directly against Gui.extractItemHotbar's own loop index (same 0-8 convention). */
+    public int getGrimParkedSlot() {
+        return crParkedSlot;
+    }
+
+    /** What getGrimParkedSlot() looked like right before this swap-out -- a spare chestplate, or
+     *  ItemStack.EMPTY. Read alongside getGrimParkedSlot() by GuiHotbarMixin/HandledScreenMixin so
+     *  the hotbar and inventory/container screens keep showing that instead of the real elytra
+     *  that lands there for the cycle (swapEquipment's clicks are genuine -- this only redirects
+     *  the two RENDER read paths, never the actual container state). */
+    public net.minecraft.world.item.ItemStack getGrimParkedDisplaced() {
+        return crParkedDisplaced;
+    }
+
     /** The parked elytra while a GrimV3 swap-out is in flight, else null. Read by LivingEntityMixin. */
     public net.minecraft.world.item.ItemStack getGrimHiddenElytra() {
         if (crParkedSlot == -1 || mc.player == null) return null;
@@ -461,6 +504,7 @@ public class ElytraFlyModule extends Module {
         // Never leave the elytra parked in the inventory because the module went off mid-cycle.
         if (crParkedSlot != -1 && mc.player != null) InventoryUtils.swapEquipment(crParkedSlot, 6);
         crParkedSlot = -1;
+        crParkedDisplaced = ItemStack.EMPTY;
         if (mc.player == null) return;
 
         mc.player.getAbilities().flying = false;

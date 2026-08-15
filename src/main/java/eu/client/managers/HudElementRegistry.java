@@ -1,6 +1,7 @@
 package eu.client.managers;
 
 import eu.client.settings.impl.BooleanSetting;
+import eu.client.settings.impl.CategorySetting;
 import eu.client.settings.impl.PositionSetting;
 
 import java.util.LinkedHashMap;
@@ -18,13 +19,21 @@ import java.util.Map;
  * changed faster than the once-per-frame report -- letting elements drag off-screen unclamped.
  */
 public class HudElementRegistry {
-    public record Element(String name, BooleanSetting enabled, PositionSetting offset) {}
+    // category: the element's CategorySetting, if it has one -- HUDEditorScreen's settings
+    // column reads this to know which of the owning module's settings belong to this element
+    // (every setting gated behind `new CategorySetting.Visibility(category)`). Null for elements
+    // with no adjustable settings of their own beyond enable/position.
+    public record Element(String name, BooleanSetting enabled, PositionSetting offset, CategorySetting category) {}
 
     private static final Map<String, Element> ELEMENTS = new LinkedHashMap<>();
     private static final Map<String, float[]> RAW_BOUNDS = new LinkedHashMap<>();
 
     public static void register(String name, BooleanSetting enabled, PositionSetting offset) {
-        ELEMENTS.put(name, new Element(name, enabled, offset));
+        register(name, enabled, offset, null);
+    }
+
+    public static void register(String name, BooleanSetting enabled, PositionSetting offset, CategorySetting category) {
+        ELEMENTS.put(name, new Element(name, enabled, offset, category));
     }
 
     /** Called once per frame by an element right after it finishes drawing, in local (pre-offset) space. */

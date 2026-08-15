@@ -29,7 +29,7 @@ public class AutoArmorModule extends Module {
     // Set to toggle Elytra without opening the ClickGui -- same Bind mechanism modules use
     // (BindSetting + KeyInputEvent/MouseInputEvent), just wired to this one setting instead of
     // the whole module's toggle.
-    public eu.client.settings.impl.BindSetting elytraBind = new eu.client.settings.impl.BindSetting("ElytraBind", "Keybind that toggles Elytra on/off.", 0);
+    public eu.client.settings.impl.BindSetting elytraBind = new eu.client.settings.impl.BindSetting("ElytraBind", "Keybind that toggles Elytra on/off.", 0).disableHoldModes();
     public BooleanSetting smartElytra = new BooleanSetting("SmartElytra", "Chooses when to enable elytra in a more convenient way.", false);
 
     // Per-piece protection preference: "Prot" ranks by the Protection enchant level, "Blast"

@@ -39,7 +39,13 @@ public class CoordsCommand extends Command {
                 return;
             }
 
-            mc.getConnection().sendChat("/w " + target + " " + coords);
+            // sendChat("/w ...") sent the literal text "/w ..." as a raw ServerboundChatPacket --
+            // wrong packet type for a slash command (vanilla's own chat GUI intercepts a leading
+            // "/" and routes through sendCommand/ServerboundChatCommandPacket instead; calling
+            // sendChat directly bypassed that entirely), so it never actually ran as a command on
+            // a real server. sendCommand (no leading slash) is the correct API -- see
+            // MacroManager/FriendModule/AutoLoginModule's own usage.
+            mc.getConnection().sendCommand("w " + target + " " + coords);
             EUClient.CHAT_MANAGER.tagged("Sent your position to " + ChatUtils.getPrimary() + target + ChatUtils.getSecondary() + ".", getTag(), getName());
             return;
         }

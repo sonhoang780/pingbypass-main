@@ -24,34 +24,58 @@ public class BreakHighlightModule extends Module {
     public ModeSetting mode = new ModeSetting("Mode", "The rendering that will be applied to the mine esp.", "Outline", new String[]{"Fill", "Outline", "Both"});
     public ColorSetting fillColor = new ColorSetting("FillColor", "The color used for the fill rendering.", new ModeSetting.Visibility(mode, "Fill", "Both"), ColorUtils.getDefaultFillColor());
     public ColorSetting outlineColor = new ColorSetting("OutlineColor", "The color used for the outline rendering.", new ModeSetting.Visibility(mode, "Outline", "Both"), ColorUtils.getDefaultOutlineColor());
+    public BooleanSetting name = new BooleanSetting("Name", "Renders the name of the player mining the block.", false);
 
-    private final Map<Integer, Mine> mineMap = new HashMap<>();
+    // 2026-08-15 FIX (reported: "không detect được loại mine như Double trong SpeedMine đến từ
+    // player khác"). Was keyed by actor ID -- one entry PER PLAYER, period. SpeedMine's own
+    // Double mode mines a primary AND a secondary block at once (see SpeedMineModule's
+    // primary/secondary pair) -- an opponent using it fires two PlayerMineEvents for the SAME
+    // actor at two DIFFERENT positions. Keyed by actor, the second event just overwrote the
+    // first entry outright, so only ever one of the two blocks could ever be highlighted at a
+    // time, no matter which mode the opponent was in. Keyed by BlockPos instead: every block
+    // being mined gets its own entry regardless of how many an actor is working simultaneously.
+    private final Map<BlockPos, Mine> mineMap = new HashMap<>();
 
     @SubscribeEvent
     public void onPlayerMine(PlayerMineEvent event) {
         if(getNull() || event.getActorID() == mc.player.getId()) return;
 
-        Mine mine = new Mine(event.getPosition(), WorldUtils.getBreakTime((Player) mc.level.getEntity(event.getActorID()), mc.level.getBlockState(event.getPosition())), System.currentTimeMillis());
-        if(!mineMap.containsKey(event.getActorID())) {
-            mineMap.put(event.getActorID(), mine);
-        } else {
-            if(!mineMap.get(event.getActorID()).pos.equals(event.getPosition())) mineMap.replace(event.getActorID(), mine);
-        }
+        // 2026-08-15 (crash fix): actor IDs get reused once the original entity is removed --
+        // whatever now sits at that ID by the time this fires isn't guaranteed to still be a
+        // Player (crashed as an ItemEntity in the wild, via BlockDestructionProgress.compareTo
+        // re-invoking this listener on a stale/repurposed ID). Skip instead of blind-casting.
+        if (!(mc.level.getEntity(event.getActorID()) instanceof Player actor)) return;
+
+        Mine mine = new Mine(event.getActorID(), WorldUtils.getBreakTime(actor, mc.level.getBlockState(event.getPosition())), System.currentTimeMillis());
+        // Always overwrite (not "only if this actor's tracked position differs") -- a fresh
+        // PlayerMineEvent at this exact position always means "this mine attempt just
+        // (re)started" (e.g. the same player re-sending a mining-start packet at the SAME block
+        // to restart/reset the break timer), so the highlight's start time/breakTime should
+        // always refresh to match, whether it's a brand new position or a restart of one already
+        // tracked.
+        mineMap.put(event.getPosition(), mine);
     }
 
     @SubscribeEvent
     public void onRenderWorld(RenderWorldEvent event) {
         if(getNull() || mineMap.isEmpty()) return;
 
-        mineMap.entrySet().removeIf(e -> clearMine(e.getKey(), e.getValue().pos));
+        mineMap.entrySet().removeIf(e -> clearMine(e.getValue().actorId, e.getKey()));
 
-        mineMap.forEach((id, mine) -> {
-            if(mc.level.getBlockState(mine.pos).getBlock().equals(Blocks.AIR)) return;
+        mineMap.forEach((pos, mine) -> {
+            if(mc.level.getBlockState(pos).getBlock().equals(Blocks.AIR)) return;
 
             float scale = Easing.toDelta(mine.time, (int) mine.breakTime);
-            AABB box = new AABB(mine.pos).deflate(0.5).inflate(scale / 2.0);
+            AABB box = new AABB(pos).deflate(0.5).inflate(scale / 2.0);
             if (mode.getValue().equalsIgnoreCase("Fill") || mode.getValue().equalsIgnoreCase("Both")) Renderer3D.renderBox(event.getMatrices(), box, fillColor.getColor());
             if (mode.getValue().equalsIgnoreCase("Outline") || mode.getValue().equalsIgnoreCase("Both")) Renderer3D.renderBoxOutline(event.getMatrices(), box, outlineColor.getColor());
+
+            if (name.getValue()) {
+                var actor = mc.level.getEntity(mine.actorId);
+                if (actor instanceof Player player) {
+                    Renderer3D.renderScaledText(event.getMatrices(), player.getName().getString(), box.getCenter().x, box.maxY + 0.3, box.getCenter().z, 30, true, java.awt.Color.WHITE);
+                }
+            }
         });
     }
 
@@ -62,7 +86,7 @@ public class BreakHighlightModule extends Module {
 
     @AllArgsConstructor
     private static class Mine {
-        private final BlockPos pos;
+        private final int actorId;
         private final float breakTime;
         private final long time;
     }
