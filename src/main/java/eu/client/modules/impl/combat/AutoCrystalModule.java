@@ -467,7 +467,7 @@ public class AutoCrystalModule extends Module {
     }
 
     private void run() {
-        if (pauseForSecondaryMine() || rotationOwnedByOther()) return;
+        if (pauseForSecondaryMine()) return;
 
         attackRunnable = null;
         placeRunnable = null;
@@ -514,22 +514,12 @@ public class AutoCrystalModule extends Module {
     }
 
     // 2026-08-15: the Rotate=Normal + MovementFix + Sprint=Grim + AutoCrystal diagonal-flag combo
-    // (see this file's git history / SESSION_2026-08-15_VIA121X_FLAG_FIX.md) is worked around by
-    // deferring AutoCrystal's action a whole tick whenever Sprint's Grim mode won rotation
-    // arbitration that tick. Was briefly removed on request (theory: MovementFix already keeps
-    // position/yaw resynced the same way Sprint=Legit does, so the defer costs nothing needed) --
-    // restored after the user retested and confirmed the flag came back, specifically on native
-    // 1.21.x (never reproduced on a ViaFabricPlus 1.20.x downgrade, matching the original report's
-    // own scoping). MovementFix does not substitute for this: it fixes movement DIRECTION
-    // consistency, not the RotationPlace validation this defer exists for (GrimAC's own
-    // config.yml: `RotationPlace: cancelvl: 5`, checked against the player's last-KNOWN rotation
-    // at action time -- Sprint winning that tick's arbitration leaves the wire rotation pointed at
-    // Sprint's target, not AutoCrystal's, regardless of whether movement direction was correct).
-    private boolean rotationOwnedByOther() {
-        if (!rotate.getValue().equalsIgnoreCase("Normal")) return false;
-        Module owner = EUClient.ROTATION_MANAGER.getRotationOwner();
-        return owner != null && owner != this;
-    }
+    // (see this file's git history / SESSION_2026-08-15_VIA121X_FLAG_FIX.md) used to be worked
+    // around by deferring AutoCrystal's action a whole tick whenever Sprint's Grim mode won
+    // rotation arbitration that tick. Removed on request: MovementFix already keeps position/yaw
+    // resynced the same way Sprint=Legit does (which never needed this defer at all, since Legit
+    // never takes ClientRotationEvent ownership), so the extra tick of latency is no longer
+    // buying anything Sprint needs.
 
     @SubscribeEvent
     public void onUpdateMovement$POST(UpdateMovementEvent.Post event) {
