@@ -82,6 +82,13 @@ public class AutoCrystalModule extends Module {
     // physics untouched. legacyRotate()/legacyQueue is RotationManager's verbatim port of bản gốc's
     // own rotate()/PriorityBlockingQueue<Rotation> -- same method, kept under its port-era name.
     public ModeSetting rotate = new ModeSetting("Rotate", "Automatically rotates to the crystal whenever attacking or placing.", new CategorySetting.Visibility(miscellaneousCategory), "Normal", new String[]{"None", "Normal", "Packet", "Silent"});
+    // See RotationManager.isRotationReached's own doc -- exposed as its own toggle (on request,
+    // for testing) rather than baked in unconditionally, and now applies to Silent too (was
+    // Normal-only): Silent's own packet is synchronous with the action already, but the SAME
+    // Sprint=Grim-vs-target mismatch this exists for can still land if Sprint's own rotation
+    // packet reaches the wire between silentRotate()'s send and the action packet a few lines
+    // later (both fire off the main/render thread inside the same tick, not atomically).
+    public BooleanSetting rotationReach = new BooleanSetting("RotationReach", "Waits until the server's last-known rotation is actually close to the target before attacking/placing (Normal and Silent only).", new CategorySetting.Visibility(miscellaneousCategory), true);
     public ModeSetting swing = new ModeSetting("Swing", "The hand that will be used for swinging.", new CategorySetting.Visibility(miscellaneousCategory), "Default", new String[]{"Default", "None", "Packet", "Mainhand", "Offhand", "Both"});
     public BooleanSetting yawStep = new BooleanSetting("YawStep", "Performs your rotations over multiple ticks.", new CategorySetting.Visibility(miscellaneousCategory), false);
     public NumberSetting yawStepThreshold = new NumberSetting("YawStepThreshold", "Threshold", "The threshold in order for yaw to be modified.", new BooleanSetting.Visibility(yawStep, true), 75, 1, 180);
@@ -513,6 +520,12 @@ public class AutoCrystalModule extends Module {
         }
     }
 
+    // See rotationReach setting's own doc.
+    private boolean rotationGated() {
+        if (!rotationReach.getValue()) return false;
+        return rotate.getValue().equalsIgnoreCase("Normal") || rotate.getValue().equalsIgnoreCase("Silent");
+    }
+
     // 2026-08-15: the Rotate=Normal + MovementFix + Sprint=Grim + AutoCrystal diagonal-flag combo
     // (see this file's git history / SESSION_2026-08-15_VIA121X_FLAG_FIX.md) used to be worked
     // around by deferring AutoCrystal's action a whole tick whenever Sprint's Grim mode won
@@ -551,7 +564,7 @@ public class AutoCrystalModule extends Module {
         float[] entityAttackRotations = RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition()));
         if (rotate.getValue().equalsIgnoreCase("Packet") || rotate.getValue().equalsIgnoreCase("Silent")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), entityAttackRotations);
         if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(crystal.blockPosition())), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
-        if (rotate.getValue().equalsIgnoreCase("Normal") && !EUClient.ROTATION_MANAGER.isRotationReached(entityAttackRotations)) return;
+        if (rotationGated() && !EUClient.ROTATION_MANAGER.isRotationReached(entityAttackRotations)) return;
 
         attack(crystal);
 
@@ -683,7 +696,7 @@ public class AutoCrystalModule extends Module {
             if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), entityRotations);
             // See RotationManager.isRotationReached's own doc -- Normal only, Packet/Silent already
             // sent synchronously on the line above.
-            if (rotate.getValue().equalsIgnoreCase("Normal") && !EUClient.ROTATION_MANAGER.isRotationReached(entityRotations)) break;
+            if (rotationGated() && !EUClient.ROTATION_MANAGER.isRotationReached(entityRotations)) break;
 
             mc.player.connection.send(new ServerboundAttackPacket(entity.getId()));
             mc.player.connection.send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
@@ -694,7 +707,7 @@ public class AutoCrystalModule extends Module {
         SpeedMineModule module = EUClient.MODULE_MANAGER.getModule(SpeedMineModule.class);
         boolean flag = module.switchReset.getValue() && (module.switchMode.getValue().equalsIgnoreCase("Normal") || module.switchMode.getValue().equalsIgnoreCase("AltSwap") || module.switchMode.getValue().equalsIgnoreCase("AltPickup"));
 
-        if (rotate.getValue().equalsIgnoreCase("Normal") && !EUClient.ROTATION_MANAGER.isRotationReached(placeRotations)) return;
+        if (rotationGated() && !EUClient.ROTATION_MANAGER.isRotationReached(placeRotations)) return;
 
         if (!autoSwitch.getValue().equalsIgnoreCase("None") &&  mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
             if (!flag && autoSwitch.getValue().equalsIgnoreCase("Normal") && swapBack.getValue() && savedSlot == -1) savedSlot = previousSlot;
@@ -850,7 +863,7 @@ public class AutoCrystalModule extends Module {
         else if (!mc.level.getWorldBorder().isWithinBounds(entity.blockPosition())) bailReason = "border";
         else if (!WorldUtils.canSee(entity) && (raytrace.getValue() || entity.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > Mth.square(attackWallsRange.getValue().doubleValue())))
             bailReason = "cannot-see";
-        else if (rotate.getValue().equalsIgnoreCase("Normal") && !EUClient.ROTATION_MANAGER.isRotationReached(attackTargetRotations)) bailReason = "rotation-not-reached";
+        else if (rotationGated() && !EUClient.ROTATION_MANAGER.isRotationReached(attackTargetRotations)) bailReason = "rotation-not-reached";
 
         if (bailReason != null) return;
         attackRunnable = () -> {
@@ -899,7 +912,7 @@ public class AutoCrystalModule extends Module {
             placedSequentially = false;
             return;
         }
-        if (rotate.getValue().equalsIgnoreCase("Normal") && !EUClient.ROTATION_MANAGER.isRotationReached(placeTargetRotations)) return;
+        if (rotationGated() && !EUClient.ROTATION_MANAGER.isRotationReached(placeTargetRotations)) return;
 
         placeRunnable = () -> {
             boolean switched = false;

@@ -73,6 +73,9 @@ public class SpeedMineModule extends Module {
     // originals, routed through RotationManager.legacyRotate()/packetRotate() (its verbatim port of
     // bản gốc's own rotate()/PriorityBlockingQueue<Rotation>).
     public ModeSetting rotate = new ModeSetting("Rotate", "Automatically rotates to the block when mining it.", "Packet", new String[]{"None", "Normal", "Packet", "Silent"});
+    // See AutoCrystalModule's own rotationReach setting doc -- same mechanism, exposed the same
+    // way here.
+    public BooleanSetting rotationReach = new BooleanSetting("RotationReach", "Waits until the server's last-known rotation is actually close to the target before completing a break (Normal and Silent only).", true);
 
     public BooleanSetting auto = new BooleanSetting("Auto", "Automatically mines blocks deemed optimal for defeating your opponents.", false);
     public BooleanSetting cityOnly = new BooleanSetting("CityOnly", "Only mines the target's city positions.", new BooleanSetting.Visibility(auto, true), false);
@@ -1333,12 +1336,14 @@ public class SpeedMineModule extends Module {
                 // progress keep climbing (uncapped above) but hold off actually completing (and
                 // switching) until the item use finishes for every mode that switches.
                 boolean switchTouchesInventory = !switchMode.getValue().equalsIgnoreCase("None");
-                // See RotationManager.isRotationReached's own doc -- Normal only, matches Nami's
-                // SpeedMineFeature.java:320 (`rotate.get() == Rotate.NORMAL && !isCompleted()`
-                // return, the one confirmed real precedent for gating an action behind rotation
-                // completion). Packet/Silent below already send synchronously right before
-                // fireBreakBurst's own packet -- no race possible there.
-                boolean normalRotationReady = !rotate.getValue().equalsIgnoreCase("Normal")
+                // See RotationManager.isRotationReached's own doc -- Normal + Silent (toggle via
+                // rotationReach), matches Nami's SpeedMineFeature.java:320 (`rotate.get() ==
+                // Rotate.NORMAL && !isCompleted()` return, the one confirmed real precedent for
+                // gating an action behind rotation completion). Extended to Silent too: its own
+                // packet is synchronous with fireBreakBurst's, but not atomically -- Sprint=Grim's
+                // own rotation packet can still land on the wire in between, off-thread.
+                boolean normalRotationReady = !rotationReach.getValue()
+                        || !(rotate.getValue().equalsIgnoreCase("Normal") || rotate.getValue().equalsIgnoreCase("Silent"))
                         || EUClient.ROTATION_MANAGER.isRotationReached(RotationUtils.getRotations(WorldUtils.getHitVector(position, direction)));
                 if (progress >= getSpeed() && !state.canBeReplaced() && (whileEating.getValue() || !mc.player.isUsingItem())
                         && !(switchTouchesInventory && mc.player.isUsingItem()) && normalRotationReady) {
@@ -1477,7 +1482,8 @@ public class SpeedMineModule extends Module {
                 // difference bản gốc's rebreak model ever had a stance on.
                 boolean switchTouchesInventory = !switchMode.getValue().equalsIgnoreCase("None");
                 // See the primary role's own identical check above.
-                boolean normalRotationReady = !rotate.getValue().equalsIgnoreCase("Normal")
+                boolean normalRotationReady = !rotationReach.getValue()
+                        || !(rotate.getValue().equalsIgnoreCase("Normal") || rotate.getValue().equalsIgnoreCase("Silent"))
                         || EUClient.ROTATION_MANAGER.isRotationReached(RotationUtils.getRotations(WorldUtils.getHitVector(position, direction)));
                 if (progress >= getSpeed() && !state.canBeReplaced() && (whileEating.getValue() || !mc.player.isUsingItem())
                         && !(switchTouchesInventory && mc.player.isUsingItem()) && normalRotationReady) {
