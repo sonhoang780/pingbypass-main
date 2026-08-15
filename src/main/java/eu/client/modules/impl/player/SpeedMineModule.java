@@ -1333,8 +1333,15 @@ public class SpeedMineModule extends Module {
                 // progress keep climbing (uncapped above) but hold off actually completing (and
                 // switching) until the item use finishes for every mode that switches.
                 boolean switchTouchesInventory = !switchMode.getValue().equalsIgnoreCase("None");
+                // See RotationManager.isRotationReached's own doc -- Normal only, matches Nami's
+                // SpeedMineFeature.java:320 (`rotate.get() == Rotate.NORMAL && !isCompleted()`
+                // return, the one confirmed real precedent for gating an action behind rotation
+                // completion). Packet/Silent below already send synchronously right before
+                // fireBreakBurst's own packet -- no race possible there.
+                boolean normalRotationReady = !rotate.getValue().equalsIgnoreCase("Normal")
+                        || EUClient.ROTATION_MANAGER.isRotationReached(RotationUtils.getRotations(WorldUtils.getHitVector(position, direction)));
                 if (progress >= getSpeed() && !state.canBeReplaced() && (whileEating.getValue() || !mc.player.isUsingItem())
-                        && !(switchTouchesInventory && mc.player.isUsingItem())) {
+                        && !(switchTouchesInventory && mc.player.isUsingItem()) && normalRotationReady) {
                     if (!instantMine || instantTimer.hasTimeElapsed(instantDelay.getValue().longValue() * 50L)) {
                         fireBreakBurst(direction, slot, false);
                         if (!instantMine) mineTimer.reset();
@@ -1469,8 +1476,11 @@ public class SpeedMineModule extends Module {
                 // Silent-mode mid-eat cancel bug (see process()'s own comment), not a "feel"
                 // difference bản gốc's rebreak model ever had a stance on.
                 boolean switchTouchesInventory = !switchMode.getValue().equalsIgnoreCase("None");
+                // See the primary role's own identical check above.
+                boolean normalRotationReady = !rotate.getValue().equalsIgnoreCase("Normal")
+                        || EUClient.ROTATION_MANAGER.isRotationReached(RotationUtils.getRotations(WorldUtils.getHitVector(position, direction)));
                 if (progress >= getSpeed() && !state.canBeReplaced() && (whileEating.getValue() || !mc.player.isUsingItem())
-                        && !(switchTouchesInventory && mc.player.isUsingItem())) {
+                        && !(switchTouchesInventory && mc.player.isUsingItem()) && normalRotationReady) {
                     legacyFireBreakBurst(direction, slot, isSecondaryRole);
 
                     attempts++;

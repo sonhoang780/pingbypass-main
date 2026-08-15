@@ -179,6 +179,28 @@ public class RotationManager implements IMinecraft {
     }
 
 
+    // 2026-08-15: gate for Rotate=Normal callers (AutoCrystal/Surround/SpeedMine) only.
+    // Packet/Silent already send synchronously right before their own action packet -- same
+    // shape as Nami's SILENT (RotationRequestHandler.performSilent), no race possible. Normal
+    // queues into legacyQueue and is resolved on the NEXT PlayerUpdateEvent tick, which a
+    // higher-priority ClientRotationEvent caller (Sprint=Grim) can win outright, leaving that
+    // tick's actual sendPosition() reporting a DIFFERENT rotation than the one this legacyRotate
+    // call asked for -- exactly the Sprint-Grim + AutoCrystal flag report. Nami has no equivalent
+    // (their Sprint never touches rotation at all, confirmed against SprintFeature.java), so this
+    // gate is this project's own addition, not a port -- loosely modeled on Nami's placeBlock
+    // canPlace check (verify the target is actually where you're looking before firing), applied
+    // here to both place AND attack rather than just place. Callers still call legacyRotate()
+    // unconditionally every attempt (keeps the queued aim advancing toward target); this only
+    // gates the ACTION packet that follows, skipping (retry next tick) when the wire hasn't
+    // caught up yet.
+    private static final float NORMAL_ROTATION_THRESHOLD = 8f;
+
+    public boolean isRotationReached(float[] target) {
+        float yawDiff = Mth.wrapDegrees(target[0] - serverYaw);
+        float pitchDiff = target[1] - serverPitch;
+        return Math.abs(yawDiff) <= NORMAL_ROTATION_THRESHOLD && Math.abs(pitchDiff) <= NORMAL_ROTATION_THRESHOLD;
+    }
+
     public void legacyRotate(float[] rotations, int priority) {
         legacyRotate(rotations[0], rotations[1], priority);
     }
