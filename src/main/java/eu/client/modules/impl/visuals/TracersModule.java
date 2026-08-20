@@ -40,6 +40,12 @@ public class TracersModule extends Module {
 
         for(Player player : mc.level.players()) {
             if (player == mc.player) continue;
+            // LogoutSpot ghosts are real RemotePlayer entities added to mc.level (see
+            // PopChamsModule's despawn()/mc.level.removeEntity for the matching remove side), so
+            // this naive mc.level.players() loop picked them up like any other player -- reported
+            // "Tracer vẫn áp tracer lên LogoutSpot". SpeedMine/AutoCrystal already filter these via
+            // EntityUtils.isGhost() before iterating; this loop never did.
+            if (EntityUtils.isGhost(player)) continue;
             if (EntityUtils.isBot(player) && antiBot.getValue()) continue;
 
             Vec3 playerPos = EntityUtils.getRenderPos(player, event.getTickDelta());

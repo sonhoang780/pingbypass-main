@@ -21,25 +21,10 @@ import java.awt.*;
 import java.util.ArrayList;
 import java.util.List;
 
-// One row of HUDEditorScreen's settings column -- a HUD element (Watermark, Coordinates, ...)
-// instead of a Module, but otherwise the exact same shape as ModuleButton (left-click toggles
-// the element on/off, right-click expands its own settings, same shader row-fill): see
-// ExpandableRow's own doc for why this is a sibling of ModuleButton rather than a Module-backed
-// subclass of it.
 @Getter @Setter
 public class HudElementButton extends Button implements ExpandableRow {
     private final HudElementRegistry.Element element;
-    // Fallback open/animation state, used only when this element has no CategorySetting (its
-    // settings list is empty -- nothing to reveal either way). Elements WITH a category delegate
-    // isOpen()/getOpenAmount() straight to element.category() instead of tracking their own copy:
-    // every child setting's own visibility is `new CategorySetting.Visibility(thatCategory)`,
-    // which gates on the CATEGORY's `open`/openAnim, not on any state this button might keep
-    // locally. A separate local `open` flag here would flip visually but never actually reveal
-    // any child row -- exactly the reported "right-click does nothing" bug: the click WAS
-    // registering, it was just toggling a flag nothing downstream ever read.
-    // Lombok's blanket @Getter/@Setter is excluded here -- isOpen() is written by hand above
-    // (delegates to element.category() when present) and nothing outside this class needs to
-    // set `open` directly (only the fallback mouseClicked branch below, in-class).
+    
     @Getter(AccessLevel.NONE) @Setter(AccessLevel.NONE)
     private boolean open = false;
     private final ArrayList<Button> buttons = new ArrayList<>();
@@ -64,17 +49,12 @@ public class HudElementButton extends Button implements ExpandableRow {
         return element.name();
     }
 
-    /** @param settings this element's own settings (already filtered to its CategorySetting), or empty if it has none. */
     public HudElementButton(HudElementRegistry.Element element, List<Setting> settings, Frame parent, int height) {
         super(parent, height, element.name());
         this.element = element;
         float start = element.enabled().getValue() ? 1f : 0f;
         this.fillAnim = new Animation(start, start, 180, Easing.Method.EASE_OUT_QUAD);
 
-        // Same dispatch as ModuleButton's constructor -- kept in sync deliberately rather than
-        // shared, since ModuleButton's version also has to skip the CategorySetting's own folded-
-        // in "Enabled" row (not applicable here: `settings` is already one category's children,
-        // never the CategorySetting itself).
         for (Setting setting : settings) {
             if (setting instanceof BooleanSetting s) buttons.add(new BooleanButton(s, parent, height));
             else if (setting instanceof NumberSetting s) buttons.add(new NumberButton(s, parent, height));
@@ -87,8 +67,22 @@ public class HudElementButton extends Button implements ExpandableRow {
         }
     }
 
+    // Đồng bộ vị trí vật lý của thẻ con để nhận diện vùng bấm (hitbox) chính xác
+    private void updateChildBounds() {
+        int currentY = getY() + getHeight();
+        for (Button b : buttons) {
+            b.setX(getX());
+            b.setY(currentY);
+            if (b.isVisible()) {
+                currentY += b.getHeight();
+            }
+        }
+    }
+
     @Override
     public void render(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta) {
+        updateChildBounds();
+
         if (this.isHovering(mouseX, mouseY) && EUClient.CLICK_GUI.getDescriptionFrame().getDescription().isEmpty())
             EUClient.CLICK_GUI.getDescriptionFrame().setDescription(this.getDescription());
 
@@ -97,8 +91,6 @@ public class HudElementButton extends Button implements ExpandableRow {
             Renderer2D.renderQuad(context, getX() + getPadding(), getY(), getX() + getWidth() - getPadding(), getY() + getHeight() - 1, bgColor);
         }
 
-        // Row fill -- identical shader/flat-fill behavior to ModuleButton's own (ShadersModule's
-        // NeekeriFill patterns via ClickGuiModule.fillMode, see that class's own doc).
         float fillProgress = fillAnim.get(element.enabled().getValue() ? 1f : 0f);
         if (fillProgress > 0.001f) {
             eu.client.modules.impl.core.ClickGuiModule clickGui = EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.core.ClickGuiModule.class);
@@ -138,16 +130,14 @@ public class HudElementButton extends Button implements ExpandableRow {
 
     @Override
     public void mouseClicked(double mouseX, double mouseY, int button) {
+        updateChildBounds();
+
         if (isHovering(mouseX, mouseY)) {
             if (button == 0) {
                 element.enabled().setValue(!element.enabled().getValue());
                 playClickSound();
             } else if (button == 1) {
                 if (element.category() != null) {
-                    // Same toggle CategoryButton itself uses (setting.setOpen(!setting.isOpen()))
-                    // -- this is the ONLY thing that actually makes child settings visible, since
-                    // their own Visibility checks element.category().getOpenAmount(), not this
-                    // button's local state. See isOpen()/getOpenAmount()'s own doc above.
                     element.category().setOpen(!element.category().isOpen());
                 } else {
                     open = !open;
@@ -157,28 +147,34 @@ public class HudElementButton extends Button implements ExpandableRow {
             }
         }
 
-        // 2026-08-15 FIX (reported: settings visible after right-click, but clicking them does
-        // nothing). This used to read the raw `open` field, which the category branch above
-        // never touches (it toggles element.category().open instead) -- so this stayed false
-        // forever for every element with a category, and no click ever reached the child
-        // buttons even though they were correctly rendering. isOpen() is the one source of truth
-        // (delegates to element.category() when present, see its own doc) -- use it here too.
         if (isOpen()) {
             for (Button b : buttons) {
                 if (!b.isVisible()) continue;
-                b.mouseClicked(mouseX, mouseY, button);
+                b.mouseClicked(mouseX, mouseY, button); // Cho phép nhận cả click trái lẫn click phải (chỉnh giá trị số)
             }
         }
     }
 
     @Override
     public void mouseReleased(double mouseX, double mouseY, int button) {
-        for (Button b : buttons) b.mouseReleased(mouseX, mouseY, button);
+        updateChildBounds();
+        if (isOpen()) {
+            for (Button b : buttons) {
+                if (!b.isVisible()) continue;
+                b.mouseReleased(mouseX, mouseY, button);
+            }
+        }
     }
 
     @Override
     public void mouseDragged(double mouseX, double mouseY, int button, double deltaX, double deltaY) {
-        for (Button b : buttons) b.mouseDragged(mouseX, mouseY, button, deltaX, deltaY);
+        updateChildBounds();
+        if (isOpen()) {
+            for (Button b : buttons) {
+                if (!b.isVisible()) continue;
+                b.mouseDragged(mouseX, mouseY, button, deltaX, deltaY);
+            }
+        }
     }
 
     @Override

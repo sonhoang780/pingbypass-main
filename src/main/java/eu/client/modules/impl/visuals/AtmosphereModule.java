@@ -34,7 +34,7 @@ public class AtmosphereModule extends Module {
     // brightness threshold, so this can't catch snow/bedrock/clouds/anything else anymore.
     public eu.client.settings.impl.CategorySetting starGlowCategory = new eu.client.settings.impl.CategorySetting("StarGlow", "The category for the star glow effect.");
     public BooleanSetting starGlow = new BooleanSetting("StarGlow", "Enabled", "Adds a soft glow to vanilla sky stars.", new eu.client.settings.impl.CategorySetting.Visibility(starGlowCategory), false);
-    public NumberSetting starGlowIntensity = new NumberSetting("StarGlowIntensity", "Intensity", "How strong the glow is.", new eu.client.settings.impl.CategorySetting.Visibility(starGlowCategory), 3.0f, 0.0f, 20.0f);
+    public NumberSetting starGlowIntensity = new NumberSetting("StarGlowIntensity", "Intensity", "How strong the glow is.", new eu.client.settings.impl.CategorySetting.Visibility(starGlowCategory), 3.0f, 0.0f, 1000.0f);
 
     @eu.client.events.SubscribeEvent
     public void onTick(eu.client.events.impl.TickEvent event) {

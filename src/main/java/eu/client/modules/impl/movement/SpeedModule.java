@@ -110,7 +110,8 @@ public class SpeedModule extends Module {
     public void onPlayerMove(PlayerMoveEvent event) {
         if (mode.getValue().equalsIgnoreCase("Strafe") || mode.getValue().equalsIgnoreCase("StrafeStrict")) {
             if ((EUClient.MODULE_MANAGER.getModule(HoleSnapModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(HoleSnapModule.class).hole != null)) return;
-
+            ElytraFlyModule elytra = EUClient.MODULE_MANAGER.getModule(ElytraFlyModule.class);
+            if (elytra.isToggled() && elytra.mode.getValue().equalsIgnoreCase("Control") && mc.player.isFallFlying()) return;
             if (mc.player.fallDistance >= 5.0f || mc.player.isShiftKeyDown() || mc.player.onClimbable() || mc.level.getBlockState(mc.player.blockPosition()).getBlock() == Blocks.COBWEB || mc.player.getAbilities().flying || (mc.player.isInFluid(net.minecraft.tags.FluidTags.WATER) && !speedInWater.getValue()))
                 return;
 

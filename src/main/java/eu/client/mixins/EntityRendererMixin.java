@@ -2,9 +2,11 @@ package eu.client.mixins;
 
 import eu.client.EUClient;
 import eu.client.modules.impl.visuals.ChamsModule;
+import eu.client.modules.impl.visuals.LogoutSpotModule;
 import eu.client.modules.impl.visuals.NameTagsModule;
 import eu.client.modules.impl.visuals.PopChamsModule;
 import eu.client.modules.impl.visuals.ShadersModule;
+import eu.client.modules.impl.visuals.NoRenderModule;
 import eu.client.utils.mixins.IChamsCapture;
 import net.minecraft.client.renderer.entity.EntityRenderer;
 import net.minecraft.client.renderer.entity.state.EntityRenderState;
@@ -23,45 +25,48 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public class EntityRendererMixin<T extends Entity, S extends EntityRenderState> {
     @Inject(method = "getNameTag", at = @At("HEAD"), cancellable = true)
     private void getDisplayName(T entity, CallbackInfoReturnable<Component> info) {
+        if (entity instanceof net.minecraft.client.player.RemotePlayer ghost) {
+            PopChamsModule popChams = EUClient.MODULE_MANAGER.getModule(PopChamsModule.class);
+            if (popChams != null && popChams.isToggled() && popChams.isGhost(ghost)) {
+                info.setReturnValue(null);
+                return;
+            }
+            LogoutSpotModule logoutSpot = EUClient.MODULE_MANAGER.getModule(LogoutSpotModule.class);
+            if (logoutSpot != null && logoutSpot.isToggled() && logoutSpot.isGhost(ghost)) {
+                info.setReturnValue(null);
+                return;
+            }
+        }
         if (entity instanceof Player && EUClient.MODULE_MANAGER.getModule(NameTagsModule.class).isToggled()) {
             info.setReturnValue(null);
         }
     }
 
+    @Inject(method = "shouldRender", at = @At("HEAD"), cancellable = true)
+    private void euclient$limitItemRendering(T entity, net.minecraft.client.renderer.culling.Frustum frustum, double camX, double camY, double camZ, CallbackInfoReturnable<Boolean> cir) {
+        NoRenderModule noRender = EUClient.MODULE_MANAGER != null ? EUClient.MODULE_MANAGER.getModule(NoRenderModule.class) : null;
+        if (noRender != null && noRender.isToggled()) {
+            if (noRender.items.getValue() && entity instanceof net.minecraft.world.entity.item.ItemEntity) {
+                if (!noRender.shouldRenderItem()) {
+                    cir.setReturnValue(false);
+                }
+            }
+            if (noRender.displays.getValue() && entity instanceof net.minecraft.world.entity.Display) {
+                cir.setReturnValue(false);
+            }
+        }
+    }
+
     @Inject(method = "extractRenderState", at = @At("TAIL"))
     private void euclient$chams(T entity, S state, float partialTicks, CallbackInfo info) {
-        // Chams now captures real per-quad fill+outline geometry at flush time (see
-        // ModelFeatureRendererMixin) instead of riding vanilla's outlineColor/entity_outline
-        // post-chain -- reset every frame (an entity that stops matching, or the module getting
-        // toggled off, must not keep whatever spec was set on a previous frame) then set for real
-        // if it currently qualifies.
-        //
-        // No priority/exclusivity between these -- explicitly requested (2026-08-08): Shaders and
-        // Chams are meant to render SIMULTANEOUSLY on the same entity (Shaders' glass/prism shader
-        // pattern layered with Chams' own wireframe outline), not have one suppress the other. They
-        // don't actually compete for storage anyway: Chams writes into the real fill+outline
-        // capture below (IChamsCapture), Shaders writes into vanilla's own separate single-slot
-        // outlineColor field -- different fields, safe to both be active.
-        //
-        // PopChams no longer touches this at all for the LIVE player -- it spawns its own separate
-        // ghost entity (frozen at the popper's pose, see PopChamsModule) that flows through this
-        // SAME mixin naturally as its own distinct entity/capture, so it never has to fight Chams
-        // over the one live-entity slot either.
         IChamsCapture capture = (IChamsCapture) (Object) state;
         capture.euclient$setChams(false, 0, false, 0, false);
 
-        // A PopChams ghost is a real RemotePlayer/EntityType.PLAYER sitting in mc.level, so it
-        // matches Chams'/Shaders' own "Players" entity-type check same as any live player would --
-        // requested (2026-08-12) to stop leaking those onto it: PopChams should be the ONLY thing
-        // touching a ghost's render state, "chỉ được áp chams + pose tại thời điểm pop thôi". Chams'
-        // capture would just get overwritten by PopChams' own block below anyway (same field, PopChams
-        // runs later), but Shaders writes a SEPARATE field (state.outlineColor, vanilla's own slot)
-        // that nothing else here resets -- that's what let Shaders' live/animated pattern render on
-        // top of a ghost that's supposed to be a frozen, PopChams-only snapshot. Branching on
-        // isGhost() first and skipping both blocks outright is simpler and more robust than relying
-        // on capture-overwrite ordering.
         PopChamsModule popChams = EUClient.MODULE_MANAGER.getModule(PopChamsModule.class);
-        boolean isGhost = entity instanceof net.minecraft.client.player.RemotePlayer ghost && popChams.isGhost(ghost);
+        LogoutSpotModule logoutSpot = EUClient.MODULE_MANAGER.getModule(LogoutSpotModule.class);
+        boolean isPopGhost = entity instanceof net.minecraft.client.player.RemotePlayer ghost && popChams != null && popChams.isGhost(ghost);
+        boolean isLogoutGhost = entity instanceof net.minecraft.client.player.RemotePlayer ghost && logoutSpot != null && logoutSpot.isGhost(ghost);
+        boolean isGhost = isPopGhost || isLogoutGhost;
 
         if (!isGhost) {
             ChamsModule chams = EUClient.MODULE_MANAGER.getModule(ChamsModule.class);
@@ -79,10 +84,16 @@ public class EntityRendererMixin<T extends Entity, S extends EntityRenderState> 
             }
         }
 
-        if (popChams.isToggled() && isGhost) {
+        if (popChams != null && popChams.isToggled() && isPopGhost) {
             net.minecraft.client.player.RemotePlayer ghost = (net.minecraft.client.player.RemotePlayer) entity;
             capture.euclient$setChams(popChams.shouldFill(), popChams.getFillColor(ghost).getRGB(),
-                    popChams.shouldOutline(), popChams.getOutlineColor(ghost).getRGB(), false);
+                    popChams.shouldOutline(), popChams.getOutlineColor(ghost).getRGB(), false, true);
+        }
+
+        if (logoutSpot != null && logoutSpot.isToggled() && isLogoutGhost) {
+            net.minecraft.client.player.RemotePlayer ghost = (net.minecraft.client.player.RemotePlayer) entity;
+            capture.euclient$setChams(logoutSpot.shouldFill(), logoutSpot.getFillColor(ghost).getRGB(),
+                    logoutSpot.shouldOutline(), logoutSpot.getOutlineColor(ghost).getRGB(), false, true);
         }
     }
 }

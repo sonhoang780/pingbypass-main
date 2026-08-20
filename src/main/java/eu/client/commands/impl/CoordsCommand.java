@@ -12,8 +12,13 @@ import java.util.List;
 public class CoordsCommand extends Command {
     @Override
     public List<String> getSuggestions(String[] args) {
-        if (args.length == 0) {
-            return mc.level.players().stream().filter(p -> p != mc.player).map(p -> p.getName().getString()).toList();
+        if (args.length == 0 && mc.getConnection() != null) {
+            String myName = mc.player != null ? mc.player.getGameProfile().name() : "";
+            return mc.getConnection().getOnlinePlayers().stream()
+                    .map(info -> info.getProfile().name())
+                    .filter(name -> name != null && !name.isEmpty() && !name.equalsIgnoreCase(myName))
+                    .distinct()
+                    .toList();
         }
         return List.of();
     }
@@ -33,20 +38,11 @@ public class CoordsCommand extends Command {
 
         if (args.length == 1) {
             String target = args[0];
-            boolean online = mc.level.players().stream().map(Player::getName).anyMatch(name -> name.getString().equalsIgnoreCase(target));
-            if (!online) {
-                EUClient.CHAT_MANAGER.tagged("Could not find the player specified.", getTag(), getName());
-                return;
-            }
 
-            // sendChat("/w ...") sent the literal text "/w ..." as a raw ServerboundChatPacket --
-            // wrong packet type for a slash command (vanilla's own chat GUI intercepts a leading
-            // "/" and routes through sendCommand/ServerboundChatCommandPacket instead; calling
-            // sendChat directly bypassed that entirely), so it never actually ran as a command on
-            // a real server. sendCommand (no leading slash) is the correct API -- see
-            // MacroManager/FriendModule/AutoLoginModule's own usage.
-            mc.getConnection().sendCommand("w " + target + " " + coords);
-            EUClient.CHAT_MANAGER.tagged("Sent your position to " + ChatUtils.getPrimary() + target + ChatUtils.getSecondary() + ".", getTag(), getName());
+            if (mc.getConnection() != null) {
+                mc.getConnection().sendCommand("w " + target + " " + coords);
+                EUClient.CHAT_MANAGER.tagged("Sent your position to " + ChatUtils.getPrimary() + target + ChatUtils.getSecondary() + ".", getTag(), getName());
+            }
             return;
         }
 

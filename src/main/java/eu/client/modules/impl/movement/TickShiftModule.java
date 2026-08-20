@@ -47,6 +47,8 @@ public class TickShiftModule extends Module {
         // ANY extra charge at sprint-start and combo'd as if TickShift wasn't running (reported:
         // "behave y hệt sprint instant bình thường"). Skip the speed clause for Instant specifically
         // (standing-still is still required); keep it for every other mode, unchanged.
+        ElytraFlyModule elytra = EUClient.MODULE_MANAGER.getModule(ElytraFlyModule.class);
+        if (elytra.isToggled() && elytra.mode.getValue().equalsIgnoreCase("Control") && mc.player.isFallFlying()) return;
         boolean instant = EUClient.MODULE_MANAGER.getModule(SprintModule.class).mode.getValue().equalsIgnoreCase("Instant");
         boolean charging = mc.player.xxa == 0.0f && mc.player.zza == 0.0f && mc.player.fallDistance == 0.0f;
         if (!instant) charging |= EntityUtils.getSpeed(mc.player, EntityUtils.SpeedUnit.KILOMETERS) <= 5;

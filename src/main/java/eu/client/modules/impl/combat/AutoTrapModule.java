@@ -58,7 +58,7 @@ public class AutoTrapModule extends Module {
         // No PingBypass skip here -- matches earthhack's real AutoTrap, which has zero PingBypass
         // awareness at all. Runs the same whether connected to a proxy or not; the packets it
         // sends get dumb-piped through like anything else.
-        if (!whileEating.getValue() && mc.player.isUsingItem()) return;
+        if (!whileEating.getValue() && eu.client.utils.minecraft.EntityUtils.isEating()) return;
 
         List<AbstractClientPlayer> players = mc.level.players();
 
@@ -158,11 +158,31 @@ public class AutoTrapModule extends Module {
 
     private Target getTarget(List<AbstractClientPlayer> players) {
         Target optimalTarget = null;
-        for (Player player : players) {
+        eu.client.modules.impl.visuals.PopChamsModule popChams = EUClient.MODULE_MANAGER != null ? EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.visuals.PopChamsModule.class) : null;
+        eu.client.modules.impl.visuals.LogoutSpotModule logoutSpot = EUClient.MODULE_MANAGER != null ? EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.visuals.LogoutSpotModule.class) : null;
+
+        List<Player> allCandidates = new ArrayList<>(players);
+        if (logoutSpot != null && logoutSpot.isToggled()) {
+            for (Player ghost : logoutSpot.getGhosts()) {
+                if (ghost != null && !allCandidates.contains(ghost)) {
+                    allCandidates.add(ghost);
+                }
+            }
+        }
+
+        for (Player player : allCandidates) {
             if (player == mc.player) continue;
-            if (!player.isAlive() || player.getHealth() <= 0.0f) continue;
+            if (popChams != null && popChams.isGhost(player)) continue; // Ignore PopChams ghosts
+            if (logoutSpot == null || !logoutSpot.isGhost(player)) {
+                if (!player.isAlive() || player.getHealth() <= 0.0f) continue;
+            }
             if (mc.player.distanceToSqr(player) > Mth.square(enemyRange.getValue().doubleValue())) continue;
-            if (EUClient.FRIEND_MANAGER.contains(player.getName().getString())) continue;
+            if (logoutSpot != null && logoutSpot.isGhost(player)) {
+                eu.client.modules.impl.visuals.LogoutSpotModule.Spot spot = logoutSpot.getSpot((net.minecraft.client.player.RemotePlayer) player);
+                if (spot != null && EUClient.FRIEND_MANAGER.contains(spot.data.name)) continue;
+            } else {
+                if (EUClient.FRIEND_MANAGER.contains(player.getName().getString())) continue;
+            }
             if (holeCheck.getValue() && !HoleUtils.isPlayerInHole(player)) continue;
 
             List<BlockPos> positions = HoleUtils.getTrapPositions(player, mode.getValue().equalsIgnoreCase("Partial"), head.getValue(), antiStep.getValue(), false, strictDirection.getValue()).stream()

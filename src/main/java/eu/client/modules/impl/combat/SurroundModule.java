@@ -12,6 +12,7 @@ import eu.client.modules.impl.movement.HitboxDesyncModule;
 import eu.client.modules.impl.movement.SpeedModule;
 import eu.client.modules.impl.movement.StepModule;
 import eu.client.modules.impl.movement.TickShiftModule;
+import eu.client.modules.impl.player.KeyActionModule;
 import eu.client.settings.impl.BooleanSetting;
 import eu.client.settings.impl.ModeSetting;
 import eu.client.settings.impl.NumberSetting;
@@ -39,6 +40,7 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.core.Direction;
 import net.minecraft.util.Mth;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.level.block.Blocks;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -57,9 +59,11 @@ public class SurroundModule extends Module {
     public BooleanSetting await = new BooleanSetting("Await", "Waits for blocks to be registered by the client before placing on them.", false);
     public BooleanSetting rotate = new BooleanSetting("Rotate", "Whether or not you should rotate when you place blocks.", true);
     public BooleanSetting strictDirection = new BooleanSetting("StrictDirection", "Only places using directions that face you.", false);
+    public BooleanSetting airPlace = new BooleanSetting("AirPlace", "Places blocks in the air without needing neighboring blocks.", false);
     public BooleanSetting crystalDestruction = new BooleanSetting("CrystalDestruction", "Destroys any crystals that interfere with block placement.", true);
     public BooleanSetting center = new BooleanSetting("Center", "Puts you in the center of the block when you surround.", false);
     public BooleanSetting floor = new BooleanSetting("Floor", "Places blocks under your feet as well.", true);
+    public BooleanSetting extension = new BooleanSetting("Extension", "Extends the surround if there are entities obstructing block placement.", true);
     // Ported from homovore's SurroundModule (MineProtect/AvoidHelpingOpponents), renamed per
     // request. Descriptions written for the end user, not the implementation detail.
     public BooleanSetting blocker = new BooleanSetting("Blocker", "Pre-places extra blocks where an enemy is digging toward you.", true);
@@ -71,6 +75,14 @@ public class SurroundModule extends Module {
     // handling at all).
     public BooleanSetting chorusCenter = new BooleanSetting("CenterOnTP", "Centers you if you have just teleported to surround against crystals easier.", true);
     public BooleanSetting predict = new BooleanSetting("Predict", "Replaces a surround block instantly the moment we see the server's own break packet for it, instead of waiting for the next normal placement cycle.", true);
+
+    private int packetsSent = 0;
+    private boolean isWorking = false;
+
+    @Override
+    public String getMetaData() {
+        return "Packet: " + packetsSent;
+    }
 
     public BooleanSetting selfDisable = new BooleanSetting("SelfDisable", "Toggles off the module once it is finished with placing.", false);
     public BooleanSetting jumpDisable = new BooleanSetting("JumpDisable", "Toggles off the module whenever your Y level changes.", true);
@@ -98,9 +110,22 @@ public class SurroundModule extends Module {
 
     private long lastCrystalAttackTime = 0;
 
-    // Blocker: actorID -> the position they're currently mining, fed by PlayerMineEvent (the same
-    // event BreakHighlightModule uses) rather than depending on that module being toggled.
-    private final Map<Integer, BlockPos> activeMines = new HashMap<>();
+    private static class MineData {
+        final BlockPos pos;
+        final long startTime;
+        int ticks;
+        long lastSeenTime;
+
+        MineData(BlockPos pos) {
+            this.pos = pos;
+            this.startTime = System.currentTimeMillis();
+            this.ticks = 0;
+            this.lastSeenTime = System.currentTimeMillis();
+        }
+    }
+
+    // Blocker: actorID -> the position and duration they're currently mining
+    private final Map<Integer, MineData> activeMines = new HashMap<>();
     private static final Direction[] HORIZONTALS = {Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST};
 
     // No PingBypass skip anywhere in this module (removed) -- matches earthhack's real Surround,
@@ -110,8 +135,10 @@ public class SurroundModule extends Module {
     @Override
     public void onEnable() {
         if (mc.player == null || mc.level == null) return;
+        packetsSent = 0;
         lastPosition = PositionUtils.getFlooredPosition(mc.player);
         awaitChorusCenter = false;
+        activeMines.clear();
 
         if(stepToggle.getValue() && EUClient.MODULE_MANAGER.getModule(StepModule.class).isToggled()) EUClient.MODULE_MANAGER.getModule(StepModule.class).setToggled(false);
         if(speedToggle.getValue() && EUClient.MODULE_MANAGER.getModule(SpeedModule.class).isToggled()) EUClient.MODULE_MANAGER.getModule(SpeedModule.class).setToggled(false);
@@ -123,7 +150,26 @@ public class SurroundModule extends Module {
     public void onPlayerMine(PlayerMineEvent event) {
         if (!blocker.getValue() || mc.player == null) return;
         if (event.getActorID() == mc.player.getId()) return;
-        activeMines.put(event.getActorID(), event.getPosition());
+
+        boolean isSurround = false;
+        for (BlockPos feet : ownFootCells()) {
+            if (event.getPosition().getY() == feet.getY()) {
+                int dx = event.getPosition().getX() - feet.getX();
+                int dz = event.getPosition().getZ() - feet.getZ();
+                if (Math.abs(dx) + Math.abs(dz) == 1) {
+                    isSurround = true;
+                    break;
+                }
+            }
+        }
+        if (!isSurround) return;
+
+        MineData data = activeMines.get(event.getActorID());
+        if (data == null || !data.pos.equals(event.getPosition())) {
+            activeMines.put(event.getActorID(), new MineData(event.getPosition()));
+        } else {
+            data.lastSeenTime = System.currentTimeMillis();
+        }
     }
 
     @SubscribeEvent
@@ -149,7 +195,7 @@ public class SurroundModule extends Module {
             return;
         }
 
-        if (!whileEating.getValue() && mc.player.isUsingItem()) return;
+        if (!whileEating.getValue() && eu.client.utils.minecraft.EntityUtils.isEating()) return;
         blocksPlaced = 0;
 
         if (ticks < delay.getValue().intValue()) {
@@ -157,27 +203,25 @@ public class SurroundModule extends Module {
             return;
         }
 
-        if (autoSwitch.getValue().equalsIgnoreCase("None") && !(mc.player.getMainHandItem().getItem() instanceof BlockItem)) {
-            // Ported from the deleted ItemDisable setting's own notification -- always on now
-            // (hardcoded, matches this module's other now-hardcoded "always on" behaviors) instead
-            // of gated behind a toggle.
-            EUClient.CHAT_MANAGER.tagged("You are currently not holding any blocks.", getName());
+        // [FIXED] Không chỉ check cầm block, mà block đó PHẢI là block chống nổ
+        if (autoSwitch.getValue().equalsIgnoreCase("None") && (!(mc.player.getMainHandItem().getItem() instanceof BlockItem blockItem) || !isBlastProof(blockItem.getBlock()))) {
+            EUClient.CHAT_MANAGER.tagged("You are currently not holding any blast-proof blocks.", getName());
             setToggled(false);
             targetPositions.clear();
             return;
         }
 
-        int slot = InventoryUtils.findHardestBlock(0, 8);
+        int slot = findBlastProofBlock(0, 8);
         int previousSlot = mc.player.getInventory().getSelectedSlot();
 
         if (slot == -1) {
-            EUClient.CHAT_MANAGER.tagged("No blocks could be found in your hotbar.", getName());
+            EUClient.CHAT_MANAGER.tagged("No blast-proof blocks could be found in your hotbar.", getName());
             setToggled(false);
             targetPositions.clear();
             return;
         }
 
-        targetPositions = HoleUtils.getFeetPositions(mc.player, true, floor.getValue(), false);
+        targetPositions = HoleUtils.getFeetPositions(mc.player, extension.getValue(), floor.getValue(), false);
 
         if (blocker.getValue()) applyBlocker();
 
@@ -209,50 +253,66 @@ public class SurroundModule extends Module {
                 .filter(position -> !helpBlockedPositions.contains(position))
                 .toList();
 
+        KeyActionModule keyAction = EUClient.MODULE_MANAGER != null ? EUClient.MODULE_MANAGER.getModule(KeyActionModule.class) : null;
+        if (keyAction != null && keyAction.isPearlActive()) return;
+
         if (positions.isEmpty()) {
             if (selfDisable.getValue()) setToggled(false);
             return;
         }
 
-        InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
+        isWorking = true;
+        try {
+            if (rotate.getValue()) {
+                eu.client.EUClient.ROTATION_MANAGER.silentRotate(mc.player.getYRot(), 90f);
+            }
+            InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
 
-        List<BlockPos> placedPositions = new ArrayList<>();
-        for (BlockPos position : positions) {
-            if (blocksPlaced >= limit.getValue().intValue()) break;
-
-            Direction direction = WorldUtils.getDirection(position, placedPositions, strictDirection.getValue());
-            if (direction == null) {
-                BlockPos supportPosition = position.offset(0, -1, 0);
-                if (!WorldUtils.isPlaceable(supportPosition)) continue;
-
-                Direction supportDirection = WorldUtils.getDirection(supportPosition, placedPositions, strictDirection.getValue());
-                if (supportDirection == null) continue;
-
-                // Only count/reserve the slot as used when a block ACTUALLY placed -- a false
-                // return means a crystal was in the way and only got attacked this tick (see
-                // WorldUtils.placeBlock), and burning the per-tick limit on a no-op starved the
-                // other, unblocked positions of their own attempt.
-                if (!WorldUtils.placeBlock(supportPosition, supportDirection, InteractionHand.MAIN_HAND, rotate.getValue(), crystalDestruction.getValue(), render.getValue()))
-                    continue;
-                placedPositions.add(supportPosition);
-                blocksPlaced++;
-
+            List<BlockPos> placedPositions = new ArrayList<>();
+            for (BlockPos position : positions) {
                 if (blocksPlaced >= limit.getValue().intValue()) break;
-                if (await.getValue()) continue;
 
-                direction = WorldUtils.getDirection(position, placedPositions, strictDirection.getValue());
-                if (direction == null) continue;
+                Direction direction = WorldUtils.getDirection(position, placedPositions, strictDirection.getValue());
+                if (direction == null) {
+                    if (airPlace.getValue()) {
+                        // Áp dụng logic của bạn: Dùng khối bên dưới làm support, click mặt UP
+                        if (!WorldUtils.placeBlock(position.below(), Direction.UP, InteractionHand.MAIN_HAND, false, crystalDestruction.getValue(), render.getValue()))
+                            continue;
+                        placedPositions.add(position);
+                        blocksPlaced++;
+                        continue;
+                    } else {
+                        BlockPos supportPosition = position.offset(0, -1, 0);
+                        if (!WorldUtils.isPlaceable(supportPosition)) continue;
+
+                        Direction supportDirection = WorldUtils.getDirection(supportPosition, placedPositions, strictDirection.getValue());
+                        if (supportDirection == null) continue;
+
+                        if (!WorldUtils.placeBlock(supportPosition, supportDirection, InteractionHand.MAIN_HAND, false, crystalDestruction.getValue(), render.getValue()))
+                            continue;
+                        placedPositions.add(supportPosition);
+                        blocksPlaced++;
+
+                        if (blocksPlaced >= limit.getValue().intValue()) break;
+                        if (await.getValue()) continue;
+
+                        direction = WorldUtils.getDirection(position, placedPositions, strictDirection.getValue());
+                        if (direction == null) continue;
+                    }
+                }
+
+                if (!WorldUtils.placeBlock(position, direction, InteractionHand.MAIN_HAND, false, crystalDestruction.getValue(), render.getValue()))
+                    continue;
+                placedPositions.add(position);
+                blocksPlaced++;
             }
 
-            if (!WorldUtils.placeBlock(position, direction, InteractionHand.MAIN_HAND, rotate.getValue(), crystalDestruction.getValue(), render.getValue()))
-                continue;
-            placedPositions.add(position);
-            blocksPlaced++;
+            InventoryUtils.switchBack(autoSwitch.getValue(), slot, previousSlot);
+
+            ticks = 0;
+        } finally {
+            isWorking = false;
         }
-
-        InventoryUtils.switchBack(autoSwitch.getValue(), slot, previousSlot);
-
-        ticks = 0;
     }
 
     @SubscribeEvent
@@ -288,15 +348,26 @@ public class SurroundModule extends Module {
                 if (new AABB(position).intersects(crystal.getBoundingBox()) && targetPositions.contains(position)) {
 
                     if (blocksPlaced > limit.getValue().intValue()) return;
-                    if (!whileEating.getValue() && mc.player.isUsingItem()) return;
+                    if (!whileEating.getValue() && eu.client.utils.minecraft.EntityUtils.isEating()) return;
 
-                    int slot = InventoryUtils.findHardestBlock(0, autoSwitch.getValue().equalsIgnoreCase("AltSwap") || autoSwitch.getValue().equalsIgnoreCase("AltPickup") ? 35 : 8);
+                    int slot = findBlastProofBlock(0, autoSwitch.getValue().equalsIgnoreCase("AltSwap") || autoSwitch.getValue().equalsIgnoreCase("AltPickup") ? 35 : 8);
                     int previousSlot = mc.player.getInventory().getSelectedSlot();
 
                     if (slot == -1) return;
 
                     Direction direction = WorldUtils.getDirection(position, strictDirection.getValue());
-                    if (direction == null) return;
+                    if (direction == null) {
+                        if (airPlace.getValue()) {
+                            if (!InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot)) return;
+                            WorldUtils.placeBlock(position.below(), Direction.UP, InteractionHand.MAIN_HAND, () -> {
+                                mc.player.connection.send(new ServerboundAttackPacket(packet.getId()));
+                            }, false, false, render.getValue());
+                            blocksPlaced++;
+                            InventoryUtils.switchBack(autoSwitch.getValue(), slot, previousSlot);
+                            break;
+                        }
+                        return;
+                    }
 
                     // Runs on the netty IO thread; an Alt* switch to a slot outside the hotbar can't
                     // be done safely from here (see InventoryUtils.switchSlot) -- placing with the
@@ -306,8 +377,7 @@ public class SurroundModule extends Module {
 
                     WorldUtils.placeBlock(position, direction, InteractionHand.MAIN_HAND, () -> {
                         mc.player.connection.send(new ServerboundAttackPacket(packet.getId()));
-                        mc.player.connection.send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
-                    }, rotate.getValue(), false, render.getValue());
+                    }, false, false, render.getValue());
                     blocksPlaced++;
 
                     InventoryUtils.switchBack(autoSwitch.getValue(), slot, previousSlot);
@@ -322,17 +392,25 @@ public class SurroundModule extends Module {
 
         if (predict.getValue() && event.getPacket() instanceof ClientboundBlockUpdatePacket packet && packet.getBlockState().isAir() && targetPositions.contains(packet.getPos())) {
             if (blocksPlaced > limit.getValue().intValue()) return;
-            if (!whileEating.getValue() && mc.player.isUsingItem()) return;
+            if (!whileEating.getValue() && eu.client.utils.minecraft.EntityUtils.isEating()) return;
 
-            int slot = InventoryUtils.findHardestBlock(0, autoSwitch.getValue().equalsIgnoreCase("AltSwap") || autoSwitch.getValue().equalsIgnoreCase("AltPickup") ? 35 : 8);
+            int slot = findBlastProofBlock(0, autoSwitch.getValue().equalsIgnoreCase("AltSwap") || autoSwitch.getValue().equalsIgnoreCase("AltPickup") ? 35 : 8);
             int previousSlot = mc.player.getInventory().getSelectedSlot();
             if (slot == -1) return;
 
             Direction direction = WorldUtils.getDirection(packet.getPos(), strictDirection.getValue());
-            if (direction == null) return;
+            if (direction == null) {
+                if (airPlace.getValue()) {
+                    if (!InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot)) return;
+                    WorldUtils.placeBlock(packet.getPos().below(), Direction.UP, InteractionHand.MAIN_HAND, false, crystalDestruction.getValue(), render.getValue());
+                    blocksPlaced++;
+                    InventoryUtils.switchBack(autoSwitch.getValue(), slot, previousSlot);
+                }
+                return;
+            }
 
             if (!InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot)) return;
-            WorldUtils.placeBlock(packet.getPos(), direction, InteractionHand.MAIN_HAND, rotate.getValue(), crystalDestruction.getValue(), render.getValue());
+            WorldUtils.placeBlock(packet.getPos(), direction, InteractionHand.MAIN_HAND, false, crystalDestruction.getValue(), render.getValue());
             blocksPlaced++;
             InventoryUtils.switchBack(autoSwitch.getValue(), slot, previousSlot);
         }
@@ -368,7 +446,6 @@ public class SurroundModule extends Module {
         // distance, and faking a look here only risks tripping rotation-based anticheat right next
         // to an attack packet for zero gain. Matches Shoreline's own crystal-defense attack.
         mc.player.connection.send(new ServerboundAttackPacket(best.getId()));
-        mc.player.connection.send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
     }
 
     // A crystal cell counts as threatening if it sits ON or directly beside (within 1 horizontally,
@@ -388,12 +465,22 @@ public class SurroundModule extends Module {
     // placement cycle already has a fresh wall ready the instant their hole opens instead of
     // reacting a whole cycle late.
     private void applyBlocker() {
-        // Prune stale mines (the miner's gone, or their target block already broke/got replaced)
-        // -- otherwise a mine that never resulted in a new PlayerMineEvent (player disconnected,
-        // walked off, or actually broke through) would keep reinforcing a dead spot forever.
-        activeMines.entrySet().removeIf(e -> mc.level.getEntity(e.getKey()) == null || mc.level.getBlockState(e.getValue()).canBeReplaced());
+        // Prune stale mines (the miner's gone, or their target block already broke/got replaced, or inactive)
+        activeMines.entrySet().removeIf(e -> {
+            MineData data = e.getValue();
+            return mc.level.getEntity(e.getKey()) == null
+                    || mc.level.getBlockState(data.pos).canBeReplaced()
+                    || System.currentTimeMillis() - data.lastSeenTime > 1000L;
+        });
 
-        for (BlockPos mined : activeMines.values()) {
+        for (MineData data : activeMines.values()) {
+            data.ticks++;
+            // Chỉ thực hiện khi nhận thấy lớp surround bị tác động sau khoảng 2 tick (>= 2 ticks / >= 100ms)
+            if (data.ticks < 2 && System.currentTimeMillis() - data.startTime < 100L) {
+                continue;
+            }
+
+            BlockPos mined = data.pos;
             for (BlockPos feet : ownFootCells()) {
                 if (mined.getY() != feet.getY()) continue;
                 int dx = mined.getX() - feet.getX();
@@ -495,8 +582,47 @@ public class SurroundModule extends Module {
         blocksPlaced = 0;
     }
 
-    @Override
-    public String getMetaData() {
-        return String.valueOf(targetPositions.size());
+
+
+    // ----- Helper Methods cho Blast-Proof Blocks -----
+    private boolean isBlastProof(net.minecraft.world.level.block.Block block) {
+        return block == Blocks.OBSIDIAN ||
+               block == Blocks.ENDER_CHEST ||
+               block == Blocks.CRYING_OBSIDIAN ||
+               block == Blocks.NETHERITE_BLOCK ||
+               block == Blocks.RESPAWN_ANCHOR ||
+               block == Blocks.ANCIENT_DEBRIS ||
+               block == Blocks.ENCHANTING_TABLE ||
+               block == Blocks.ANVIL ||
+               block == Blocks.CHIPPED_ANVIL ||
+               block == Blocks.DAMAGED_ANVIL;
+    }
+
+    private int findBlastProofBlock(int start, int end) {
+        float bestHardness = -1;
+        int bestSlot = -1;
+
+        for (int i = start; i <= end; i++) {
+            if (!(mc.player.getInventory().getItem(i).getItem() instanceof BlockItem item)) continue;
+
+            net.minecraft.world.level.block.Block block = item.getBlock();
+            if (!isBlastProof(block)) continue;
+
+            float hardness = block.defaultDestroyTime();
+            if (hardness == -1) return i; 
+            if (hardness > bestHardness) {
+                bestHardness = hardness;
+                bestSlot = i;
+            }
+        }
+
+        return bestSlot;
+    }
+
+    @SubscribeEvent
+    public void onPacketSend(eu.client.events.impl.PacketSendEvent.Post event) {
+        if (isWorking) {
+            packetsSent++;
+        }
     }
 }

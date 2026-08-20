@@ -29,7 +29,7 @@ public class ModelFeatureRendererMixin {
                                             @Local(ordinal = 0) SubmitNodeStorage.ModelSubmit<S> submit) {
         if (submit.state() instanceof IChamsCapture capture && (capture.euclient$chamsFill() || capture.euclient$chamsOutline())) {
             model.renderToBuffer(pose, new ChamsVertexConsumer(consumer, capture.euclient$chamsFill(), capture.euclient$chamsFillColor(),
-                    capture.euclient$chamsOutline(), capture.euclient$chamsOutlineColor(), capture.euclient$chamsShine()), light, overlay, tint);
+                    capture.euclient$chamsOutline(), capture.euclient$chamsOutlineColor(), capture.euclient$chamsShine(), capture.euclient$chamsSuppressReal()), light, overlay, tint);
         } else {
             model.renderToBuffer(pose, consumer, light, overlay, tint);
         }

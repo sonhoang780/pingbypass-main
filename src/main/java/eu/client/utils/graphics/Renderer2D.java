@@ -151,6 +151,44 @@ public class Renderer2D implements IMinecraft {
         if (mesh != null) texturedType(identifier).draw(mesh);
     }
 
+    public static void renderArrow(GuiGraphicsExtractor context, float x, float y, float width, float height, Color color) {
+        int c = color.getRGB();
+        float notchY = y + height * 0.75f;
+        // Two triangles forming an arrowhead
+        float[] xs = new float[]{x, x - width, x, x,   x, x, x + width, x};
+        float[] ys = new float[]{y, y + height, notchY, y,   y, notchY, y + height, y};
+        int[] cols = new int[]{c, c, c, c,   c, c, c, c};
+        submit(context, xs, ys, cols);
+    }
+
+    public static void renderArrowOutline(GuiGraphicsExtractor context, float x, float y, float width, float height, Color color) {
+        int c = color.getRGB();
+        float notchY = y + height * 0.75f;
+        float[] xs = new float[16];
+        float[] ys = new float[16];
+        int[] cols = new int[16];
+        quadLine(xs, ys, cols, 0, x, y, x - width, y + height, 0.5f, c);
+        quadLine(xs, ys, cols, 1, x - width, y + height, x, notchY, 0.5f, c);
+        quadLine(xs, ys, cols, 2, x, notchY, x + width, y + height, 0.5f, c);
+        quadLine(xs, ys, cols, 3, x + width, y + height, x, y, 0.5f, c);
+        submit(context, xs, ys, cols);
+    }
+
+    private static void quadLine(float[] xs, float[] ys, int[] cols, int qi, float x1, float y1, float x2, float y2, float halfWidth, int c) {
+        float dx = x2 - x1;
+        float dy = y2 - y1;
+        float len = (float) Math.sqrt(dx * dx + dy * dy);
+        if (len < 1e-4f) return;
+        float nx = -dy / len * halfWidth;
+        float ny = dx / len * halfWidth;
+        int b = qi * 4;
+        xs[b] = x1 + nx;     ys[b] = y1 + ny;
+        xs[b + 1] = x1 - nx; ys[b + 1] = y1 - ny;
+        xs[b + 2] = x2 - nx; ys[b + 2] = y2 - ny;
+        xs[b + 3] = x2 + nx; ys[b + 3] = y2 + ny;
+        cols[b] = cols[b + 1] = cols[b + 2] = cols[b + 3] = c;
+    }
+
     public static void renderArrow(PoseStack matrices, float x, float y, float width, float height, Color color) {
         Matrix4f matrix = matrices.last().pose();
         int c = color.getRGB();

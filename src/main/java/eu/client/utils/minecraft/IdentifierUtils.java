@@ -2,6 +2,7 @@ package eu.client.utils.minecraft;
 
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.item.alchemy.Potion;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.Registry;
 import net.minecraft.resources.Identifier;
@@ -19,6 +20,14 @@ public class IdentifierUtils {
         try {
             Block block = getIdentifier(BuiltInRegistries.BLOCK, name);
             if (block != null) return block;
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    public static Potion getPotion(String name) {
+        try {
+            Potion potion = getIdentifier(BuiltInRegistries.POTION, name);
+            if (potion != null) return potion;
         } catch (Exception ignored) {}
         return null;
     }

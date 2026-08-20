@@ -59,26 +59,18 @@ public class NameTagsModule extends Module {
 
     @SubscribeEvent
     public void onRenderWorld(RenderWorldEvent.Post event) {
+        if (mc.level == null || mc.player == null) return;
+
         PoseStack matrices = event.getMatrices();
         MultiBufferSource.BufferSource vertexConsumers = mc.renderBuffers().bufferSource();
 
         for (Player player : mc.level.players().stream().sorted(Comparator.comparing(p -> -mc.player.distanceTo(p))).toList()) {
-            // First person puts the camera basically AT this anchor (head + ~2 blocks) -- pitching
-            // up swings the camera's forward vector straight through the near-degenerate billboard
-            // and flashes the tag into view right in front of the lens. Self only makes sense in
-            // 3rd person (where you can actually see your own head to look "at") -- EXCEPT Freecam
-            // detaches the actual camera position without touching mc.options.getCameraType()
-            // (still reports FIRST_PERSON), so that check alone wrongly hid self's nametag even
-            // while Freecam had the camera floating well away from the degenerate near-anchor case.
             boolean freecam = EUClient.MODULE_MANAGER.getModule(FreecamModule.class).isToggled();
             if (player == mc.player && (!self.getValue() || (mc.options.getCameraType().isFirstPerson() && !freecam))) continue;
             if (antiBot.getValue() && EntityUtils.isBot(player)) continue;
-            // A PopChams ghost is a real RemotePlayer in mc.level.players() -- exclude it, it should
-            // only ever show PopChams' own frozen chams+pose ("chỉ được áp chams + pose tại thời điểm
-            // pop thôi"), not a live-styled nametag (health/ping/items that don't apply to a frozen
-            // snapshot anyway).
             if (player instanceof net.minecraft.client.player.RemotePlayer ghost
-                    && EUClient.MODULE_MANAGER.getModule(PopChamsModule.class).isGhost(ghost)) continue;
+                    && ((EUClient.MODULE_MANAGER.getModule(PopChamsModule.class) != null && EUClient.MODULE_MANAGER.getModule(PopChamsModule.class).isGhost(ghost))
+                    || (EUClient.MODULE_MANAGER.getModule(LogoutSpotModule.class) != null && EUClient.MODULE_MANAGER.getModule(LogoutSpotModule.class).isGhost(ghost)))) continue;
             if (!Renderer3D.isFrustumVisible(player.getBoundingBox())) continue;
 
             double x = Mth.lerp(event.getTickDelta(), player.xo, player.getX());
@@ -105,101 +97,151 @@ public class NameTagsModule extends Module {
             if (totemPops.getValue() && pops > 0) text += " " + ColorUtils.getTotemColor(pops) + "-" + pops;
 
             int width = EUClient.FONT_MANAGER.getWidth(text);
+            int fontHeight = EUClient.FONT_MANAGER.getHeight();
 
-            if (border.getValue().equalsIgnoreCase("Fill") || border.getValue().equalsIgnoreCase("Both")) Renderer3D.renderQuad(matrices, -width / 2.0f - 1, -EUClient.FONT_MANAGER.getHeight() - 1, width / 2.0f + 2, 0, fillColor.getColor());
-            if (border.getValue().equalsIgnoreCase("Outline") || border.getValue().equalsIgnoreCase("Both")) Renderer3D.renderOutline(matrices, -width / 2.0f - 1, -EUClient.FONT_MANAGER.getHeight() - 1, width / 2.0f + 2, 0, outlineColor.getColor());
+            // 1. Khung viền và nền nametag ở đáy
+            if (border.getValue().equalsIgnoreCase("Fill") || border.getValue().equalsIgnoreCase("Both")) 
+                Renderer3D.renderQuad(matrices, -width / 2.0f - 2, -fontHeight - 1, width / 2.0f + 2, 1, fillColor.getColor());
+            if (border.getValue().equalsIgnoreCase("Outline") || border.getValue().equalsIgnoreCase("Both")) 
+                Renderer3D.renderOutline(matrices, -width / 2.0f - 2, -fontHeight - 1, width / 2.0f + 2, 1, outlineColor.getColor());
 
-            EUClient.FONT_MANAGER.drawTextWithShadow(matrices, text, -width / 2, -EUClient.FONT_MANAGER.getHeight(), vertexConsumers, EUClient.MODULE_MANAGER.getModule(FakePlayerModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(FakePlayerModule.class).getPlayer() == player ? new Color(225, 0, 70) : player.isShiftKeyDown() ? new Color(255, 170, 0) : EUClient.FRIEND_MANAGER.contains(player.getName().getString()) ? EUClient.FRIEND_MANAGER.getDefaultFriendColor() : Color.WHITE);
+            // 2. Chữ tên người chơi
+            Color nameColor = EUClient.MODULE_MANAGER.getModule(FakePlayerModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(FakePlayerModule.class).getPlayer() == player ? new Color(225, 0, 70) : player.isShiftKeyDown() ? new Color(255, 170, 0) : EUClient.FRIEND_MANAGER.contains(player.getName().getString()) ? EUClient.FRIEND_MANAGER.getDefaultFriendColor() : Color.WHITE;
+            EUClient.FONT_MANAGER.drawTextWithShadow(matrices, text, -width / 2, -fontHeight, vertexConsumers, nameColor);
 
-            boolean renderedDurability = false;
-            boolean renderedItems = false;
-            int maxEnchants = 0;
+            float highestY = -fontHeight - 2;
 
-            if (enchantments.getValue()) {
+            // 3. Render cụm Items (Icons + Durability + Stack Count + Enchantments)
+            if (items.getValue()) {
+                boolean hasAnyItem = false;
                 for (int i = 0; i < 6; i++) {
-                    ItemStack stack = getItem(player, i);
-                    ItemEnchantments component = EnchantmentHelper.getEnchantmentsForCrafting(stack);
+                    if (!getItem(player, i).isEmpty()) {
+                        hasAnyItem = true;
+                        break;
+                    }
+                }
 
-                    if (!component.keySet().isEmpty()) {
-                        int height = (component.keySet().size() * EUClient.FONT_MANAGER.getHeight() / 2) - 18;
-                        if (height > 0 && (height + 1) > maxEnchants) maxEnchants = height + 1;
+                if (hasAnyItem) {
+                    // Tính toán chiều cao tối đa của các cột enchantments để nâng vị trí itemRowY lên vừa vặn
+                    float maxEnchantsHeight = 0;
+                    if (enchantments.getValue()) {
+                        for (int i = 0; i < 6; i++) {
+                            ItemStack stack = getItem(player, i);
+                            if (stack.isEmpty() || !EnchantmentHelper.hasAnyEnchantments(stack)) continue;
+                            ItemEnchantments component = EnchantmentHelper.getEnchantmentsForCrafting(stack);
+                            int count = component.keySet().size();
+                            float h = count * 4.2f;
+                            if (h > maxEnchantsHeight) maxEnchantsHeight = h;
+                        }
+                    }
+
+                    float itemContentHeight = Math.max(16.0f, maxEnchantsHeight);
+                    // itemRowY được nâng lên cao để khi enchantments ghi xuống dưới không bị đè vào NameTag
+                    float itemRowY = -fontHeight - 4.0f - itemContentHeight;
+                    highestY = itemRowY;
+
+                    // BƯỚC A: Vẽ tất cả Icon Item trước (Z = -0.5f lùi ra sau)
+                    for (int i = 0; i < 6; i++) {
+                        ItemStack stack = getItem(player, i);
+                        if (stack.isEmpty()) continue;
+
+                        int stackX = -(108 / 2) + (i * 18) + 1;
+
+                        matrices.pushPose();
+                        matrices.translate(stackX + 8, itemRowY + 8, -0.5f);
+                        matrices.scale(16, -16, 0.0001f);
+                        Renderer3D.renderItem(matrices, stack, player, vertexConsumers);
+                        matrices.popPose();
+                    }
+
+                    // Flush ngay lập tức layer 3D của các item để text luôn nổi lên trên
+                    vertexConsumers.endBatch();
+
+                    // BƯỚC B: Vẽ toàn bộ Text đè lên trên Item (Z = 1.0f)
+                    for (int i = 0; i < 6; i++) {
+                        ItemStack stack = getItem(player, i);
+                        if (stack.isEmpty()) continue;
+
+                        int stackX = -(108 / 2) + (i * 18) + 1;
+
+                        // 1. Độ bền giáp / vũ khí (% Durability) - Nằm ngay TRÊN đỉnh của Item
+                        if (durability.getValue() && stack.isDamageableItem()) {
+                            float green = (stack.getMaxDamage() - stack.getDamageValue()) / (float) stack.getMaxDamage();
+                            float red = 1.0f - green;
+                            String durText = Math.round(((stack.getMaxDamage() - stack.getDamageValue()) * 100.0f) / stack.getMaxDamage()) + "%";
+                            float durWidth = EUClient.FONT_MANAGER.getWidth(durText) * 0.5f;
+
+                            matrices.pushPose();
+                            matrices.translate(stackX + 8 - (durWidth / 2f), itemRowY - 5.5f, 1.0f);
+                            matrices.scale(0.5f, 0.5f, 1);
+                            EUClient.FONT_MANAGER.drawTextWithShadow(matrices, durText, 0, 0, vertexConsumers, new Color(red, green, 0));
+                            matrices.popPose();
+                        }
+
+                        // 2. Nhãn Gapple "God" (đè góc trên của táo vàng)
+                        if (stack.getItem().equals(Items.ENCHANTED_GOLDEN_APPLE)) {
+                            matrices.pushPose();
+                            matrices.translate(stackX + 1, itemRowY + 1, 1.0f);
+                            matrices.scale(0.5f, 0.5f, 1);
+                            EUClient.FONT_MANAGER.drawTextWithShadow(matrices, "God", 0, 0, vertexConsumers, new Color(255, 125, 255));
+                            matrices.popPose();
+                        }
+
+                        // 3. Số lượng item (Stack Count - đè góc dưới phải)
+                        if (stack.getCount() != 1) {
+                            String count = String.valueOf(stack.getCount());
+                            float countWidth = EUClient.FONT_MANAGER.getWidth(count) * 0.5f;
+                            matrices.pushPose();
+                            matrices.translate(stackX + 16 - countWidth, itemRowY + 12.0f, 1.0f);
+                            matrices.scale(0.5f, 0.5f, 1);
+                            EUClient.FONT_MANAGER.drawTextWithShadow(matrices, count, 0, 0, vertexConsumers, Color.WHITE);
+                            matrices.popPose();
+                        }
+
+                        // 4. Enchantments: Bắt đầu cùng vị trí item và ghi XUỐNG DƯỚI, khoảng cách dòng sát nhau
+                        if (enchantments.getValue() && EnchantmentHelper.hasAnyEnchantments(stack)) {
+                            ItemEnchantments component = EnchantmentHelper.getEnchantmentsForCrafting(stack);
+                            Object2IntMap<Holder<Enchantment>> enchMap = new Object2IntOpenHashMap<>();
+                            for (Holder<Enchantment> enchantment : component.keySet()) {
+                                enchMap.put(enchantment, component.getLevel(enchantment));
+                            }
+
+                            int enchIndex = 0;
+                            float enchLineStep = 4.2f; // Khoảng cách dòng sít gần nhau
+
+                            for (Object2IntMap.Entry<Holder<Enchantment>> entry : Object2IntMaps.fastIterable(enchMap)) {
+                                String str = getEnchantmentName(entry.getKey().getRegisteredName(), entry.getIntValue());
+                                float enchY = itemRowY + 8.0f + (enchIndex * enchLineStep);
+
+                                matrices.pushPose();
+                                matrices.translate(stackX + 1, enchY, 1.0f);
+                                matrices.scale(0.5f, 0.5f, 1);
+                                EUClient.FONT_MANAGER.drawTextWithShadow(matrices, str, 0, 0, vertexConsumers, Color.WHITE);
+                                matrices.popPose();
+
+                                enchIndex++;
+                            }
+                        }
+                    }
+
+                    // Flush text của item
+                    vertexConsumers.endBatch();
+
+                    // Cập nhật đỉnh cao nhất cho ItemName
+                    if (durability.getValue()) {
+                        highestY = itemRowY - 6.0f;
                     }
                 }
             }
 
-            for (int i = 0; i < 6; i++) {
-                ItemStack stack = getItem(player, i);
-                if (stack.isEmpty()) continue;
-
-                renderedItems = true;
-
-                int stackX = -(108 / 2) + (i * 18) + 1;
-                int stackY = -EUClient.FONT_MANAGER.getHeight() - 1 - (items.getValue() ? 18 + maxEnchants : 1);
-
-                if (items.getValue()) {
-                    matrices.pushPose();
-                    matrices.translate(stackX + 8, stackY + 8, 0);
-                    matrices.scale(16, -16, -0.001f);
-                    Renderer3D.renderItem(matrices, stack, player, vertexConsumers);
-                    matrices.popPose();
-
-                    if (stack.getItem().equals(Items.ENCHANTED_GOLDEN_APPLE)) {
-                        matrices.pushPose();
-                        matrices.translate(stackX, stackY, 0);
-                        matrices.scale(0.5f, 0.5f, 1);
-                        EUClient.FONT_MANAGER.drawTextWithShadow(matrices, "God", 0, 0, vertexConsumers, new Color(255, 125, 255));
-                        matrices.popPose();
-                    }
-
-                    if (stack.getCount() != 1) {
-                        String count = stack.getCount() + "";
-                        matrices.pushPose();
-                        matrices.translate(stackX + 17 - EUClient.FONT_MANAGER.getWidth(count), stackY + 9, 0);
-                        EUClient.FONT_MANAGER.drawTextWithShadow(matrices, count, 0, 0, vertexConsumers, Color.WHITE);
-                        matrices.popPose();
-                    }
-                }
-
-                if (durability.getValue() && stack.isDamageableItem()) {
-                    float green = (stack.getMaxDamage() - stack.getDamageValue()) / (float) stack.getMaxDamage();
-                    float red = 1.0f - green;
-
-                    matrices.pushPose();
-                    matrices.translate(stackX, stackY - EUClient.FONT_MANAGER.getHeight() / 2f - 1, 0);
-                    matrices.scale(0.5f, 0.5f, 1);
-                    EUClient.FONT_MANAGER.drawTextWithShadow(matrices, Math.round(((stack.getMaxDamage() - stack.getDamageValue()) * 100.0f) / stack.getMaxDamage()) + "%", 0, 0, vertexConsumers, new Color(red, green, 0));
-                    matrices.popPose();
-
-                    renderedDurability = true;
-                }
-
-                if (items.getValue() && enchantments.getValue() && EnchantmentHelper.hasAnyEnchantments(stack)) {
-                    ItemEnchantments component = EnchantmentHelper.getEnchantmentsForCrafting(stack);
-                    Object2IntMap<Holder<Enchantment>> enchantments = new Object2IntOpenHashMap<>();
-                    for (Holder<Enchantment> enchantment : component.keySet()) {
-                        enchantments.put(enchantment, component.getLevel(enchantment));
-                    }
-
-                    int height = 0;
-                    for (Object2IntMap.Entry<Holder<Enchantment>> entry : Object2IntMaps.fastIterable(enchantments)) {
-                        String str = getEnchantmentName(entry.getKey().getRegisteredName(), entry.getIntValue());
-
-                        matrices.pushPose();
-                        matrices.translate(stackX, stackY + height, 0);
-                        matrices.scale(0.5f, 0.5f, 1);
-                        EUClient.FONT_MANAGER.drawTextWithShadow(matrices, str, 0, 0, vertexConsumers, Color.WHITE);
-                        matrices.popPose();
-
-                        height += EUClient.FONT_MANAGER.getHeight() / 2;
-                    }
-                }
-            }
-
+            // 4. Vẽ Tên Item đang cầm (ItemName) ở đỉnh cao nhất
             if (itemName.getValue() && !player.getMainHandItem().isEmpty()) {
                 String itemText = player.getMainHandItem().getHoverName().getString();
+                float itemTextWidth = EUClient.FONT_MANAGER.getWidth(itemText) * 0.5f;
+                float nameY = highestY - (fontHeight * 0.5f) - 2;
 
                 matrices.pushPose();
-                matrices.translate(-EUClient.FONT_MANAGER.getWidth(itemText) / 2f / 2f, -EUClient.FONT_MANAGER.getHeight() - 1 - EUClient.FONT_MANAGER.getHeight() / 2f - 1 - (renderedItems ? (items.getValue() ? 18 + maxEnchants : 1) + (durability.getValue() && renderedDurability ? EUClient.FONT_MANAGER.getHeight() / 2.0f + 1 : 0) : 0), 0);
+                matrices.translate(-itemTextWidth / 2f, nameY, 1.0f);
                 matrices.scale(0.5f, 0.5f, 1);
                 EUClient.FONT_MANAGER.drawTextWithShadow(matrices, itemText, 0, 0, vertexConsumers, Color.WHITE);
                 matrices.popPose();
@@ -207,18 +249,11 @@ public class NameTagsModule extends Module {
 
             matrices.popPose();
 
-            // Renderer3D.QUADS/DEBUG_LINES (used by the border Fill/Outline above) is ONE shared,
-            // frame-global, no-depth-test list -- everything queued into it this frame draws
-            // together in a SINGLE call, in insertion order, painter's-algorithm style (last in
-            // wins wherever boxes overlap on screen). Self's nametag sits right where the 3rd-
-            // person camera pivots, so it's far more likely to screen-overlap a nearby player's
-            // own nametag than anyone else's ever is -- and sharing that one draw call is what let
-            // the two boxes bleed into each other (one losing its background, showing the other's
-            // instead). Flushing+clearing right after each player's own box guarantees it draws as
-            // its own isolated call, so it can never blend with the next player's.
+            // Flush khung viền 3D & Chữ NameTag[cite: 3]
             Renderer3D.draw(Renderer3D.QUADS, Renderer3D.DEBUG_LINES, false);
             Renderer3D.QUADS.clear();
             Renderer3D.DEBUG_LINES.clear();
+            vertexConsumers.endBatch();
         }
     }
 
@@ -236,8 +271,26 @@ public class NameTagsModule extends Module {
 
     private String getEnchantmentName(String id, int level) {
         id = id.replace("minecraft:", "");
-        id = level > 1 ? id.substring(0, 2) : id.substring(0, 3);
-        return id.substring(0, 1).toUpperCase() + id.substring(1) + " " + (level > 1 ? level : "");
+        String shortName;
+        if (id.startsWith("protection")) shortName = "Pro";
+        else if (id.startsWith("blast_protection")) shortName = "Bla";
+        else if (id.startsWith("fire_protection")) shortName = "Fir";
+        else if (id.startsWith("projectile_protection")) shortName = "Proj";
+        else if (id.startsWith("unbreaking")) shortName = "Unb";
+        else if (id.startsWith("mending")) shortName = "Men";
+        else if (id.startsWith("thorns")) shortName = "Tho";
+        else if (id.startsWith("respiration")) shortName = "Res";
+        else if (id.startsWith("aqua_affinity")) shortName = "Aqu";
+        else if (id.startsWith("depth_strider")) shortName = "Dep";
+        else if (id.startsWith("feather_falling")) shortName = "Fea";
+        else if (id.startsWith("soul_speed")) shortName = "Soul";
+        else if (id.startsWith("swift_sneak")) shortName = "Sne";
+        else if (id.startsWith("vanishing_curse")) shortName = "Van";
+        else if (id.length() > 3) shortName = id.substring(0, 3);
+        else shortName = id;
+
+        shortName = shortName.substring(0, 1).toUpperCase() + shortName.substring(1);
+        return level > 1 ? shortName + " " + level : shortName;
     }
 
     private record ItemElement(ItemStack stack, List<String> enchantments) { }

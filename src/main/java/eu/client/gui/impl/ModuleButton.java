@@ -30,7 +30,7 @@ public class ModuleButton extends Button implements ExpandableRow {
     // Drives the settings-panel reveal: Frame scales each setting row's contribution to the
     // panel's total height by this (0..1), so the panel visibly unfolds/slides open instead of
     // instantly snapping to full height.
-    private final Animation openAnim = new Animation(180, Easing.Method.EASE_OUT_QUAD);
+    private final Animation openAnim = new Animation(220, Easing.Method.EASE_OUT_CUBIC);
 
     // Pixel height of the settings panel Frame is willing to show this frame (continuous, eased --
     // see Frame.render()). Sub-buttons sit at their full, un-scaled Y offsets; this scissor-clips
@@ -58,7 +58,7 @@ public class ModuleButton extends Button implements ExpandableRow {
         super(parent, height, module.getDescription());
         this.module = module;
         float start = module.isToggled() ? 1f : 0f;
-        this.fillAnim = new Animation(start, start, 180, Easing.Method.EASE_OUT_QUAD);
+        this.fillAnim = new Animation(start, start, 200, Easing.Method.EASE_OUT_CUBIC);
 
         java.util.List<Setting> settings = module.getSettings();
         for (int i = 0; i < settings.size(); i++) {

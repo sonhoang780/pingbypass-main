@@ -24,7 +24,8 @@ public class AutoArmorModule extends Module {
     public ModeSetting health = new ModeSetting("Health", "The health priority to apply.", "Highest", new String[]{"Highest", "Lowest", "Any"});
     public BooleanSetting elytraPriority = new BooleanSetting("ElytraPriority", "Prioritizes elytra over armor pieces.", true);
     public BooleanSetting preserve = new BooleanSetting("Preserve", "Preserve low health armor to avoid it from breaking.", false);
-    public NumberSetting preserveHealth = new NumberSetting("PreserveHealth", "The minimum health of armor to preserve it.", 20.0f, 10.0f, 50.0f);
+    public NumberSetting preserveHealth = new NumberSetting("PreserveHealth", "The minimum health of armor to preserve it.", new BooleanSetting.Visibility(preserve, true), 20.0f, 10.0f, 50.0f);
+    public NumberSetting safeRange = new NumberSetting("SafeRange", "Range to check for nearby players before re-equipping preserved armor.", new BooleanSetting.Visibility(preserve, true), 0, 0, 10);
     public BooleanSetting elytra = new BooleanSetting("Elytra", "Equips an elytra instead of a chestplate.", false);
     // Set to toggle Elytra without opening the ClickGui -- same Bind mechanism modules use
     // (BindSetting + KeyInputEvent/MouseInputEvent), just wired to this one setting instead of
@@ -89,6 +90,17 @@ public class AutoArmorModule extends Module {
         ticks--;
     }
 
+    private boolean isTierDiamondOrNetherite(ItemStack stack) {
+        String name = stack.getItem().toString().toLowerCase();
+        return name.contains("diamond") || name.contains("netherite");
+    }
+
+    private boolean isValidCombatArmor(ItemStack stack, String enchantId) {
+        if (!isArmor(stack)) return false;
+        // Đạt chuẩn nếu là giáp Kim Cương/Netherite HOẶC có enchant Blast/Prot tương ứng
+        return isTierDiamondOrNetherite(stack) || getEnchantLevel(stack, enchantId) > 0;
+    }
+
     private void update(EquipmentSlot type, int x) {
         int elytraSlot = findElytra();
         boolean flag = elytra.getValue() && type == EquipmentSlot.CHEST;
@@ -118,11 +130,30 @@ public class AutoArmorModule extends Module {
         };
         enchantId = enchantId.equalsIgnoreCase("Blast") ? "blast_protection" : "protection";
 
-        if (getEnchantLevel(mc.player.getInventory().getItem(x), enchantId) < getEnchantLevel(mc.player.getInventory().getItem(y), enchantId))
+        ItemStack stackX = mc.player.getInventory().getItem(x);
+        ItemStack stackY = mc.player.getInventory().getItem(y);
+
+        if (getEnchantLevel(stackX, enchantId) < getEnchantLevel(stackY, enchantId))
             return y;
 
-        if (preserve.getValue() && getDurability(x) < preserveHealth.getValue().floatValue())
-            return getDurability(x) < getDurability(y) ? y : x;
+        if (preserve.getValue()) {
+            boolean safe = isSafe();
+            if (safe) {
+                // Trong SafeRange không có player khác: cho phép tháo giáp mới và mặc lại giáp cũ (vừa được preserved)
+                if (getDurability(y) < preserveHealth.getValue().floatValue() && getDurability(x) >= preserveHealth.getValue().floatValue()) {
+                    if (isValidCombatArmor(stackY, enchantId)) {
+                        return y;
+                    }
+                }
+            } else {
+                // Có player hoặc SafeRange = 0: bảo tồn giáp yếu, thay bằng giáp mới
+                if (getDurability(x) < preserveHealth.getValue().floatValue()) {
+                    if (isValidCombatArmor(stackY, enchantId)) {
+                        return getDurability(x) < getDurability(y) ? y : x;
+                    }
+                }
+            }
+        }
 
         if (!swap) {
             if (health.getValue().equals("Highest") && getDurability(x) < getDurability(y)) return y;
@@ -130,6 +161,20 @@ public class AutoArmorModule extends Module {
         }
 
         return x;
+    }
+
+    private boolean isSafe() {
+        if (safeRange.getValue().doubleValue() <= 0) return false;
+        if (mc.level == null || mc.player == null) return false;
+        double rangeSq = safeRange.getValue().doubleValue() * safeRange.getValue().doubleValue();
+        for (net.minecraft.world.entity.player.Player other : mc.level.players()) {
+            if (other == mc.player || other.isSpectator() || !other.isAlive()) continue;
+            if (EUClient.FRIEND_MANAGER != null && EUClient.FRIEND_MANAGER.contains(other.getName().getString())) continue;
+            if (mc.player.distanceToSqr(other) <= rangeSq) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private int compareElytra(int x, int y) {

@@ -1,220 +1,392 @@
 package eu.client.modules.impl.combat;
 
-import lombok.Getter;
 import eu.client.EUClient;
 import eu.client.events.SubscribeEvent;
-import eu.client.events.impl.ClientRotationEvent;
+import eu.client.events.impl.PacketReceiveEvent;
 import eu.client.events.impl.PlayerUpdateEvent;
 import eu.client.events.impl.RenderWorldEvent;
-import eu.client.events.impl.UpdateMovementEvent;
-import eu.client.managers.RotationPriorities;
 import eu.client.modules.Module;
 import eu.client.modules.RegisterModule;
-import eu.client.settings.impl.*;
+import eu.client.settings.impl.BooleanSetting;
+import eu.client.settings.impl.CategorySetting;
+import eu.client.settings.impl.ColorSetting;
+import eu.client.settings.impl.ModeSetting;
+import eu.client.settings.impl.NumberSetting;
 import eu.client.utils.color.ColorUtils;
 import eu.client.utils.graphics.Renderer3D;
+import eu.client.utils.minecraft.EnchantmentUtils;
 import eu.client.utils.minecraft.EntityUtils;
+import eu.client.utils.minecraft.GrimUtils;
 import eu.client.utils.minecraft.InventoryUtils;
-import eu.client.utils.minecraft.PositionUtils;
 import eu.client.utils.rotations.RotationUtils;
-import eu.client.utils.minecraft.WorldUtils;
-import eu.client.utils.system.Timer;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
+import net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket;
+import net.minecraft.tags.ItemTags;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.MobCategory;
-import net.minecraft.world.entity.monster.EnderMan;
-import net.minecraft.world.entity.monster.piglin.Piglin;
-import net.minecraft.world.entity.monster.zombie.ZombifiedPiglin;
-import net.minecraft.world.entity.vehicle.boat.AbstractBoat;
-import net.minecraft.tags.ItemTags;
-import net.minecraft.network.protocol.game.ServerboundSwingPacket;
-import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.monster.Creeper;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.entity.projectile.ShulkerBullet;
+import net.minecraft.world.entity.projectile.hurtingprojectile.LargeFireball;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.MaceItem;
+import net.minecraft.world.item.TridentItem;
+import net.minecraft.world.item.component.ItemAttributeModifiers;
+import net.minecraft.world.item.enchantment.Enchantments;
 import net.minecraft.world.phys.AABB;
-import net.minecraft.util.Mth;
 import net.minecraft.world.phys.Vec3;
 
-@RegisterModule(name = "KillAura", description = "Automatically attacks entities if they meet specified requirements.", category = Module.Category.COMBAT, proxyEnhanced = true)
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+
+@RegisterModule(name = "KillAura", description = "Automatically attacks optimal targets using Nami's combat engine.", category = Module.Category.COMBAT, proxyEnhanced = true)
 public class KillAuraModule extends Module {
-    public ModeSetting autoSwitch = new ModeSetting("Switch", "The mode that will be used for automatically switching to a weapon.", "Require", new String[]{"None", "Normal", "Require"});
-    public ModeSetting hitDelay = new ModeSetting("HitDelay", "The delay that will have to be waited out between attacks.", "Vanilla", new String[]{"None", "Vanilla", "Custom"});
-    public NumberSetting speed = new NumberSetting("Speed", "The speed at which the target will be attacked.", new ModeSetting.Visibility(hitDelay, "Custom"), 20.0f, 0.1f, 20.0f);
-    public ModeSetting rotate = new ModeSetting("Rotate", "Automatically rotates to the target whenever attacking.", "Hold", new String[]{"None", "Normal", "Hold", "Packet"});
-    public ModeSetting swing = new ModeSetting("Swing", "", "Mainhand", new String[]{"None", "Packet", "Mainhand", "Offhand", "Both"});
-    public NumberSetting range = new NumberSetting("Range", "The maximum distance at which entities can be at in order to be a valid target.", 6.0, 0.0, 12.0);
-    public BooleanSetting raytrace = new BooleanSetting("Raytrace", "Only attacks entities that you can see and aren't going through walls.", false);
-    public NumberSetting wallsRange = new NumberSetting("WallsRange", "The maximum distance through walls at which entities can be at in order to be a valid target.", new BooleanSetting.Visibility(raytrace, false), 5.0, 0.0, 12.0);
-    public NumberSetting ticksExisted = new NumberSetting("TicksExisted", "The amount of ticks that entities have to have lived for before attacking.", 50, 0, 240);
+    public NumberSetting range = new NumberSetting("Range", "The reach distance to entities.", 3.0, 1.0, 6.0);
+    public BooleanSetting stanceAbuse = new BooleanSetting("StanceAbuse", "Abuses Grim stance eye positions to optimize reach.", false);
+    public NumberSetting delay = new NumberSetting("Delay", "Attack cooldown delay multiplier.", 0.92, 0.0, 1.0);
+    public ModeSetting swap = new ModeSetting("Swap", "Weapon switch mode.", "Require", new String[]{"None", "Require", "Normal", "Silent"});
+    public ModeSetting tpsMode = new ModeSetting("TPS", "TPS synchronization mode for attack cooldown.", "Average", new String[]{"None", "Average"});
+    public BooleanSetting multiTask = new BooleanSetting("Multitask", "Allows attacking while eating or using items.", true);
+    public ModeSetting stopSprinting = new ModeSetting("Sprinting", "Sprint management during attacks.", "None", new String[]{"None", "Packet"});
+    public ModeSetting rotate = new ModeSetting("Rotate", "Rotation mode.", "Normal", new String[]{"None", "Normal", "Hold", "Silent"});
+    public BooleanSetting swing = new BooleanSetting("Swing", "Whether to swing your hand when attacking.", true);
+    public BooleanSetting render = new BooleanSetting("Render", "Renders a box around the current target.", true);
 
-    public CategorySetting entitiesCategory = new CategorySetting("Entities", "Contains all of the settings relating to which entities should be attacked.");
-    public BooleanSetting players = new BooleanSetting("Players", "Automatically attacks player entities.", new CategorySetting.Visibility(entitiesCategory), true);
-    public BooleanSetting friends = new BooleanSetting("Friends", "Automatically attacks player entities that you have friended.", new CategorySetting.Visibility(entitiesCategory), false);
-    public BooleanSetting animals = new BooleanSetting("Animals", "Automatically attacks animal entities.", new CategorySetting.Visibility(entitiesCategory), false);
-    public BooleanSetting hostiles = new BooleanSetting("Hostiles", "Automatically attacks hostile entities.", new CategorySetting.Visibility(entitiesCategory), false);
-    public BooleanSetting passives = new BooleanSetting("Passives", "Automatically attacks passive entities.", new BooleanSetting.Visibility(hostiles, true), false);
-    public BooleanSetting ambient = new BooleanSetting("Ambient", "Automatically attacks ambient entities.", new CategorySetting.Visibility(entitiesCategory), false);
-    public BooleanSetting invisibles = new BooleanSetting("Invisibles", "Automatically attacks invisible entities.", new CategorySetting.Visibility(entitiesCategory), false);
-    public BooleanSetting boats = new BooleanSetting("Boats", "Automatically attacks boat entities.", new CategorySetting.Visibility(entitiesCategory), false);
-    public BooleanSetting shulkerBullets = new BooleanSetting("ShulkerBullets", "Automatically attacks shulker bullets.", new CategorySetting.Visibility(entitiesCategory), true);
+    public CategorySetting entitiesCategory = new CategorySetting("Entities", "Target entity filter settings.");
+    public BooleanSetting players = new BooleanSetting("Players", "Target player entities.", new CategorySetting.Visibility(entitiesCategory), true);
+    public BooleanSetting friends = new BooleanSetting("Friends", "Target friends.", new CategorySetting.Visibility(entitiesCategory), false);
+    public BooleanSetting hostiles = new BooleanSetting("Hostiles", "Target hostile mobs.", new CategorySetting.Visibility(entitiesCategory), false);
+    public BooleanSetting animals = new BooleanSetting("Animals", "Target passive animal mobs.", new CategorySetting.Visibility(entitiesCategory), false);
+    public BooleanSetting projectiles = new BooleanSetting("Projectiles", "Target shulker bullets & fireballs.", new CategorySetting.Visibility(entitiesCategory), true);
 
-    public CategorySetting renderCategory = new CategorySetting("Render", "Contains all of the settings relating to target rendering.");
-    public ModeSetting mode = new ModeSetting("Mode", "The rendering that will be applied to the target entity.", new CategorySetting.Visibility(renderCategory), "Both", new String[]{"None", "Fill", "Outline", "Both"});
-    public ColorSetting fillColor = new ColorSetting("FillColor", "The color that will be used for the fill rendering.", new ModeSetting.Visibility(mode, "Fill", "Both"), ColorUtils.getDefaultFillColor());
-    public ColorSetting outlineColor = new ColorSetting("OutlineColor", "The color that will be used for the outline rendering.", new ModeSetting.Visibility(mode, "Outline", "Both"), ColorUtils.getDefaultOutlineColor());
+    public ColorSetting boxColor = new ColorSetting("TargetColor", "Color of the target render box.", new BooleanSetting.Visibility(render, true), ColorUtils.getDefaultFillColor());
 
-    @Getter public Entity target;
+    public Entity target = null;
+    private float attackCooldownTicks = 0.0f;
+    private int originalSlot = -1;
 
-    private final Timer timer = new Timer();
+    public Entity getTarget() {
+        return target;
+    }
 
-    private boolean attacking = false;
-    private boolean shouldAttack = false;
-    // Reasserted every tick from onClientRotation below instead of the old one-shot rotate() calls
-    // -- see RotationManager class doc. Only meaningful for the tick it's set on (reset to false at
-    // the top of onPlayerUpdate every tick, same as attacking/shouldAttack), so "Normal" keeps its
-    // original narrower behavior (only the specific tick we're about to actually hit) instead of
-    // holding continuously like "Hold" does.
-    private boolean rotateActive = false;
+    @Override
+    public void onEnable() {
+        target = null;
+        originalSlot = -1;
+        attackCooldownTicks = 0.0f;
+    }
+
+    @Override
+    public void onDisable() {
+        if (originalSlot != -1 && mc.player != null) {
+            InventoryUtils.switchSlot("Normal", originalSlot, mc.player.getInventory().getSelectedSlot());
+            originalSlot = -1;
+        }
+        target = null;
+    }
 
     @SubscribeEvent
     public void onPlayerUpdate(PlayerUpdateEvent event) {
-        if (mc.player == null || mc.level == null) return;
-        Iterable<Entity> entities = mc.level.getEntities(mc.player, PositionUtils.getRadius(mc.player, Math.max(range.getValue().doubleValue(), wallsRange.getValue().doubleValue()) + 1.0), entity ->
-                entity.isAlive()
-                        && (!(entity instanceof LivingEntity livingEntity) || livingEntity.getHealth() > 0.0f)
-                        && entity.tickCount >= ticksExisted.getValue().intValue()
-                        && entity.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) < Mth.square(range.getValue().doubleValue())
-                        && mc.level.getWorldBorder().isWithinBounds(entity.blockPosition())
-                        && (friends.getValue() || !EUClient.FRIEND_MANAGER.contains(entity.getName().getString()))
-                        && isValidEntity(entity)
-                        && (WorldUtils.canSee(entity) || (!raytrace.getValue() && entity.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) < Mth.square(wallsRange.getValue().doubleValue()))));
+        if (shouldRunOnProxy()) return;
+        if (mc.player == null || mc.level == null || mc.player.isDeadOrDying()) return;
 
-        Entity optimalEntity = null;
-        for (Entity entity : entities) {
-            if (optimalEntity == null) {
-                optimalEntity = entity;
-                continue;
-            }
-
-            if (mc.player.distanceToSqr(entity) < mc.player.distanceToSqr(optimalEntity)) {
-                optimalEntity = entity;
-            }
-        }
-
-        target = optimalEntity;
-
-        attacking = false;
-        shouldAttack = false;
-        rotateActive = false;
-
-        if (target == null) return;
-
-        if (autoSwitch.getValue().equalsIgnoreCase("Require") && !mc.player.getMainHandItem().is(ItemTags.SWORDS)) return;
-
-        int slot = InventoryUtils.findBestSword(InventoryUtils.HOTBAR_START, InventoryUtils.HOTBAR_END);
-        if (autoSwitch.getValue().equalsIgnoreCase("Normal") && slot == -1) return;
-
-        attacking = true;
-
-        // Skip actions on client when proxy handles them
-        if (shouldSkipActions()) return;
-
-        if (rotate.getValue().equalsIgnoreCase("Hold")) rotateActive = true;
-
-        if (hitDelay.getValue().equalsIgnoreCase("Vanilla") && mc.player.getAttackStrengthScale(0.5f) < 1.0f) return;
-        if (hitDelay.getValue().equalsIgnoreCase("Custom") && !timer.hasTimeElapsed(1000.0f - speed.getValue().floatValue() * 50.0f))
+        // AutoCrystal priority check (matches Nami)
+        var ac = EUClient.MODULE_MANAGER.getModule(AutoCrystalModule.class);
+        if (ac != null && ac.isToggled() && ac.getTarget() != null) {
             return;
-
-        // "Normal" used to also flip rotateActive -- routing through the same ClientRotationEvent/
-        // `rotation` path as "Hold", which visibly snaps the camera toward the target for that
-        // render frame (revert only happens after the movement packet is sent, same tick, but
-        // after the frame already drew at the spoofed yaw). SpeedMine/AutoCrystal's "Normal" is the
-        // silent, revert-free legacyRotate queue instead (see RotationManager's own doc on it) --
-        // KillAura's LEGACY_PRIORITIES entry was already there, just never wired up. Match them.
-        if (rotate.getValue().equalsIgnoreCase("Normal")) {
-            EUClient.ROTATION_MANAGER.legacyRotate(RotationUtils.getRotations(target), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
         }
 
-        shouldAttack = true;
-    }
+        float tps = getTps();
+        attackCooldownTicks -= 1.0f * (tps / 20.0f);
+        if (attackCooldownTicks < 0.0f) attackCooldownTicks = 0.0f;
 
-    @SubscribeEvent(priority = RotationPriorities.KILL_AURA)
-    public void onClientRotation(ClientRotationEvent event) {
-        if (target == null || !rotateActive || event.isCancelled()) return;
+        if (mc.player.isUsingItem() && mc.player.getUseItem() == mc.player.getInventory().getSelectedItem()) {
+            target = null;
+            return;
+        }
 
-        float[] rotations = RotationUtils.getRotations(target);
-        event.setYaw(rotations[0]);
-        event.setPitch(rotations[1]);
+        if (!multiTask.getValue() && mc.player.getUseItemRemainingTicks() > 0) {
+            target = null;
+            return;
+        }
+
+        ItemStack stack = mc.player.getMainHandItem();
+        Entity optimal = findOptimalTarget();
+
+        if (optimal == null || (swap.getValue().equalsIgnoreCase("Require") && !isItemAWeapon(stack))) {
+            target = optimal;
+            return;
+        }
+
+        target = optimal;
+
+        boolean skipCooldown = false;
+        if (target instanceof ShulkerBullet || target instanceof LargeFireball) {
+            skipCooldown = true;
+        } else {
+            float attackDamage = calculatePlayerAttackDamage();
+            if (target instanceof LivingEntity living && living.getMaxHealth() <= attackDamage) {
+                skipCooldown = true;
+            }
+        }
+
+        double preRotate = switch (rotate.getValue()) {
+            case "Hold" -> 1.00;
+            case "Normal" -> 0.10;
+            default -> 0.00;
+        };
+
+        if ((skipCooldown || attackCooldownTicks <= preRotate * tps)) {
+            Vec3 eyePos = mc.player.getEyePosition(1.0f);
+
+            if (stanceAbuse.getValue()) {
+                double foundDist = Double.MAX_VALUE;
+                for (Vec3 v : GrimUtils.getPossibleEyePositions(mc.player)) {
+                    Vec3 closest = RotationUtils.getClampClosestPoint(v, target.getBoundingBox());
+                    double dist = v.distanceTo(closest);
+                    if (dist < foundDist) {
+                        foundDist = dist;
+                        eyePos = v;
+                    }
+                }
+            }
+
+            Vec3 closestPoint = RotationUtils.getClosestPointToEye(eyePos, target.getBoundingBox());
+            float pYRot = RotationUtils.getYRotToVec(eyePos, closestPoint);
+            float pXRot = RotationUtils.getXRotToVec(eyePos, closestPoint);
+            boolean insideBox = target.getBoundingBox().contains(eyePos);
+
+            if (eyePos.distanceTo(RotationUtils.getClampClosestPoint(eyePos, target.getBoundingBox())) > range.getValue().doubleValue()) {
+                target = null;
+                return;
+            }
+
+            boolean canAttack = rotate.getValue().equalsIgnoreCase("None") || insideBox;
+
+            if (!rotate.getValue().equalsIgnoreCase("None")) {
+                if (rotate.getValue().equalsIgnoreCase("Silent")) {
+                    EUClient.ROTATION_MANAGER.silentRotate(pYRot, pXRot);
+                } else {
+                    EUClient.ROTATION_MANAGER.packetRotate(pYRot, pXRot);
+                }
+
+                var serverCheck = RotationUtils.raycastTarget(eyePos, target, range.getValue().doubleValue(),
+                        EUClient.ROTATION_MANAGER.getServerYaw(), EUClient.ROTATION_MANAGER.getServerPitch());
+                canAttack = serverCheck != null || insideBox;
+            }
+
+            if (!canAttack) {
+                return;
+            }
+        }
+
+        if (!skipCooldown && attackCooldownTicks > 0.0f) {
+            return;
+        }
+
+        boolean stoppedSprint = false;
+        if (stopSprinting.getValue().equalsIgnoreCase("Packet") && mc.player.isSprinting() && !mc.player.isShiftKeyDown()) {
+            mc.getConnection().send(new ServerboundPlayerCommandPacket(mc.player, ServerboundPlayerCommandPacket.Action.STOP_SPRINTING));
+            stoppedSprint = true;
+        }
+
+        int weaponSlot = getBestWeaponSlot();
+        int prevSlot = mc.player.getInventory().getSelectedSlot();
+        boolean switchedSilent = false;
+
+        if (swap.getValue().equalsIgnoreCase("Normal") && weaponSlot != -1) {
+            if (originalSlot == -1 && prevSlot != weaponSlot) originalSlot = prevSlot;
+            InventoryUtils.switchSlot("Normal", weaponSlot, prevSlot);
+        } else if (swap.getValue().equalsIgnoreCase("Silent") && weaponSlot != -1) {
+            InventoryUtils.switchSlot("Silent", weaponSlot, prevSlot);
+            switchedSilent = true;
+        }
+
+        mc.gameMode.attack(mc.player, target);
+
+        if (swing.getValue()) {
+            mc.player.swing(InteractionHand.MAIN_HAND);
+        }
+
+        if (switchedSilent) {
+            InventoryUtils.switchBack("Silent", weaponSlot, prevSlot);
+        }
+
+        if (stoppedSprint) {
+            mc.getConnection().send(new ServerboundPlayerCommandPacket(mc.player, ServerboundPlayerCommandPacket.Action.START_SPRINTING));
+        }
+
+        if (!skipCooldown) {
+            attackCooldownTicks = getBaseCooldownTicks(mc.player.getMainHandItem(), tps);
+        }
     }
 
     @SubscribeEvent
-    public void onUpdateMovement$POST(UpdateMovementEvent.Post event) {
-        if (shouldSkipActions()) return;
-        if (mc.player == null || mc.level == null || !shouldAttack || !attacking || target == null) {
-            shouldAttack = false;
-            return;
-        }
+    public void onPacketReceive(PacketReceiveEvent event) {
+        if (!(event.getPacket() instanceof ServerboundSetCarriedItemPacket)) return;
+        if (mc.player == null || mc.level == null) return;
 
-        if (rotate.getValue().equalsIgnoreCase("Packet")) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(target));
-
-        // Unlike every other module's switch, this one used to run unconditionally every attack
-        // tick with no coordination at all -- not even via SILENT_RESTORE, since "Normal" never
-        // populated it. A module silently holding a different slot (AutoCrystal/Surround/SpeedMine
-        // mid-cycle) got its slot yanked back to sword on the very next attack tick, every time --
-        // reported as e.g. an obsidian slot flickering to sword during Surround+KillAura combat.
-        // Skip the forced switch for this tick if another module currently owns a silent switch;
-        // the next attack tick (50ms later) retries once that module's own restore has run.
-        if (autoSwitch.getValue().equalsIgnoreCase("Normal") && !InventoryUtils.hasActiveSilentSwitch())
-            InventoryUtils.switchSlot("Normal", InventoryUtils.findBestSword(InventoryUtils.HOTBAR_START, InventoryUtils.HOTBAR_END), mc.player.getInventory().getSelectedSlot());
-        mc.gameMode.attack(mc.player, target);
-
-        switch (swing.getValue()) {
-            case "Packet" -> mc.getConnection().send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
-            case "Mainhand" -> mc.player.swing(InteractionHand.MAIN_HAND);
-            case "Offhand" -> mc.player.swing(InteractionHand.OFF_HAND);
-            case "Both" -> {
-                mc.player.swing(InteractionHand.MAIN_HAND);
-                mc.player.swing(InteractionHand.OFF_HAND);
-            }
-        }
-
-        shouldAttack = false;
-        timer.reset();
+        mc.execute(() -> {
+            ItemStack stack = mc.player.getMainHandItem();
+            if (stack.isEmpty()) return;
+            attackCooldownTicks = getBaseCooldownTicks(stack, getTps());
+        });
     }
 
     @SubscribeEvent
     public void onRenderWorld(RenderWorldEvent event) {
-        if (target == null || !attacking) return;
-        if (mode.getValue().equalsIgnoreCase("None")) return;
+        if (!render.getValue() || target == null || mc.player == null || mc.player.isDeadOrDying()) return;
 
         Vec3 vec3d = EntityUtils.getRenderPos(target, event.getTickDelta());
-        AABB box = new AABB(vec3d.x - target.getBoundingBox().getXsize() / 2, vec3d.y, vec3d.z - target.getBoundingBox().getZsize() / 2, vec3d.x + target.getBoundingBox().getXsize() / 2, vec3d.y + target.getBoundingBox().getYsize(), vec3d.z + target.getBoundingBox().getZsize() / 2);
+        AABB box = target.getBoundingBox().move(vec3d.x - target.getX(), vec3d.y - target.getY(), vec3d.z - target.getZ());
 
-        if (mode.getValue().equalsIgnoreCase("Fill") || mode.getValue().equalsIgnoreCase("Both")) Renderer3D.renderBox(event.getMatrices(), box, fillColor.getColor());
-        if (mode.getValue().equalsIgnoreCase("Outline") || mode.getValue().equalsIgnoreCase("Both")) Renderer3D.renderBoxOutline(event.getMatrices(), box, outlineColor.getColor());
+        Renderer3D.renderBox(event.getMatrices(), box, boxColor.getColor());
+        Renderer3D.renderBoxOutline(event.getMatrices(), box, boxColor.getColor());
+    }
+
+    private Entity findOptimalTarget() {
+        if (mc.player == null || mc.level == null) return null;
+
+        // 2026-08-20 FIX (reported: "KillAura vẫn render cho logoutSpot"). LogoutSpotModule adds
+        // its ghost markers as real RemotePlayer entities via mc.level.addEntity() (see its own
+        // :181), so they show up in entitiesForRendering() indistinguishable from a live player to
+        // a plain `e instanceof Player` check -- they're not attackable, just a logout position
+        // marker, and must be excluded here (AutoCrystal/AutoTrap deliberately ADD ghosts as
+        // targets for their own reasons; KillAura is not one of those cases).
+        eu.client.modules.impl.visuals.LogoutSpotModule logoutSpot = EUClient.MODULE_MANAGER != null ? EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.visuals.LogoutSpotModule.class) : null;
+        java.util.Collection<net.minecraft.client.player.RemotePlayer> ghosts = logoutSpot != null ? logoutSpot.getGhosts() : java.util.Collections.emptyList();
+
+        List<Entity> candidates = new ArrayList<>();
+        double reachSq = (range.getValue().doubleValue() + 1.0) * (range.getValue().doubleValue() + 1.0);
+
+        for (Entity e : mc.level.entitiesForRendering()) {
+            if (e == mc.player || !e.isAlive()) continue;
+            if (e.distanceToSqr(mc.player) > reachSq) continue;
+            if (ghosts.contains(e)) continue;
+
+            if (e instanceof Player p) {
+                if (!players.getValue()) continue;
+                if (!friends.getValue() && EUClient.FRIEND_MANAGER.contains(p.getName().getString())) continue;
+                candidates.add(e);
+            } else if (projectiles.getValue() && (e instanceof ShulkerBullet || e instanceof LargeFireball)) {
+                candidates.add(e);
+            } else if (hostiles.getValue() && e.getType().getCategory() == MobCategory.MONSTER) {
+                candidates.add(e);
+            } else if (animals.getValue() && (e.getType().getCategory() == MobCategory.CREATURE || e.getType().getCategory() == MobCategory.WATER_CREATURE || e.getType().getCategory() == MobCategory.AXOLOTLS)) {
+                candidates.add(e);
+            }
+        }
+
+        // Smart priority: Players first -> Creepers close -> Projectiles -> Others
+        List<Entity> playerCandidates = candidates.stream().filter(e -> e instanceof Player).sorted(Comparator.comparingDouble(e -> e.distanceToSqr(mc.player))).toList();
+        if (!playerCandidates.isEmpty()) return playerCandidates.get(0);
+
+        List<Entity> creeperCandidates = candidates.stream().filter(e -> e instanceof Creeper && e.distanceToSqr(mc.player) <= 9.0).sorted(Comparator.comparingDouble(e -> e.distanceToSqr(mc.player))).toList();
+        if (!creeperCandidates.isEmpty()) return creeperCandidates.get(0);
+
+        List<Entity> projCandidates = candidates.stream().filter(e -> e instanceof ShulkerBullet || e instanceof LargeFireball).sorted(Comparator.comparingDouble(e -> e.distanceToSqr(mc.player))).toList();
+        if (!projCandidates.isEmpty()) return projCandidates.get(0);
+
+        return candidates.stream().min(Comparator.comparingDouble(e -> e.distanceToSqr(mc.player))).orElse(null);
+    }
+
+    private float getTps() {
+        if (tpsMode.getValue().equalsIgnoreCase("None")) return 20.0f;
+        return EUClient.SERVER_MANAGER.getTickRate();
+    }
+
+    private float getBaseCooldownTicks(ItemStack stack, float tps) {
+        float baseTicks;
+        int weaponSlot = getBestWeaponSlot();
+        ItemStack currentStack = (swap.getValue().equalsIgnoreCase("Silent") || swap.getValue().equalsIgnoreCase("Normal")) && weaponSlot != -1
+                ? mc.player.getInventory().getItem(weaponSlot) : stack;
+
+        if (currentStack.is(ItemTags.SWORDS)) baseTicks = 13.0f;
+        else if (currentStack.is(ItemTags.AXES)) baseTicks = 21.0f;
+        else if (currentStack.getItem() instanceof TridentItem) baseTicks = 19.0f;
+        else if (currentStack.getItem() instanceof MaceItem) baseTicks = 34.0f;
+        else {
+            float attackSpeed = 6.0f;
+            baseTicks = 20.0f / attackSpeed;
+        }
+
+        return (baseTicks * (20.0f / Math.max(tps, 1.0f))) * delay.getValue().floatValue();
+    }
+
+    public int getBestWeaponSlot() {
+        if (mc.player == null) return -1;
+        int bestSlot = -1;
+        float bestDamage = -1.0f;
+        boolean prioritizeMace = !mc.player.getAbilities().flying && !mc.player.onGround();
+
+        for (int slot = 0; slot < 9; slot++) {
+            ItemStack held = mc.player.getInventory().getItem(slot);
+            if (held.isEmpty()) continue;
+
+            boolean isSword = held.is(ItemTags.SWORDS);
+            boolean isAxe = held.is(ItemTags.AXES);
+            boolean isTrident = held.getItem() instanceof TridentItem;
+            boolean isMace = held.getItem() instanceof MaceItem;
+
+            if (!isSword && !isAxe && !isTrident && !isMace) continue;
+            if (isMace && prioritizeMace) return slot;
+
+            float attackDamage = 0.0f;
+            if (held.has(DataComponents.ATTRIBUTE_MODIFIERS)) {
+                ItemAttributeModifiers modifiers = held.get(DataComponents.ATTRIBUTE_MODIFIERS);
+                if (modifiers != null) {
+                    for (var entry : modifiers.modifiers()) {
+                        if (entry.attribute().is(Attributes.ATTACK_DAMAGE)) {
+                            attackDamage += (float) entry.modifier().amount();
+                        }
+                    }
+                }
+            }
+
+            if (isSword) attackDamage += 5.0f;
+
+            int sharpness = EnchantmentUtils.getEnchantmentLevel(held, Enchantments.SHARPNESS);
+            int smite = EnchantmentUtils.getEnchantmentLevel(held, Enchantments.SMITE);
+            int bane = EnchantmentUtils.getEnchantmentLevel(held, Enchantments.BANE_OF_ARTHROPODS);
+
+            attackDamage += sharpness * 1.25f + smite * 2.5f + bane * 2.5f;
+
+            if (attackDamage > bestDamage) {
+                bestDamage = attackDamage;
+                bestSlot = slot;
+            }
+        }
+
+        return bestSlot;
+    }
+
+    private float calculatePlayerAttackDamage() {
+        if (mc.player == null) return 1.0f;
+        float attackDamage = 1.0f;
+        if (mc.player.hasEffect(MobEffects.STRENGTH)) {
+            var strength = mc.player.getEffect(MobEffects.STRENGTH);
+            if (strength != null) attackDamage += 3.0f * (strength.getAmplifier() + 1);
+        }
+        if (mc.player.hasEffect(MobEffects.WEAKNESS)) {
+            var weakness = mc.player.getEffect(MobEffects.WEAKNESS);
+            if (weakness != null) attackDamage -= 4.0f * (weakness.getAmplifier() + 1);
+        }
+        return Math.max(attackDamage, 0.0f);
+    }
+
+    public static boolean isItemAWeapon(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return false;
+        return stack.is(ItemTags.SWORDS) || stack.is(ItemTags.AXES) || stack.getItem() instanceof TridentItem || stack.getItem() instanceof MaceItem;
     }
 
     @Override
     public String getMetaData() {
         return target == null ? "None" : target.getName().getString();
-    }
-
-    private boolean isValidEntity(Entity entity) {
-        if (players.getValue() && entity.getType() == EntityType.PLAYER) return true;
-        if (hostiles.getValue() && entity.getType().getCategory() == MobCategory.MONSTER) {
-            // Enderman technically implements NeutralMob (inherited isAngry() checks its
-            // persistent-anger timer), but Enderman never actually uses that system -- its real
-            // provoked/attacking state is isCreepy() (synced DATA_CREEPY). isAngry() was always
-            // false for every Enderman, so with Passives off KillAura silently skipped ALL of
-            // them, aggro'd or not.
-            if(!passives.getValue() && entity instanceof EnderMan enderman && !enderman.isCreepy()) return false;
-            if(!passives.getValue() && entity instanceof ZombifiedPiglin piglin && !piglin.isAngry()) return false;
-            return true;
-        }
-        if (animals.getValue() && (entity.getType().getCategory() == MobCategory.CREATURE || entity.getType().getCategory() == MobCategory.WATER_CREATURE || entity.getType().getCategory() == MobCategory.WATER_AMBIENT || entity.getType().getCategory() == MobCategory.UNDERGROUND_WATER_CREATURE || entity.getType().getCategory() == MobCategory.AXOLOTLS))
-            return true;
-        if (ambient.getValue() && entity.getType().getCategory() == MobCategory.AMBIENT) return true;
-        if (invisibles.getValue() && entity.isInvisible()) return true;
-        if (boats.getValue() && entity instanceof AbstractBoat) return true;
-        return shulkerBullets.getValue() && entity.getType() == EntityType.SHULKER_BULLET;
     }
 }

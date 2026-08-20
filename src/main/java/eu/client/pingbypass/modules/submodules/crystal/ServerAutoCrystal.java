@@ -76,6 +76,7 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
     public BooleanSetting blockDestruction = new BooleanSetting("BlockDestruction", "Places crystals on top of mined blocks in order to damage opponents.", true);
     public ModeSetting autoSwitch = new ModeSetting("Switch", "Automatically switches to a crystal if you aren't currently holding one.", "None", new String[]{"None", "Normal", "Silent", "AltSwap"});
     public BooleanSetting swapBack = new BooleanSetting("SwapBack", "Switches back to the item you were holding before the module started switching to crystals.", false);
+    public NumberSetting swapDelay = new NumberSetting("SwapDelay", "The delay in ticks after swapping before placing or attacking crystals.", 0, 0, 20);
 
     public ModeSetting sequential = new ModeSetting("Sequential", "The sequence that the module's processes will be run in.", "Strong", new String[]{"None", "Strict", "Strong"});
     // 2026-08-14: reverted to master + diffed against bản gốc 1.21.4 (Desktop copy), same as
@@ -132,6 +133,8 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
     private final Timer placeTimer = new Timer();
     private final Timer facePlaceTimer = new Timer();
     private final Timer loopTimer = new Timer();
+    private final Timer swapTimer = new Timer();
+    private int lastSelectedSlot = -1;
     private long totalPlaces = 0;
     private long totalAttacks = 0;
 
@@ -207,7 +210,7 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
     @Override
     public List<Setting> getSettings() {
         return List.of(attack, attackSpeed, attackRange, attackWallsRange, antiWeakness, instant, inhibit,
-                place, placeSpeed, placeRange, placeWallsRange, placements, blockDestruction, autoSwitch, swapBack,
+                place, placeSpeed, placeRange, placeWallsRange, placements, blockDestruction, autoSwitch, swapBack, swapDelay,
                 sequential, rotate, swing, yawStep, yawStepThreshold, raytrace, extrapolation, enemyRange,
                 chestBreak, gameLoop, loopDelay, whileEating,
                 godSync, predictions, offset, godSwing, fast, antiKick, kickThreshold,
@@ -215,10 +218,35 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
                 minimumDamage, maximumSelfDamage, lethalMultiplier, antiSuicide, ignoreTerrain);
     }
 
+    private boolean isDead() {
+        if (mc.player == null || mc.level == null) return true;
+        if (!mc.player.isAlive() || mc.player.isDeadOrDying() || mc.player.getHealth() <= 0.0f) return true;
+        if (mc.screen instanceof net.minecraft.client.gui.screens.DeathScreen) return true;
+        return false;
+    }
+
     /** Called once per proxy tick (see PbModuleManager.tick(), driven by ProxyServerTickListener). */
     @Override
     public void tick() {
-        if (mc.player == null || mc.level == null) return;
+        if (isDead()) {
+            attackRunnable = null;
+            placeRunnable = null;
+            target = null;
+            placeTarget = null;
+            attackTarget = null;
+            mineTarget = null;
+            placedCrystals.clear();
+            attackedCrystals.clear();
+            countedCrystals.clear();
+            EUClient.RENDER_MANAGER.setRenderPosition(null);
+            return;
+        }
+
+        int currentSlot = mc.player.getInventory().getSelectedSlot();
+        if (lastSelectedSlot != -1 && lastSelectedSlot != currentSlot) {
+            swapTimer.reset();
+        }
+        lastSelectedSlot = currentSlot;
 
         long minTtl = 50L;
         attackedCrystals.entrySet().removeIf(entry -> System.currentTimeMillis() - entry.getValue() > Math.max(EUClient.SERVER_MANAGER.getPing() * 2L, minTtl));
@@ -271,6 +299,7 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
     }
 
     private void run() {
+        if (isDead()) return;
         attackRunnable = null;
         placeRunnable = null;
 
@@ -297,7 +326,7 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
 
     @SubscribeEvent
     public void onEntitySpawn(EntitySpawnEvent event) {
-        if (mc.player == null || mc.level == null) return;
+        if (isDead() || getPlayers().isEmpty()) return;
 
         if (!attack.getValue() || !instant.getValue()) return;
         if (!attackTimer.hasTimeElapsed(1000.0f - attackSpeed.getValue().floatValue() * 50.0f))
@@ -326,7 +355,7 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
 
     @SubscribeEvent
     public void onDestroyBlock(DestroyBlockEvent event) {
-        if (mc.player == null || mc.level == null) return;
+        if (isDead() || getPlayers().isEmpty()) return;
 
         kickTicks = 0;
 
@@ -378,7 +407,7 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
         SpeedMineModule module = EUClient.MODULE_MANAGER.getModule(SpeedMineModule.class);
         boolean flag = module.switchReset.getValue() && (module.switchMode.getValue().equalsIgnoreCase("Normal") || module.switchMode.getValue().equalsIgnoreCase("AltSwap") || module.switchMode.getValue().equalsIgnoreCase("AltPickup"));
 
-        if (!autoSwitch.getValue().equalsIgnoreCase("None") && mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
+        if (!autoSwitch.getValue().equalsIgnoreCase("None") && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
             if (!flag && autoSwitch.getValue().equalsIgnoreCase("Normal") && swapBack.getValue() && savedSlot == -1) savedSlot = previousSlot;
             InventoryUtils.switchSlot(flag ? "AltSwap" : autoSwitch.getValue(), slot, previousSlot);
             switched = true;
@@ -413,6 +442,16 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
     @SubscribeEvent
     public void onPlayerDeath(PlayerDeathEvent event) {
         kickTicks = 0;
+        attackRunnable = null;
+        placeRunnable = null;
+        target = null;
+        placeTarget = null;
+        attackTarget = null;
+        mineTarget = null;
+        placedCrystals.clear();
+        attackedCrystals.clear();
+        countedCrystals.clear();
+        EUClient.RENDER_MANAGER.setRenderPosition(null);
     }
 
     @SubscribeEvent
@@ -426,6 +465,12 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
 
 
     private void attackCrystals() {
+        if (isDead()) return;
+        if (getPlayers().isEmpty()) {
+            attackTarget = null;
+            return;
+        }
+
         EndCrystal overrideCrystal = null;
 
         // obstructions accumulates EVERY blocked candidate scanned, not just whatever's in the
@@ -456,6 +501,7 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
         // "Normal" is a deliberate no-op here -- see setYawPitch's doc, this class only ever
         // runs on the proxy, where bản gốc's "Normal" never touched the camera either.
 
+        if (swapDelay.getValue().intValue() > 0 && !swapTimer.hasTimeElapsed(swapDelay.getValue().longValue() * 50L)) return;
         if (!attackTimer.hasTimeElapsed(1000.0f - attackSpeed.getValue().floatValue() * 50.0f) || attackedSequentially) {
             if (attackedSequentially) attackedSequentially = false;
             return;
@@ -482,8 +528,15 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
     }
 
     private void placeCrystals(boolean sequential) {
+        if (isDead()) return;
         PlaceTarget placeTarget = this.placeTarget == null ? null : this.placeTarget.clone();
         if (placeTarget == null || placeTarget.getPosition() == null) {
+            EUClient.RENDER_MANAGER.setRenderPosition(null);
+            return;
+        }
+        if (placeTarget.getPlayer() == null || !placeTarget.getPlayer().isAlive() || placeTarget.getPlayer().isDeadOrDying() || placeTarget.getPlayer().getHealth() <= 0.0f) {
+            this.placeTarget = null;
+            this.target = null;
             EUClient.RENDER_MANAGER.setRenderPosition(null);
             return;
         }
@@ -509,7 +562,7 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
         if (!WorldUtils.canSeeBlock(position) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue()))) return;
         if (mc.level.getEntities((Entity) null, new AABB(position.offset(0, 1, 0)), entity -> true).stream().anyMatch(entity -> entity.isAlive() && !(entity instanceof ExperienceOrb) && !(entity instanceof EndCrystal))) return;
 
-
+        if (swapDelay.getValue().intValue() > 0 && !swapTimer.hasTimeElapsed(swapDelay.getValue().longValue() * 50L)) return;
         if (!placeTimer.hasTimeElapsed(1000.0f - placeSpeed.getValue().floatValue() * 50.0f)) return;
         if (!sequential && placedSequentially) {
             placedSequentially = false;
@@ -521,7 +574,7 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
 
             if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), RotationUtils.getRotations(Vec3.atCenterOf(position).add(0, 1, 0)));
 
-            if (mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
+            if (mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
                 if (autoSwitch.getValue().equalsIgnoreCase("Normal") && swapBack.getValue() && savedSlot == -1) savedSlot = previousSlot;
                 InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
                 switched = true;
@@ -772,10 +825,11 @@ public class ServerAutoCrystal extends PbModule implements IMinecraft {
 
     private void place(BlockPos position) {
         InteractionHand hand = mc.player.getOffhandItem().getItem() == Items.END_CRYSTAL ? InteractionHand.OFF_HAND : InteractionHand.MAIN_HAND;
-        Direction direction = WorldUtils.getClosestDirection(position, true);
+        
+        eu.client.modules.impl.combat.CrystalPlacementHelper.PlacementResult placement = eu.client.modules.impl.combat.CrystalPlacementHelper.getVisiblePlacement(position);
 
         NetworkUtils.sendSequencedPacket(sequence ->
-                new ServerboundUseItemOnPacket(hand, new BlockHitResult(WorldUtils.getHitVector(position, direction), direction, position, false), sequence));
+                new ServerboundUseItemOnPacket(hand, new BlockHitResult(placement.hitVec, placement.direction, position, false), sequence));
 
         switch (swing.getValue()) {
             case "Default" -> mc.player.swing(hand);

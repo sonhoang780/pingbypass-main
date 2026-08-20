@@ -25,12 +25,8 @@ public class FontManager implements IMinecraft {
     private FontRenderer fontRenderer;
 
     private boolean useCustomFont() {
-        // Must also check Global: the real chat/EditBox text (GuiRenderStateMixin) only switches
-        // to the custom font when Global is on, so measuring/drawing here without the same check
-        // used custom-font metrics against vanilla-rendered text whenever Global was off --
-        // misaligned suggestion overlays (widths never matched what was actually on screen).
         FontModule module = EUClient.MODULE_MANAGER.getModule(FontModule.class);
-        return module.isToggled() && module.customFont.getValue() && module.global.getValue() && fontRenderer != null;
+        return module != null && module.isToggled() && module.customFont.getValue() && fontRenderer != null;
     }
 
     private boolean shadowEnabled() {

@@ -182,6 +182,19 @@ public abstract class LivingEntityMixin extends Entity implements IMinecraft {
         if (parked != null) cir.setReturnValue(parked);
     }
 
+    // See ElytraFlyModule.shouldPinFallFlying() for the full root-cause note: under
+    // ControlRocket + GrimV3 the server clears shared flag 7 on every entity tick (the elytra is
+    // only on the chest slot for the instant between the two swaps, so canGlide() fails) and echoes
+    // that to us via sendToTrackingPlayersAndSelf. The resulting every-other-tick flap is what
+    // actually pops -- Pose.FALL_FLYING <-> STANDING changes the eye height by ~1.2 blocks, travel()
+    // alternates glide/gravity, and the firework's own boost (gated on isFallFlying) pulses. Hold
+    // the flag steady on the client for the duration of the flight.
+    @Inject(method = "isFallFlying", at = @At("HEAD"), cancellable = true)
+    private void euclient$pinControlRocketGlide(CallbackInfoReturnable<Boolean> cir) {
+        if ((Object) this != mc.player || EUClient.MODULE_MANAGER == null) return;
+        if (EUClient.MODULE_MANAGER.getModule(ElytraFlyModule.class).shouldPinFallFlying()) cir.setReturnValue(true);
+    }
+
     @Inject(method = "travel", at = @At("HEAD"))
     private void travel$grimHead(Vec3 movementInput, CallbackInfo info) {
         euclient$grimSwapped = false;

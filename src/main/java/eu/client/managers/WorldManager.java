@@ -24,17 +24,12 @@ public class WorldManager implements IMinecraft {
     private static final int[] INDICES = new int[101];
 
     @Getter private final Map<UUID, Integer> poppedTotems = new ConcurrentHashMap<>();
-    private final List<UUID> deadPlayers = new ArrayList<>();
+    private final Set<UUID> deadPlayers = ConcurrentHashMap.newKeySet();
 
     @Getter @Setter private float timerMultiplier = 1.0f;
 
     @Getter private final Timer placeTimer = new Timer();
 
-    // Cells that a block-placement module (SelfFill/Surround/...) wants to place in THIS tick.
-    // AutoCrystal reads this before picking a crystal spot so it stops re-filling a position
-    // another module is actively trying to place a block into -- without this, AutoCrystal wins
-    // every tick (PlayerUpdateEvent fires before its UpdateMovementEvent.Post placement) and the
-    // two modules whack-a-mole the same cell forever. Cleared and repopulated every tick.
     private final Set<BlockPos> reservedPlacements = ConcurrentHashMap.newKeySet();
 
     public void reservePlacement(BlockPos pos) {
@@ -49,14 +44,6 @@ public class WorldManager implements IMinecraft {
         return reservedPlacements;
     }
 
-    // Instant retry on confirmed crystal death, keyed by the attacked crystal's entity id --
-    // waiting for the caller's own next tick (PlayerUpdateEvent, once per client tick) to retry a
-    // blocked placement is still a full tick of dead time. This fires the moment the SERVER
-    // confirms the crystal is actually gone (ClientboundRemoveEntitiesPacket), which is the
-    // earliest possible signal short of predicting it -- shrinks the race window against an enemy
-    // re-placing a crystal on the same cell (crystal-aura-style) to whatever's left of that RTT
-    // instead of a full extra client tick, though it still can't outright WIN that race if their
-    // ping is lower: both sides are bounded by their own round-trip to the server either way.
     private final Map<Integer, Runnable> pendingCrystalRetries = new ConcurrentHashMap<>();
 
     public void onCrystalAttacked(int entityId, Runnable retry) {
@@ -96,24 +83,21 @@ public class WorldManager implements IMinecraft {
 
     @SubscribeEvent
     public void onTick(TickEvent event) {
-        // Cleared here (fires at Minecraft.tick() HEAD, before PlayerUpdateEvent/UpdateMovementEvent
-        // both fire from the player entity's own tick later this same tick) so each tick starts
-        // fresh and a reservation from N ticks ago can't linger and block a cell forever.
         reservedPlacements.clear();
 
-        // Silent switches hold the server's held slot open across a burst now; this lands the
-        // restore once the burst stops. See InventoryUtils.tickPendingRestore.
         eu.client.utils.minecraft.InventoryUtils.tickPendingRestore();
 
         if (mc.level == null) return;
 
+        List<Player> currentPlayers = new ArrayList<>(mc.level.players());
+
         for (UUID uuid : new ArrayList<>(poppedTotems.keySet())) {
-            if (mc.level.players().stream().noneMatch(player -> player.getUUID().equals(uuid))) {
+            if (currentPlayers.stream().noneMatch(player -> player.getUUID().equals(uuid))) {
                 poppedTotems.remove(uuid);
             }
         }
 
-        for (Player player : mc.level.players()) {
+        for (Player player : currentPlayers) {
             if (player.deathTime <= 0 && player.getHealth() > 0) {
                 deadPlayers.remove(player.getUUID());
                 continue;
@@ -132,20 +116,6 @@ public class WorldManager implements IMinecraft {
     public void onPacketReceive(PacketReceiveEvent event) {
         if (mc.level == null) return;
 
-        // 1.21.2 added this S2C packet as a real server-authoritative sync for the held slot --
-        // .mcref confirms ClientPacketListener.handleSetHeldSlot unconditionally calls
-        // mc.player.getInventory().setSelectedSlot(packet.slot()). Every "Silent"-style switch in
-        // this project (SpeedMine/AutoCrystal/Surround/SelfTrap...) sends a raw
-        // ServerboundSetCarriedItemPacket to move the SERVER's held item without ever touching
-        // mc.player locally -- on 1.20.x that was fire-and-forget, no echo. On 1.21.2+ the server
-        // now echoes the resulting slot straight back, and vanilla's own packet handler applies it
-        // unconditionally, defeating every "don't show this switch to the player" fix at the
-        // source (not fixable by gating our own setSelectedSlot() calls -- this one is vanilla's,
-        // not ours). Confirmed live: no flicker with ViaFabric downgraded to 1.20.x, flickers on
-        // 1.21.2+. The only time the server's authoritative slot should legitimately differ from
-        // what's currently on screen is when WE just silently changed it out from under our own
-        // display -- so drop it whenever it doesn't match what the player is already looking at;
-        // a packet that agrees with the current display is a no-op to apply or drop either way.
         if (event.getPacket() instanceof ClientboundSetHeldSlotPacket packet && mc.player != null
                 && packet.slot() != mc.player.getInventory().getSelectedSlot()) {
             event.setCancelled(true);

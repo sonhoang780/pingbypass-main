@@ -65,6 +65,46 @@ public class EntityUtils implements IMinecraft {
         POTION_COLORS.put(MobEffects.UNLUCK.value(), new Color(192, 164, 77));
     }
 
+    /**
+     * nami PlayerUtils.isPhased (nami-api util/entity/PlayerUtils.java:54) verbatim: true iff the
+     * entity's hitbox actually OVERLAPS solid collision this tick (clipped inside a block), not
+     * merely standing next to one. Cell-membership helpers (HoleUtils) do NOT answer this.
+     * ponytail: 4th copy in this repo (VelocityModule/CriticalsModule/AutoPotModule keep private
+     * ones) -- this is the shared one, fold the others in when one of them next needs a change.
+     */
+    public static boolean isPhased(Entity entity) {
+        if (entity == null || mc.level == null) return false;
+
+        AABB box = entity.getBoundingBox();
+        int minX = Mth.floor(box.minX), maxX = Mth.ceil(box.maxX);
+        int minY = Mth.floor(box.minY), maxY = Mth.ceil(box.maxY);
+        int minZ = Mth.floor(box.minZ), maxZ = Mth.ceil(box.maxZ);
+
+        for (int x = minX; x < maxX; x++) {
+            for (int y = minY; y < maxY; y++) {
+                for (int z = minZ; z < maxZ; z++) {
+                    BlockPos pos = new BlockPos(x, y, z);
+                    net.minecraft.world.phys.shapes.VoxelShape shape = mc.level.getBlockState(pos).getCollisionShape(mc.level, pos);
+                    if (!shape.isEmpty() && shape.bounds().move(pos).intersects(box)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    public static boolean isEating() {
+        if (mc.player == null) return false;
+        if (mc.player.isUsingItem()) return true;
+
+        if (mc.options.keyUse.isDown()) {
+            net.minecraft.world.item.ItemStack main = mc.player.getMainHandItem();
+            net.minecraft.world.item.ItemStack off = mc.player.getOffhandItem();
+            if (!main.isEmpty() && main.getUseDuration(mc.player) > 0) return true;
+            if (!off.isEmpty() && off.getUseDuration(mc.player) > 0) return true;
+        }
+        return false;
+    }
+
     public static boolean isBot(Player player) {
         if (EUClient.MODULE_MANAGER.getModule(FakePlayerModule.class).isToggled() && player == EUClient.MODULE_MANAGER.getModule(FakePlayerModule.class).getPlayer()) {
             return false;
@@ -72,6 +112,15 @@ public class EntityUtils implements IMinecraft {
 
         PlayerInfo entry = mc.getConnection().getPlayerInfo(player.getUUID());
         return entry == null || entry.getProfile() == null || player.getUUID().toString().startsWith(player.getName().getString()) || !player.getGameProfile().name().equals(player.getName().getString());
+    }
+
+    public static boolean isGhost(Entity entity) {
+        if (entity == null || EUClient.MODULE_MANAGER == null) return false;
+        eu.client.modules.impl.visuals.PopChamsModule popChams = EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.visuals.PopChamsModule.class);
+        if (popChams != null && popChams.isGhost(entity)) return true;
+        eu.client.modules.impl.visuals.LogoutSpotModule logoutSpot = EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.visuals.LogoutSpotModule.class);
+        if (logoutSpot != null && logoutSpot.isGhost(entity)) return true;
+        return false;
     }
 
     public static int getLatency(Player player) {

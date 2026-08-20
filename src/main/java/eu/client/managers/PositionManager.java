@@ -57,4 +57,20 @@ public class PositionManager implements IMinecraft {
             serverSneaking = packet.input().shift();
         }
     }
+
+    public double getServerX() {
+        return mc.player != null ? mc.player.getX() : serverX;
+    }
+
+    public double getServerY() {
+        return mc.player != null ? mc.player.getY() : serverY;
+    }
+
+    public double getServerZ() {
+        return mc.player != null ? mc.player.getZ() : serverZ;
+    }
+
+    public boolean isServerOnGround() {
+        return mc.player != null ? mc.player.onGround() : serverOnGround;
+    }
 }

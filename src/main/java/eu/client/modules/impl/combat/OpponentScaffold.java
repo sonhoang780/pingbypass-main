@@ -56,7 +56,7 @@ public class OpponentScaffold extends Module {
     public void onPlayerUpdate(PlayerUpdateEvent event) {
         if (shouldRunOnProxy()) return;
         if (mc.player == null || mc.level == null) return;
-        if (!whileEating.getValue() && mc.player.isUsingItem()) return;
+        if (!whileEating.getValue() && eu.client.utils.minecraft.EntityUtils.isEating()) return;
 
         List<AbstractClientPlayer> players = mc.level.players();
         if (players == null || players.isEmpty()) return;

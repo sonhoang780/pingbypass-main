@@ -100,26 +100,55 @@ public class EspShader implements IMinecraft {
     // all-vec4 reasoning) -- same COPY_DST buffer-swap trick, own chain/buffer since star_glow's
     // "swap" target is now genuinely isolated (SkyRendererMixin) and no longer shared with
     // anything else this could cross-talk with.
+    // Two separate uniform keys now (2026-08-19 perf fix, see star_glow.fsh's own doc for the
+    // FPS-drop root cause): pass 1 (star_glow_blur.fsh, horizontal) reads "StarGlowConfig" with
+    // Direction=(1,0); pass 2 (star_glow.fsh, vertical+composite) reads "StarGlowConfigV" with
+    // Direction=(0,1). Sharing one key/buffer across both (the old shape) would overwrite each
+    // pass's baked-in direction with whatever the other pass's write left last -- a single "loop
+    // over every pass with this key" can only ever hold one Direction value.
     private static final String STAR_GLOW_UNIFORM = "StarGlowConfig";
+    private static final String STAR_GLOW_UNIFORM_V = "StarGlowConfigV";
     private static final int STAR_GLOW_UBO_SIZE = new Std140SizeCalculator().putVec4().get();
     private static GpuBuffer starGlowUboBuffer;
+    private static GpuBuffer starGlowUboBufferV;
 
     public static void writeStarGlowSettings(PostChain chain, float intensity) {
+        // Brightness alone clamps to solid white well before Intensity's upper range (the shader's
+        // max(original, blurred*Intensity) clips to [0,1] on write) -- past that point cranking
+        // Intensity higher did nothing visible. Scale blur Radius up with it too, capped at the
+        // shader's MAX_WIDTH=14, so the slider keeps producing a visibly bigger/softer halo across
+        // its whole range instead of going invisible past ~5.
+        float radius = Math.min(4.0f + intensity * 0.05f, 14.0f);
+
         for (PostPass pass : ((PostEffectProcessorAccessor) chain).getPasses()) {
             Map<String, GpuBuffer> uniforms = ((PostPassAccessor) pass).euclient$getCustomUniforms();
-            if (!uniforms.containsKey(STAR_GLOW_UNIFORM)) continue;
 
-            if (starGlowUboBuffer == null || uniforms.get(STAR_GLOW_UNIFORM) != starGlowUboBuffer) {
-                starGlowUboBuffer = RenderSystem.getDevice().createBuffer(() -> "EUClient star glow shader UBO", 136, STAR_GLOW_UBO_SIZE);
-                GpuBuffer displaced = uniforms.put(STAR_GLOW_UNIFORM, starGlowUboBuffer);
-                if (displaced != null) displaced.close();
+            if (uniforms.containsKey(STAR_GLOW_UNIFORM)) {
+                if (starGlowUboBuffer == null || uniforms.get(STAR_GLOW_UNIFORM) != starGlowUboBuffer) {
+                    starGlowUboBuffer = RenderSystem.getDevice().createBuffer(() -> "EUClient star glow H shader UBO", 136, STAR_GLOW_UBO_SIZE);
+                    GpuBuffer displaced = uniforms.put(STAR_GLOW_UNIFORM, starGlowUboBuffer);
+                    if (displaced != null) displaced.close();
+                }
+                try (MemoryStack stack = MemoryStack.stackPush()) {
+                    ByteBuffer data = Std140Builder.onStack(stack, STAR_GLOW_UBO_SIZE)
+                            .putVec4(intensity, radius, 1.0f, 0.0f)
+                            .get();
+                    RenderSystem.getDevice().createCommandEncoder().writeToBuffer(starGlowUboBuffer.slice(), data);
+                }
             }
 
-            try (MemoryStack stack = MemoryStack.stackPush()) {
-                ByteBuffer data = Std140Builder.onStack(stack, STAR_GLOW_UBO_SIZE)
-                        .putVec4(intensity, 0.0f, 0.0f, 0.0f)
-                        .get();
-                RenderSystem.getDevice().createCommandEncoder().writeToBuffer(starGlowUboBuffer.slice(), data);
+            if (uniforms.containsKey(STAR_GLOW_UNIFORM_V)) {
+                if (starGlowUboBufferV == null || uniforms.get(STAR_GLOW_UNIFORM_V) != starGlowUboBufferV) {
+                    starGlowUboBufferV = RenderSystem.getDevice().createBuffer(() -> "EUClient star glow V shader UBO", 136, STAR_GLOW_UBO_SIZE);
+                    GpuBuffer displaced = uniforms.put(STAR_GLOW_UNIFORM_V, starGlowUboBufferV);
+                    if (displaced != null) displaced.close();
+                }
+                try (MemoryStack stack = MemoryStack.stackPush()) {
+                    ByteBuffer data = Std140Builder.onStack(stack, STAR_GLOW_UBO_SIZE)
+                            .putVec4(intensity, radius, 0.0f, 1.0f)
+                            .get();
+                    RenderSystem.getDevice().createCommandEncoder().writeToBuffer(starGlowUboBufferV.slice(), data);
+                }
             }
         }
     }

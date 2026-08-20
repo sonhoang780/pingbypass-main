@@ -23,6 +23,9 @@ import java.util.List;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Pose;
+
 public class HoleUtils implements IMinecraft {
     private static final Vec3i[] holeOffsets = new Vec3i[]{new Vec3i(0, -1, 0), new Vec3i(1, 0, 0), new Vec3i(-1, 0,0), new Vec3i(0, 0, 1), new Vec3i(0, 0, -1)};
 
@@ -36,26 +39,87 @@ public class HoleUtils implements IMinecraft {
     }
 
     public static List<BlockPos> getInsidePositions(Entity targetEntity) {
+        if (targetEntity == null || mc.level == null) return Collections.emptyList();
         List<BlockPos> targetPositions = new ArrayList<>();
-        BlockPos targetPosition = PositionUtils.getFlooredPosition(targetEntity);
+        AABB box = targetEntity.getBoundingBox();
 
-        for(Vec3i vec3i : holeOffsets) {
-            if (!(vec3i.getY() < targetPosition.getY())) continue;
-            BlockPos offsetPosition = targetPosition.offset(vec3i);
+        boolean isHorizontal = targetEntity.isSwimming()
+                || targetEntity.isVisuallySwimming()
+                || targetEntity.isVisuallyCrawling()
+                || (targetEntity instanceof LivingEntity living && living.isFallFlying())
+                || targetEntity.getPose() == Pose.SWIMMING
+                || targetEntity.getPose() == Pose.FALL_FLYING
+                || (box.maxY - box.minY) <= 1.0;
 
-            List<Entity> collidingEntities = mc.level.getEntities((Entity) null, new AABB(offsetPosition), entity -> true).stream().filter(entity -> entity == targetEntity).toList();
-            if (collidingEntities.isEmpty()) continue;
+        if (isHorizontal) {
+            // When swimming/crawling, Minecraft's server AABB is only 0.6x0.6x0.6 around origin,
+            // but the player's 1.8m body extends along their body yaw.
+            // Sample along the 1.8m body line (head to feet) with a 0.3m radius to cover all occupied blocks.
+            float yaw = targetEntity.getYRot();
+            double rad = Math.toRadians(yaw);
+            double dirX = -Math.sin(rad);
+            double dirZ = Math.cos(rad);
 
-            AABB box = collidingEntities.getFirst().getBoundingBox();
+            double posX = targetEntity.getX();
+            double posY = targetEntity.getY();
+            double posZ = targetEntity.getZ();
 
-            for (int x = (int) Math.floor(box.minX); x < Math.ceil(box.maxX); x++) {
-                for (int z = (int) Math.floor(box.minZ); z < Math.ceil(box.maxZ); z++) {
-                    BlockPos pos = new BlockPos(x, targetPosition.getY(), z);
-                    if(!targetPositions.contains(pos)) targetPositions.add(pos);
+            // Sample from -0.9m to +0.9m along body axis and +-0.3m width
+            for (double dist = -0.9; dist <= 0.9; dist += 0.2) {
+                for (double width = -0.3; width <= 0.3; width += 0.3) {
+                    double sx = posX + dirX * dist - dirZ * width;
+                    double sz = posZ + dirZ * dist + dirX * width;
+                    BlockPos pos = new BlockPos((int) Math.floor(sx), (int) Math.floor(posY), (int) Math.floor(sz));
+                    if (!targetPositions.contains(pos)) {
+                        targetPositions.add(pos);
+                    }
+                }
+            }
+
+            // Also include standard bounding box
+            int minX = (int) Math.floor(box.minX);
+            int maxX = (int) Math.ceil(box.maxX);
+            int minY = (int) Math.floor(box.minY);
+            int maxY = (int) Math.ceil(box.maxY);
+            int minZ = (int) Math.floor(box.minZ);
+            int maxZ = (int) Math.ceil(box.maxZ);
+
+            for (int x = minX; x < maxX; x++) {
+                for (int y = minY; y < maxY; y++) {
+                    for (int z = minZ; z < maxZ; z++) {
+                        BlockPos pos = new BlockPos(x, y, z);
+                        if (!targetPositions.contains(pos)) {
+                            targetPositions.add(pos);
+                        }
+                    }
+                }
+            }
+        } else {
+            int minX = (int) Math.floor(box.minX);
+            int maxX = (int) Math.ceil(box.maxX);
+            int minY = (int) Math.floor(box.minY);
+            int minZ = (int) Math.floor(box.minZ);
+            int maxZ = (int) Math.ceil(box.maxZ);
+            // nami AutoMineFeature.crouchingShouldMinePhase scans full minY..maxY when crouched
+            // (vs standsShouldMinePhase's single feet row) -- was missing here, torso-level phase
+            // block in a 2-tall crouch pocket never got picked up. Standing/swim/crawl untouched.
+            int scanMaxY = targetEntity.isCrouching() ? (int) Math.ceil(box.maxY) : minY + 1;
+
+            for (int x = minX; x < maxX; x++) {
+                for (int y = minY; y < scanMaxY; y++) {
+                    for (int z = minZ; z < maxZ; z++) {
+                        BlockPos pos = new BlockPos(x, y, z);
+                        if (!targetPositions.contains(pos)) {
+                            targetPositions.add(pos);
+                        }
+                    }
                 }
             }
         }
-        if(targetPositions.isEmpty()) targetPositions.add(targetPosition);
+
+        if (targetPositions.isEmpty()) {
+            targetPositions.add(PositionUtils.getFlooredPosition(targetEntity));
+        }
 
         return targetPositions;
     }
@@ -68,6 +132,7 @@ public class HoleUtils implements IMinecraft {
 
         BlockPos feetPos = PositionUtils.getFlooredPosition(target);
         blacklist.add(feetPos);
+        blacklist.addAll(getInsidePositions(target));
 
         if (extension) {
             for (Direction dir : Direction.values()) {
@@ -89,6 +154,7 @@ public class HoleUtils implements IMinecraft {
                             blacklist.add(new BlockPos(x, feetPos.getY(), z));
                         }
                     }
+                    blacklist.addAll(getInsidePositions(player));
                 }
             }
         }

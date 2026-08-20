@@ -27,10 +27,38 @@ import net.minecraft.world.item.ItemStack;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import net.minecraft.client.gui.render.pip.PictureInPictureRenderer;
+import net.minecraft.client.renderer.MultiBufferSource;
+import org.spongepowered.asm.mixin.injection.ModifyArgs;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.invoke.arg.Args;
+import java.util.ArrayList;
+import java.util.List;
 
 @Mixin(GameRenderer.class)
 public abstract class GameRendererMixin {
+
+    @ModifyArgs(method = "<init>", at = @At(value = "INVOKE",
+        target = "Lnet/minecraft/client/gui/render/GuiRenderer;<init>(Lnet/minecraft/client/renderer/state/gui/GuiRenderState;Lnet/minecraft/client/renderer/MultiBufferSource$BufferSource;Lnet/minecraft/client/renderer/SubmitNodeCollector;Lnet/minecraft/client/renderer/feature/FeatureRenderDispatcher;Ljava/util/List;)V"))
+    private static void musichud$registerSkiaPip(Args args) {
+        MultiBufferSource.BufferSource bufferSource = args.get(1);
+        List<PictureInPictureRenderer<?>> original = args.get(4);
+        List<PictureInPictureRenderer<?>> modified = new ArrayList<>(original);
+        modified.add(new eu.client.utils.graphics.skia.MusicHudPipRenderer(bufferSource));
+        args.set(4, modified);
+    }
+
+    @Inject(method = "processBlurEffect", at = @At("HEAD"), cancellable = true)
+    private void musichud$renderLiquidGlass(CallbackInfo ci) {
+        if (eu.client.utils.graphics.skia.LiquidGlassHud.INSTANCE.isActive()) {
+            ci.cancel();
+            eu.client.utils.graphics.skia.LiquidGlassHud.INSTANCE.render();
+        } else if (eu.client.utils.graphics.skia.SkijaBackdropBlur.INSTANCE.isActive()) {
+            ci.cancel();
+            eu.client.utils.graphics.skia.SkijaBackdropBlur.INSTANCE.render();
+        }
+    }
+
     @Inject(method = "renderLevel", at = @At("HEAD"))
     private void renderWorld$HEAD(DeltaTracker tickCounter, CallbackInfo info) {
         Renderer3D.prepare();
@@ -70,28 +98,12 @@ public abstract class GameRendererMixin {
         chain.process(outline, GraphicsResourceAllocator.UNPOOLED);
     }
 
-    // StarGlow -- SkyRendererMixin redirects the ACTUAL star draw call (not a whole-screen
-    // threshold guess) into StarCapture's isolated target this frame. Blur it in place (star_glow
-    // chain, own identifier/buffer, not shared with anything), then composite it onto the real
-    // screen via RenderTarget.blitAndBlendToTexture -- the SAME alpha-blend pipeline
-    // (ENTITY_OUTLINE_BLIT) vanilla's own doEntityOutline() uses, verified via .mcref. No
-    // brightness/chroma approximation anywhere in this path.
-    @Inject(method = "render(Lnet/minecraft/client/DeltaTracker;Z)V", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/LevelRenderer;doEntityOutline()V"))
-    private void euclient$resolveStarGlow(DeltaTracker tracker, boolean tick, CallbackInfo ci) {
-        eu.client.modules.impl.visuals.AtmosphereModule atmosphere = EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.visuals.AtmosphereModule.class);
-        if (!atmosphere.isToggled() || !atmosphere.starGlow.getValue()) return;
-
-        RenderTarget starTarget = eu.client.utils.graphics.StarCapture.get();
-        if (starTarget == null) return;
-
-        Minecraft mc = Minecraft.getInstance();
-        PostChain chain = mc.getShaderManager().getPostChain(Identifier.fromNamespaceAndPath("euclient", "star_glow"), LevelTargetBundle.MAIN_TARGETS);
-        if (chain == null) return;
-
-        EspShader.writeStarGlowSettings(chain, atmosphere.starGlowIntensity.getValue().floatValue());
-        chain.process(starTarget, GraphicsResourceAllocator.UNPOOLED);
-        starTarget.blitAndBlendToTexture(mc.getMainRenderTarget().getColorTextureView());
-    }
+    // StarGlow composite moved to SkyRendererMixin (right after SkyRenderer.renderSunMoonAndStars,
+    // the same draw-order slot vanilla's own star draw would occupy) -- doing it here at
+    // doEntityOutline() ran AFTER terrain/chunk sections had already painted over the sky this
+    // frame, so the glow blit landed on top of everything unconditionally, "glowing" straight
+    // through walls/terrain that should have occluded it (occlusion here is draw-order based, like
+    // vanilla's own sky-then-terrain painter's-algorithm compositing -- not a depth test).
 
     // PORT: in 26.1.2 view-bob (bobHurt/bobView) is composed into the PROJECTION matrix
     // (GameRenderer.renderLevel: `projectionMatrix.mul(bobStack.last().pose())`), not the

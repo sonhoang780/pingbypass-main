@@ -26,6 +26,7 @@ import net.minecraft.core.Holder;
 import org.joml.Matrix3x2fStack;
 import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.effect.MobEffectUtil;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.player.Player;
@@ -77,6 +78,7 @@ public class HUDModule extends Module {
     public BooleanSetting playerRadarPing = new BooleanSetting("PlayerRadarPing", "Ping", "Renders the player's current latency.", new CategorySetting.Visibility(playerRadarCategory), true);
     public BooleanSetting playerRadarHealth = new BooleanSetting("PlayerRadarHealth", "Health", "Renders the player's current health.", new CategorySetting.Visibility(playerRadarCategory), true);
     public BooleanSetting playerRadarTotems = new BooleanSetting("PlayerRadarTotems", "Totems", "Renders the amount of totems that the player has popped.", new CategorySetting.Visibility(playerRadarCategory), true);
+    public BooleanSetting playerRadarTurtlePot = new BooleanSetting("PlayerRadarTurtlePot", "TurtlePotIndicator", "Indicates if the player has Resistance 3 or higher.", new CategorySetting.Visibility(playerRadarCategory), true);
 
     public CategorySetting itemsCategory = new CategorySetting("Items", "The settings for information about items in your inventory and specific item counters.");
     public BooleanSetting armor = new BooleanSetting("Armor", "Renders the armor you're currently wearing and its status.", new CategorySetting.Visibility(itemsCategory), true);
@@ -98,6 +100,7 @@ public class HUDModule extends Module {
     public BooleanSetting informationSync = new BooleanSetting("InformationSync", "ColorSync", "Uses the client's color for the information elements.", new CategorySetting.Visibility(informationCategory), true);
     public BooleanSetting informationChatOffset = new BooleanSetting("InformationChatOffset", "ChatOffset", "Offsets the rendering when the chat is open.", new CategorySetting.Visibility(informationCategory), true);
 
+    // [KHÔI PHỤC] Cài đặt Potions
     public CategorySetting potionsCategory = new CategorySetting("Potions", "The settings for information about potion effects and their status.");
     public BooleanSetting potions = new BooleanSetting("Potions", "Enabled", "Renders the name and status of every potion effect you have.", new CategorySetting.Visibility(potionsCategory), true);
     public BooleanSetting potionIcons = new BooleanSetting("PotionIcons", "Icons", "Whether or not to render the icons next to the potion's name.", new CategorySetting.Visibility(potionsCategory), true);
@@ -108,6 +111,11 @@ public class HUDModule extends Module {
     public CategorySetting positionCategory = new CategorySetting("Position","The settings for information about your current position and velocity.");
     public BooleanSetting coordinates = new BooleanSetting("Coordinates", "Renders your current coordinates.", new CategorySetting.Visibility(positionCategory), true);
     public BooleanSetting netherCoordinates = new BooleanSetting("NetherCoordinates", "Renders your current coordinates in the alternate dimension.", new BooleanSetting.Visibility(coordinates, true), true);
+    
+    // Cài đặt Fake Coords
+    public BooleanSetting fakeCoords = new BooleanSetting("FakeCoords", "Fakes your coordinates to prevent leaking.", new CategorySetting.Visibility(positionCategory), false);
+    public NumberSetting fakeThreshold = new NumberSetting("FakeThreshold", "Threshold", "Minimum coordinate value required to start faking.", new BooleanSetting.Visibility(fakeCoords, true), 1000, 0, 100000);
+
     public BooleanSetting direction = new BooleanSetting("Direction", "Renders the current direction that you are facing.", new CategorySetting.Visibility(positionCategory), true);
     public BooleanSetting positionSync = new BooleanSetting("PositionSync", "ColorSync", "Uses the client's color for the position elements.", new CategorySetting.Visibility(positionCategory), true);
     public BooleanSetting positionChatOffset = new BooleanSetting("PositionChatOffset", "ChatOffset", "Offsets the text when the chat is open.", new CategorySetting.Visibility(positionCategory), true);
@@ -119,13 +127,9 @@ public class HUDModule extends Module {
     public NumberSetting rainbowOffset = new NumberSetting("RainbowOffset", "Offset", "The offset that will be applied to the rainbow.", new ModeSetting.Visibility(colorMode, "Rainbow", "Wave"), 10L, 1L, 50L);
     public BooleanSetting inversion = new BooleanSetting("Inversion", "Inverts primary and secondary colors.", new CategorySetting.Visibility(colorCategory), false);
 
-    // Aggregate gates for HUDEditor -- Items/Information don't already have a single on/off (they
-    // bundle several independently-toggleable pieces), so these wrap the whole block for the
-    // editor's per-element enable/disable without touching the existing fine-grained settings above.
     public BooleanSetting itemsElement = new BooleanSetting("ItemsElement", "Whether the armor/totem/crystal/xp counters are shown at all. See HUDEditor.", true);
     public BooleanSetting informationElement = new BooleanSetting("InformationElement", "Whether the ping/fps/tps/etc information block is shown at all. See HUDEditor.", true);
 
-    // Per-element drag offsets, edited via HUDEditorModule -- never shown as a normal ClickGui row.
     public PositionSetting watermarkPosition = new PositionSetting("WatermarkPosition", "Drag offset for the watermark HUD element.");
     public PositionSetting welcomerPosition = new PositionSetting("WelcomerPosition", "Drag offset for the welcomer HUD element.");
     public PositionSetting moduleListPosition = new PositionSetting("ModuleListPosition", "Drag offset for the module list HUD element.");
@@ -133,8 +137,27 @@ public class HUDModule extends Module {
     public PositionSetting itemsPosition = new PositionSetting("ItemsPosition", "Drag offset for the item counters HUD element.");
     public PositionSetting informationPosition = new PositionSetting("InformationPosition", "Drag offset for the information HUD element.");
     public PositionSetting coordinatesPosition = new PositionSetting("CoordinatesPosition", "Drag offset for the coordinates HUD element.");
+    public PositionSetting potionsPosition = new PositionSetting("PotionsPosition", "Drag offset for the potions HUD element.");
+    public PositionSetting musicHudPosition = new PositionSetting("MusicHUDPosition", "Drag offset for the Music HUD element.");
 
-    {
+    public CategorySetting musicHudCategory = new CategorySetting("MusicHUD", "Settings for the Music HUD.");
+    public BooleanSetting musicHud = new BooleanSetting("MusicHUD", "Enabled", "Toggle Music HUD display.", new CategorySetting.Visibility(musicHudCategory), true);
+    public NumberSetting musicHudBarAlpha = new NumberSetting("MusicHudBarAlpha", "BarAlpha", "Transparency of the visualizer bars (0-255).", new CategorySetting.Visibility(musicHudCategory), 160.0, 0.0, 255.0);
+    public BooleanSetting musicHudGradientBars = new BooleanSetting("MusicHudGradientBars", "GradientBars", "Gradient colored visualizer bars.", new CategorySetting.Visibility(musicHudCategory), true);
+    public ModeSetting musicHudBgMode = new ModeSetting("MusicHudBackground", "Background", "Background style of the HUD.", new CategorySetting.Visibility(musicHudCategory), "LiquidGlass", new String[]{"LiquidGlass", "Blur", "Default"});
+    public NumberSetting musicHudBlurIntensity = new NumberSetting("MusicHudBlurIntensity", "BlurIntensity", "Intensity of the blur effect.", new CategorySetting.Visibility(musicHudCategory), 3.0, 0.0, 50.0);
+    public BooleanSetting musicHudCompactMode = new BooleanSetting("MusicHudCompactMode", "CompactMode", "Collapse the HUD, limiting its width.", new CategorySetting.Visibility(musicHudCategory), false);
+    public BooleanSetting musicHudDisk = new BooleanSetting("MusicHudDisk", "Disk", "Enable to show the spinning record.", new CategorySetting.Visibility(musicHudCategory), true);
+    public BooleanSetting musicHudUltraDisk = new BooleanSetting("MusicHudUltraDisk", "UltraDisk", "Only display the record, hide everything else.", new CategorySetting.Visibility(musicHudCategory), false);
+    public NumberSetting musicHudDiskSize = new NumberSetting("MusicHudDiskSize", "DiskSize", "Size of the music disk (Ultra Disk).", new CategorySetting.Visibility(musicHudCategory), 100.0, 30.0, 300.0);
+    public BooleanSetting musicHudTextBloom = new BooleanSetting("MusicHudTextBloom", "TextBloom", "Text bloom glow effect.", new CategorySetting.Visibility(musicHudCategory), true);
+    public BooleanSetting musicHudTextBloomPlus = new BooleanSetting("MusicHudTextBloomPlus", "TextBloomPlus", "Enhanced Skia text bloom glow.", new CategorySetting.Visibility(musicHudCategory), true);
+    public ColorSetting musicHudColor = new ColorSetting("MusicHudColor", "Color", "Accent color used for the visualizer.", new CategorySetting.Visibility(musicHudCategory), ColorUtils.getDefaultColor());
+
+    public static HUDModule INSTANCE;
+
+    public HUDModule() {
+        INSTANCE = this;
         HudElementRegistry.register("Watermark", watermark, watermarkPosition, watermarkCategory);
         HudElementRegistry.register("Welcomer", welcomer, welcomerPosition, welcomerCategory);
         HudElementRegistry.register("ModuleList", moduleList, moduleListPosition, moduleListCategory);
@@ -142,6 +165,10 @@ public class HUDModule extends Module {
         HudElementRegistry.register("Items", itemsElement, itemsPosition, itemsCategory);
         HudElementRegistry.register("Information", informationElement, informationPosition, informationCategory);
         HudElementRegistry.register("Coordinates", coordinates, coordinatesPosition, positionCategory);
+        HudElementRegistry.register("Potions", potions, potionsPosition, potionsCategory);
+        HudElementRegistry.register("MusicHUD", musicHud, musicHudPosition, musicHudCategory);
+        musicHudPosition.set(20f, 60f);
+        new eu.client.modules.impl.visuals.MusicHUDComponent();
     }
 
     private final Animation potionsAnimation = new Animation(300, Easing.Method.EASE_OUT_CUBIC);
@@ -151,6 +178,37 @@ public class HUDModule extends Module {
     private List<ModuleEntry> moduleEntries = new ArrayList<>();
     private List<PlayerEntry> playerEntries = new ArrayList<>();
     private List<PotionEntry> potionEntries = new ArrayList<>();
+
+    // [CẬP NHẬT] Tạo offset lớn hơn và có cơ chế random đảo dấu độc lập cho X và Z
+    private final int fakeOffsetX = 2000000 + new java.util.Random().nextInt(8000000); // Khoảng từ 2 đến 10 triệu
+    private final int fakeOffsetZ = 2000000 + new java.util.Random().nextInt(8000000);
+
+    // Hàm Fake nâng cấp: Khắc phục triệt để việc tọa độ quá lớn làm offset trở thành "muối bỏ biển" 
+    // và đảm bảo ngẫu nhiên đảo dấu +/- so với tọa độ thật.
+    private int getFakedCoord(int real, int baseOffset) {
+        if (!fakeCoords.getValue()) return real;
+        if (Math.abs(real) < fakeThreshold.getValue().intValue()) return real;
+
+        // 1. Chia tỷ lệ (Scaling) dựa trên độ lớn thực tế để đảm bảo khi bạn ở hàng chục/trăm triệu, 
+        // con số fake vẫn có sự chênh lệch khổng lồ và đáng kể so với real.
+        long scaledOffset = (long) baseOffset + (Math.abs(real) / 3L);
+
+        // 2. Random ngẫu nhiên dấu (+ hoặc -) dựa trên giá trị của real và một chút toán học giả ngẫu nhiên
+        // Đảm bảo nếu real dương, fake vẫn có thể âm và ngược lại.
+        boolean negativeSign = (Math.abs(real) * 31 + baseOffset) % 2 == 0;
+        
+        long finalVal = negativeSign ? -scaledOffset : scaledOffset;
+
+        // 3. Xử lý Scale theo Dimension (Nether / Overworld)
+        if (mc.player != null && mc.player.level() != null) {
+            if (mc.player.level().dimension() == net.minecraft.world.level.Level.NETHER) {
+                // Nếu ở Nether, chia 8 để khớp tỷ lệ di chuyển
+                finalVal = finalVal / 8L;
+            }
+        }
+
+        return (int) finalVal;
+    }
 
     @SubscribeEvent
     public void onTick(TickEvent event) {
@@ -208,7 +266,13 @@ public class HUDModule extends Module {
 
                 int pops = EUClient.WORLD_MANAGER.getPoppedTotems().getOrDefault(player.getUUID(), 0);
                 if (playerRadarTotems.getValue() && pops > 0) text += ColorUtils.getTotemColor(pops) + " -" + pops + ChatFormatting.RESET;
-
+                if (playerRadarTurtlePot.getValue()) {
+                    MobEffectInstance resistance = player.getEffect(MobEffects.RESISTANCE);
+                    if (resistance != null && resistance.getAmplifier() >= 2) {
+                        // ChatFormatting.RED (mã gốc là #FF5555) tạo ra màu đỏ Light Red hơi nhạt chuẩn tone màu pastel
+                        text += ChatFormatting.RED + " [TM]" + ChatFormatting.RESET;
+                    }
+                }
                 entries.add(new PlayerEntry(player, text, headTexture));
             }
 
@@ -345,9 +409,13 @@ public class HUDModule extends Module {
     };
 
     private static int countItem(Player player, net.minecraft.world.item.Item item) {
+        if (player == null) return 0;
         int count = 0;
         for (ItemStack stack : player.getInventory().getNonEquipmentItems()) {
             if (stack.is(item)) count += stack.getCount();
+        }
+        if (player.getOffhandItem().is(item)) {
+            count += player.getOffhandItem().getCount();
         }
         return count;
     }
@@ -377,9 +445,6 @@ public class HUDModule extends Module {
                 int y = mc.getWindow().getGuiScaledHeight() - 55 - wateroffset;
 
                 event.getContext().item(stack, x, y);
-                // itemDecorations() draws vanilla's own durability bar (plus stack count/cooldown,
-                // irrelevant for armor) -- it used to run unconditionally regardless of this mode,
-                // so "Percentage" always showed the bar too instead of just the percentage text.
                 if (armorDurability.getValue().equalsIgnoreCase("Bar") || armorDurability.getValue().equalsIgnoreCase("Both")) {
                     event.getContext().itemDecorations(mc.font, stack, x, y);
                 }
@@ -387,9 +452,6 @@ public class HUDModule extends Module {
                 int damage = stack.getDamageValue();
                 int maxDamage = stack.getMaxDamage();
 
-                // PORT: && binds tighter than || -- this used to parse as
-                // `Percentage || (Both && maxDamage > 0)`, so plain "Percentage" mode skipped the
-                // maxDamage>0 guard entirely and divided by zero on any unbreakable armor piece.
                 if ((armorDurability.getValue().equalsIgnoreCase("Percentage") || armorDurability.getValue().equalsIgnoreCase("Both")) && maxDamage > 0) {
                     matrices.pushMatrix();
                     matrices.scale(0.625f, 0.625f);
@@ -450,6 +512,47 @@ public class HUDModule extends Module {
     }
 
     @SubscribeEvent
+    public void renderPotions(RenderOverlayEvent event) {
+        if (mc.player == null) return;
+        if (!potions.getValue()) return;
+
+        Matrix3x2fStack matrices = event.getMatrices();
+        matrices.pushMatrix();
+        matrices.translate(potionsPosition.getX(), potionsPosition.getY());
+
+        float chatOffset = informationChatOffset.getValue() ? this.chatOffset : 0;
+        int offset = 0;
+        int maxWidth = 0;
+
+        for (PotionEntry entry : potionEntries) {
+            int textWidth = EUClient.FONT_MANAGER.getWidth(entry.text());
+            int totalWidth = textWidth + (entry.sprite() != null ? EUClient.FONT_MANAGER.getHeight() + 2 : 0);
+            maxWidth = Math.max(maxWidth, totalWidth);
+
+            int x = mc.getWindow().getGuiScaledWidth() - 2 - textWidth;
+            int y = mc.getWindow().getGuiScaledHeight() - (int) chatOffset - 2 - EUClient.FONT_MANAGER.getHeight() - (EUClient.FONT_MANAGER.getHeight() * offset);
+
+            if (entry.sprite() != null) {
+                matrices.pushMatrix();
+                matrices.translate(x - EUClient.FONT_MANAGER.getHeight() - 2, y - 1);
+                event.getContext().blitSprite(RenderPipelines.GUI_TEXTURED, entry.sprite(), 0, 0, EUClient.FONT_MANAGER.getHeight(), EUClient.FONT_MANAGER.getHeight());
+                matrices.popMatrix();
+            }
+
+            drawText(event.getContext(), entry.text(), x, y, potionColor.getValue().equals("Client") && colorMode.getValue().equals("Rainbow") && rainbowMode.getValue().equals("Horizontal"), entry.color());
+            offset++;
+        }
+
+        if (offset > 0) {
+            float right = mc.getWindow().getGuiScaledWidth();
+            float bottom = mc.getWindow().getGuiScaledHeight() - chatOffset;
+            HudElementRegistry.reportBounds("Potions", right - 2 - maxWidth - 4, bottom - 2 - offset * EUClient.FONT_MANAGER.getHeight(), right, bottom);
+        }
+
+        matrices.popMatrix();
+    }
+
+    @SubscribeEvent
     public void renderInformation(RenderOverlayEvent event) {
         if (mc.player == null) return;
         if (!informationElement.getValue()) return;
@@ -463,29 +566,9 @@ public class HUDModule extends Module {
         float chatOffset = informationChatOffset.getValue() ? this.chatOffset : 0;
 
         if (health.getValue()) {
-            // Was embedding the ChatFormatting as a raw "§x" text prefix and always drawing with a
-            // hardcoded Color.WHITE -- drawTextWithOutline's custom-font path only strips control
-            // codes for its 4 outline copies (FontManager.drawTextWithOutline), not the main glyph
-            // draw, so the literal '§'+code characters got laid out as real (bogus/undefined) glyphs
-            // in front of the digits instead of being parsed into a color, rendering as a solid
-            // clump instead of "20". Compute the real Color directly and pass a plain digit string.
             String text = new DecimalFormat("0").format(mc.player.getHealth() + mc.player.getAbsorptionAmount());
             Color healthColor = new Color(ColorUtils.getHealthColor(mc.player.getHealth() + mc.player.getAbsorptionAmount()).getColor());
             EUClient.FONT_MANAGER.drawTextWithOutline(event.getContext(), text, mc.getWindow().getGuiScaledWidth() / 2 - EUClient.FONT_MANAGER.getWidth(text) / 2, mc.getWindow().getGuiScaledHeight() / 2 + 16, healthColor, Color.BLACK);
-        }
-
-        if (potions.getValue()) {
-            for (PotionEntry entry : potionEntries) {
-                if (entry.sprite() != null) {
-                    matrices.pushMatrix();
-                    matrices.translate(mc.getWindow().getGuiScaledWidth() - 2 - EUClient.FONT_MANAGER.getWidth(entry.text()) - EUClient.FONT_MANAGER.getHeight() - 2, mc.getWindow().getGuiScaledHeight() - chatOffset - 2 - EUClient.FONT_MANAGER.getHeight() - (EUClient.FONT_MANAGER.getHeight() * offset) - 1);
-                    event.getContext().blitSprite(RenderPipelines.GUI_TEXTURED, entry.sprite(), 0, 0, EUClient.FONT_MANAGER.getHeight(), EUClient.FONT_MANAGER.getHeight());
-                    matrices.popMatrix();
-                }
-
-                drawText(event.getContext(), entry.text(), mc.getWindow().getGuiScaledWidth() - 2 - EUClient.FONT_MANAGER.getWidth(entry.text()), mc.getWindow().getGuiScaledHeight() - chatOffset - 2 - EUClient.FONT_MANAGER.getHeight() - (EUClient.FONT_MANAGER.getHeight() * offset), potionColor.getValue().equals("Client") && colorMode.getValue().equals("Rainbow") && rainbowMode.getValue().equals("Horizontal"), entry.color());
-                offset++;
-            }
         }
 
         List<String> informationEntries = new ArrayList<>();
@@ -542,7 +625,11 @@ public class HUDModule extends Module {
         int lines = 0;
 
         if (coordinates.getValue())  {
-            String text = getSecondary() + String.valueOf(mc.player.getBlockX()) + (netherCoordinates.getValue() ? ChatFormatting.GRAY + " [" + getSecondary() + WorldUtils.getNetherPosition(mc.player.getBlockX()) + ChatFormatting.GRAY + "]" : "") + (inversion.getValue() || positionSync.getValue() ? ChatFormatting.RESET : ChatFormatting.GRAY) + ", " + getSecondary() + mc.player.getBlockY() + (inversion.getValue() || positionSync.getValue() ? ChatFormatting.RESET : ChatFormatting.GRAY) + ", " + getSecondary() + mc.player.getBlockZ() + (netherCoordinates.getValue() ? ChatFormatting.GRAY + " [" + getSecondary() + WorldUtils.getNetherPosition(mc.player.getBlockZ()) + ChatFormatting.GRAY + "]" : "");
+            // Lấy tọa độ X và Z đã được qua bộ lọc Fake
+            int cx = getFakedCoord(mc.player.getBlockX(), fakeOffsetX);
+            int cz = getFakedCoord(mc.player.getBlockZ(), fakeOffsetZ);
+
+            String text = getSecondary() + String.valueOf(cx) + (netherCoordinates.getValue() ? ChatFormatting.GRAY + " [" + getSecondary() + WorldUtils.getNetherPosition(cx) + ChatFormatting.GRAY + "]" : "") + (inversion.getValue() || positionSync.getValue() ? ChatFormatting.RESET : ChatFormatting.GRAY) + ", " + getSecondary() + mc.player.getBlockY() + (inversion.getValue() || positionSync.getValue() ? ChatFormatting.RESET : ChatFormatting.GRAY) + ", " + getSecondary() + String.valueOf(cz) + (netherCoordinates.getValue() ? ChatFormatting.GRAY + " [" + getSecondary() + WorldUtils.getNetherPosition(cz) + ChatFormatting.GRAY + "]" : "");
 
             drawText(event.getContext(), text, 2, mc.getWindow().getGuiScaledHeight() - chatOffset - offset - EUClient.FONT_MANAGER.getHeight() - 2);
             maxWidth = Math.max(maxWidth, EUClient.FONT_MANAGER.getWidth(text));

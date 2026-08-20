@@ -33,20 +33,6 @@ public abstract class PlayerEntityMixin extends LivingEntity implements IMinecra
         return original;
     }
 
-    // 2026-08-15: ported 100% from NamiDevelopment/nami-public's PatchFeature.GrimAttackVelocity
-    // (replaces the deleted KeepSprintModule, which undid the SAME vanilla self-slowdown/desprint
-    // AFTER the fact instead of preventing it). Player.causeExtraKnockback() -- called on the
-    // ATTACKER when landing extra/critical knockback -- pushes the TARGET (must stay untouched)
-    // and then also slows/desprints the ATTACKER's own client-predicted movement
-    // (setDeltaMovement(...multiply(0.6, 1.0, 0.6)) + setSprinting(false)), a GrimAC quirk this
-    // toggle skips for the local player only. Two @Redirects instead of cancelling the whole
-    // method, since the target-push logic above those two calls must still run unconditionally.
-    // 2026-08-15 (crash fix, verified via javap on the real compiled class): both invokevirtual
-    // instructions inside causeExtraKnockback() omit an explicit owner in the constant pool --
-    // javac compiles unqualified this.method() calls with the owner set to the ENCLOSING class
-    // (Player) itself, not wherever the method happens to be declared in the hierarchy (Entity/
-    // LivingEntity, tried first -- both wrong, crashed the whole mixin transform with "0 targets
-    // scanned" since Mixin found no invoke matching that owner+name+descriptor at all).
     @Redirect(method = "causeExtraKnockback", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/player/Player;setDeltaMovement(Lnet/minecraft/world/phys/Vec3;)V"))
     private void grimAttackVelocity$setDeltaMovement(Player instance, Vec3 deltaMovement) {
         if ((Object) this == mc.player && EUClient.MODULE_MANAGER.getModule(PatchModule.class).grimAttackVelocity.getValue()) return;

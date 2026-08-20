@@ -3,6 +3,7 @@ package eu.client.modules.impl.movement;
 import eu.client.EUClient;
 import eu.client.modules.Module;
 import eu.client.modules.RegisterModule;
+import eu.client.modules.impl.player.MultiTaskModule;
 import eu.client.settings.impl.BooleanSetting;
 import eu.client.settings.impl.ModeSetting;
 import eu.client.utils.minecraft.InventoryUtils;
@@ -23,27 +24,6 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 
-// Clean port of example-addon-master's PearlPhase (itself dev.leonetic's PhaseModule ported onto
-// boze-api) onto this project's own Module/InventoryUtils/NetworkUtils/RotationManager plumbing.
-// PearlPhase's own header explains the two things worth carrying over verbatim:
-//  - The throw packet always carries an explicit computed yaw/pitch as constructor args, never
-//    the live player rotation -- boze's Interaction(action, yaw, pitch) route was tried and
-//    measured broken there (mc.gameMode.useItem reads the player's LIVE getYRot()/getXRot(), so
-//    whatever the forced rotation did either didn't happen or didn't stick before that read).
-//  - solvePitch/reach replace a fixed pitch bucket with a physics-solved pitch that actually
-//    lands the pearl ON the computed target: a fixed pitch only ever carries the pearl a small
-//    fixed distance sideways while falling to the target's Y, so anything further out was never
-//    reachable. reach() simulates the real motion (launch power 1.5 =
-//    EnderpearlItem.PROJECTILE_SHOOT_POWER, gravity 0.03 = ThrowableProjectile.getDefaultGravity,
-//    drag 0.99/tick, all read off 26.1.2 bytecode) and solvePitch bisects on it since reach
-//    shrinks monotonically as pitch steepens.
-// Dropped from the source: the AntiCheat ModeOption (boze dispatches per-anticheat interaction
-// handlers this project has no equivalent of -- packets here always go out the same way) and the
-// NCP-only hazard-place branch (no NCP-specific handling exists in this project either). The
-// Teleport mode that used to live in this file's old fixed-pitch version is gone too -- this is
-// now a straight port of PearlPhase's pearl-throw mechanism only. FireCharge (this file's own
-// pre-port feature, not in PearlPhase) is kept: places fire/flint&steel under the target block
-// first to bypass pearl distance checks, reusing the same computed yaw as the throw.
 @RegisterModule(name = "Phase", description = "Throws an ender pearl to phase/clip into the block under your feet.", category = Module.Category.MOVEMENT)
 public class PhaseModule extends Module {
     public ModeSetting swap = new ModeSetting("Swap", "The mode that will be used for switching to the pearl before throwing it.", "Silent", InventoryUtils.SWITCH_MODES);
@@ -55,16 +35,24 @@ public class PhaseModule extends Module {
     public ModeSetting fireSwitch = new ModeSetting("FireSwitch", "The mode that will be used for switching to a fire charge.", new BooleanSetting.Visibility(fireCharge, true), "Silent", new String[]{"Normal", "Silent", "AltPickup", "AltSwap"});
     public BooleanSetting autoRemove = new BooleanSetting("AutoRemove", "Automatically removes the fire once you have phased.", new BooleanSetting.Visibility(fireCharge, true), true);
 
-    // Legacy PhaseModule-ported math, untouched -- always decides which exact corner (nearest
-    // one, purely by position) to target when the throw isn't a near-cardinal straight-throw.
-    // The exact integer coordinate IS the mechanism: the collision-resolve ambiguity at a shared
-    // block edge is what leaves the entity overlapping solid space, so pulling off it removes the
-    // ambiguity and always lands clean on top instead of clipping. Do not pull it inward by an
-    // epsilon.
     private static final double CORNER_THRESHOLD = 0.5;
     private static final double CORNER_OFFSET = 0.5;
 
     private int attempt = 0;
+
+    // [THÊM MỚI] Hàm quét Hitbox kiểm tra Cobweb cực kỳ chắc chắn
+    private boolean isInWeb(net.minecraft.world.entity.Entity entity) {
+        // Nhanh: block ngay tại vị trí
+        if (entity.getInBlockState().is(Blocks.COBWEB)) return true;
+        
+        // Kỹ hơn: quét mọi block giao với hitbox để bắt cả trường hợp đứng ở mép
+        for (BlockPos pos : BlockPos.betweenClosed(
+                BlockPos.containing(entity.getBoundingBox().minX, entity.getBoundingBox().minY, entity.getBoundingBox().minZ),
+                BlockPos.containing(entity.getBoundingBox().maxX, entity.getBoundingBox().maxY, entity.getBoundingBox().maxZ))) {
+            if (entity.level().getBlockState(pos).is(Blocks.COBWEB)) return true;
+        }
+        return false;
+    }
 
     @Override
     public void onEnable() {
@@ -73,42 +61,26 @@ public class PhaseModule extends Module {
             return;
         }
 
-        // Scaffolding is climbable, so the player stands INSIDE it as often as on top of it --
-        // checking only the player's own position missed the standing-on-top-of-it case
-        // (feet.below()) entirely. Scaffolding breaks in a single hit for any tool (hardness ~0),
-        // so break it out of the way first instead of aborting Phase entirely.
         for (BlockPos scaffoldPosition : new BlockPos[]{mc.player.blockPosition(), mc.player.blockPosition().below()}) {
             if (!mc.level.getBlockState(scaffoldPosition).is(Blocks.SCAFFOLDING)) continue;
 
             NetworkUtils.sendSequencedPacket(sequence -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, scaffoldPosition, Direction.UP, sequence));
             NetworkUtils.sendSequencedPacket(sequence -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, scaffoldPosition, Direction.UP, sequence));
             mc.getConnection().send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
-            // Instant local feedback, same reasoning as SpeedMine's own client-side removal --
-            // don't wait on the server's block-update round-trip before continuing below.
             mc.level.removeBlock(scaffoldPosition, false);
         }
 
-        // Same pose-vs-target-math problem the `crawl` setting's own doc comment already covers
-        // for the crouching pose, just for swimming: calculateTargetPos()/boundaryTarget() pick
-        // between playerY-0.5 (standing eye offset) and the block-underfoot Y depending only on
-        // `crawl`, never on the player's ACTUAL pose. Swim pose has yet another eye height/hitbox
-        // shape than either of those two -- throwing with the wrong one of the two available
-        // target formulas lands the pearl off-target. `crawl` off means "use the standing target
-        // math", which is wrong while genuinely in swim pose, so refuse rather than throw blind.
         boolean swimPose = mc.player.getPose() == Pose.SWIMMING;
         if (!crawl.getValue() && swimPose) {
             setToggled(false);
             return;
         }
 
-        // The one exception to the block below: stuck fully inside a solid block (blockPosition()
-        // not replaceable) WHILE in swim pose with `crawl` on is exactly the scenario Phase has to
-        // work for -- swim pose's flattened hitbox is what let the player wedge into that 1-block
-        // gap in the first place, and it's also the case `crawl`'s block-underfoot target math was
-        // written for. Refusing here specifically would block the one case this setting exists to
-        // unblock, so skip the stuck-block refusal for that exact combo only.
         boolean crawlSwimStuck = crawl.getValue() && swimPose;
-        if (!crawlSwimStuck && !mc.level.getBlockState(mc.player.blockPosition()).canBeReplaced()) {
+        
+        // [ĐÃ SỬA] Sử dụng hàm quét Hitbox thay vì blockPosition() tĩnh
+        boolean inCobweb = isInWeb(mc.player);
+        if (!crawlSwimStuck && !inCobweb && !mc.level.getBlockState(mc.player.blockPosition()).canBeReplaced()) {
             setToggled(false);
             return;
         }
@@ -123,7 +95,12 @@ public class PhaseModule extends Module {
             return;
         }
 
-        int slot = InventoryUtils.find(Items.ENDER_PEARL, 0, swap.getValue().equalsIgnoreCase("AltSwap") || swap.getValue().equalsIgnoreCase("AltPickup") ? 35 : 8);
+        MultiTaskModule multiTask = EUClient.MODULE_MANAGER.getModule(MultiTaskModule.class);
+        boolean keepEating = multiTask != null && multiTask.isToggled() && multiTask.pearl.getValue() && mc.player.isUsingItem();
+        String pearlMode = keepEating ? "AltSwap" : swap.getValue();
+
+        int slot = InventoryUtils.find(Items.ENDER_PEARL, 0,
+        (pearlMode.equalsIgnoreCase("AltSwap") || pearlMode.equalsIgnoreCase("AltPickup")) ? 35 : 8);
         int previousSlot = mc.player.getInventory().getSelectedSlot();
         boolean didFireCharge = false;
 
@@ -138,9 +115,6 @@ public class PhaseModule extends Module {
 
         BlockPos downPosition = mc.player.blockPosition().below();
 
-        // Within 22.5 deg of a cardinal direction, aim at the block boundary straight along the
-        // camera yaw instead of the position-based corner -- the corner target ignores camera
-        // yaw entirely, which breaks backing into a wall while looking elsewhere.
         float rawYaw = Mth.wrapDegrees(mc.player.getYRot());
         float mod90 = ((rawYaw % 90f) + 90f) % 90f;
         boolean nearCardinal = Math.min(mod90, 90f - mod90) < 22.5f;
@@ -159,7 +133,7 @@ public class PhaseModule extends Module {
                     nearCardinal ? "straight" : "corner"), getName());
         }
 
-        if (fireCharge.getValue() && mc.level.getBlockState(mc.player.blockPosition()).isAir() && !(mc.level.getBlockState(downPosition).canBeReplaced())) {
+        if (fireCharge.getValue() && (mc.level.getBlockState(mc.player.blockPosition()).isAir() || inCobweb) && !(mc.level.getBlockState(downPosition).canBeReplaced())) {
             int chargeSlot = InventoryUtils.find(alternative.getValue() ? Items.FLINT_AND_STEEL : Items.FIRE_CHARGE, InventoryUtils.HOTBAR_START, fireSwitch.getValue().equalsIgnoreCase("AltSwap") || fireSwitch.getValue().equalsIgnoreCase("AltPickup") ? 35 : 8);
 
             if (chargeSlot != -1) {
@@ -176,13 +150,11 @@ public class PhaseModule extends Module {
 
         EUClient.ROTATION_MANAGER.packetRotate(yaw, pitch);
 
-        InventoryUtils.switchSlot(swap.getValue(), slot, previousSlot);
-
+        InventoryUtils.switchSlot(pearlMode, slot, previousSlot);
         NetworkUtils.sendSequencedPacket(sequence -> new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, sequence, yaw, pitch));
         mc.getConnection().send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
-
-        InventoryUtils.switchBack(swap.getValue(), slot, previousSlot);
-
+        InventoryUtils.switchBack(pearlMode, slot, previousSlot);
+        
         if (didFireCharge && autoRemove.getValue()) {
             NetworkUtils.sendSequencedPacket(sequence -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, mc.player.blockPosition(), Direction.UP, sequence));
             NetworkUtils.sendSequencedPacket(sequence -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, mc.player.blockPosition(), Direction.UP, sequence));
@@ -225,12 +197,6 @@ public class PhaseModule extends Module {
         return (num - min) > (max - num) ? max : min;
     }
 
-    // Straight-throw target: near-cardinal yaw only picks WHICH AXIS is "facing" (N/S -> Z,
-    // E/W -> X), not which side of it. Which side comes from position (round(), same as the
-    // exact-seam target above) instead of the camera direction's sign -- backing into a wall
-    // while looking away from it (a real pearl-clip stance) has the wall BEHIND the camera yaw,
-    // so picking a side from yaw's sign throws the pearl the wrong way. The other axis stays at
-    // the player's own exact position -- a true straight throw along it.
     private Vec3 boundaryTarget(float yawDeg) {
         double px = mc.player.getX(), pz = mc.player.getZ();
         double y = crawl.getValue() ? mc.player.blockPosition().below().getY() : mc.player.getY() - 0.5;
@@ -246,19 +212,12 @@ public class PhaseModule extends Module {
         return (float) Math.toDegrees(Math.atan2(-diff.x, diff.z));
     }
 
-    /**
-     * Pitch that actually lands the pearl on the target -- replaces a fixed-pitch bucket, which
-     * only carries the pearl a small fixed distance sideways while it falls to the target's Y,
-     * so any target further out than that is never reachable. Falls back to a fixed value for a
-     * degenerate (zero-distance) target.
-     */
     private float solvePitch(Vec3 target) {
         Vec3 eye = mc.player.getEyePosition();
         double d = Math.hypot(target.x - eye.x, target.z - eye.z);
         double drop = eye.y - target.y;
         if (d < 1e-4 || drop <= 1e-4) return mc.player.getBlockY() > 4 ? 85f : 75f;
 
-        // Reach shrinks monotonically as the pitch steepens, so plain bisection converges.
         double lo = 1.0, hi = 89.9;
         for (int i = 0; i < 30; i++) {
             double mid = (lo + hi) * 0.5;
@@ -267,11 +226,6 @@ public class PhaseModule extends Module {
         return (float) ((lo + hi) * 0.5);
     }
 
-    /**
-     * Horizontal distance a vanilla-thrown pearl covers before falling `drop` blocks, by
-     * simulating the real motion: launch power 1.5 (EnderpearlItem.PROJECTILE_SHOOT_POWER),
-     * gravity 0.03 (ThrowableProjectile.getDefaultGravity), drag 0.99 per tick.
-     */
     private static double reach(double pitchDeg, double drop) {
         double p = Math.toRadians(pitchDeg);
         double vh = 1.5 * Math.cos(p), vy = -1.5 * Math.sin(p);
@@ -281,7 +235,7 @@ public class PhaseModule extends Module {
             x += vh;
             y += vy;
             if (y <= -drop) {
-                double f = (-drop - prevY) / (y - prevY); // sub-tick crossing of the target plane
+                double f = (-drop - prevY) / (y - prevY); 
                 return prevX + (x - prevX) * f;
             }
             vh *= 0.99;

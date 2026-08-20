@@ -29,6 +29,11 @@ public abstract class HandledScreenMixin extends Screen implements IMinecraft {
 
     @Shadow protected AbstractContainerMenu menu;
 
+    // GUI geometry, for placing ChestStealer's ButtonMode buttons relative to the container texture.
+    @Shadow protected int leftPos;
+    @Shadow protected int topPos;
+    @Shadow protected int imageWidth;
+
     @Shadow protected abstract void slotClicked(Slot slot, int slotId, int mouseButton, ContainerInput type);
 
     // Only re-triggers on an ACTUAL slot change while dragging -- without this, mouseDragged
@@ -88,6 +93,35 @@ public abstract class HandledScreenMixin extends Screen implements IMinecraft {
     @Inject(method = "mouseReleased", at = @At("HEAD"))
     private void euclient$dragClickReset(MouseButtonEvent event, CallbackInfoReturnable<Boolean> info) {
         euclient$lastDragSlot = null;
+    }
+
+    // ChestStealer ButtonMode: vanilla Button widgets stacked at the top-right of the GUI (just to
+    // the right of the container texture) that fire a one-shot Steal/Dump/Drop pass on click.
+    // Hooked at init()'s TAIL because vanilla builds/positions the screen there (leftPos/topPos/
+    // imageWidth are set in init before this runs), and init also re-runs on window resize, so the
+    // buttons get re-added at the correct position after a resize. addRenderableWidget is the same
+    // registration path GameMenuScreenMixin uses for its proxy button.
+    @Inject(method = "init", at = @At("TAIL"))
+    private void euclient$chestStealerButtons(CallbackInfo ci) {
+        if (EUClient.MODULE_MANAGER == null) return;
+        eu.client.modules.impl.player.ChestStealerModule module = EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.player.ChestStealerModule.class);
+        if (module == null || !module.isToggled() || !module.buttonMode.getValue()) return;
+
+        boolean isInventoryScreen = ((Object) this) instanceof net.minecraft.client.gui.screens.inventory.InventoryScreen;
+
+        if (isInventoryScreen) {
+            // Đặt nút Drop gọn gàng phía trên bên phải khung Inventory cá nhân để không bị che khuất
+            int x = leftPos + imageWidth - 60;
+            int y = topPos - 24; 
+            addRenderableWidget(net.minecraft.client.gui.components.Button.builder(net.minecraft.network.chat.Component.literal("Drop"), b -> module.triggerDrop()).bounds(x, y, 60, 20).build());
+        } else {
+            // Giữ nguyên cụm 3 nút Steal / Dump / Drop cho container bên ngoài
+            int x = leftPos + imageWidth + 4; 
+            int y = topPos;                    
+            addRenderableWidget(net.minecraft.client.gui.components.Button.builder(net.minecraft.network.chat.Component.literal("Steal"), b -> module.triggerSteal()).bounds(x, y, 60, 20).build());
+            addRenderableWidget(net.minecraft.client.gui.components.Button.builder(net.minecraft.network.chat.Component.literal("Dump"), b -> module.triggerDump()).bounds(x, y + 22, 60, 20).build());
+            addRenderableWidget(net.minecraft.client.gui.components.Button.builder(net.minecraft.network.chat.Component.literal("Drop"), b -> module.triggerDrop()).bounds(x, y + 44, 60, 20).build());
+        }
     }
 
     // Same swap-out lie as InGameHudMixin's hotbar redirect, for whichever container/inventory

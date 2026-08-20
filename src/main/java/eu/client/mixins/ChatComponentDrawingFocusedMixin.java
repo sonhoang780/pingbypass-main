@@ -10,8 +10,6 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.ModifyArg;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 // BetterChatModule "Animation" (slide-in for new messages). handleMessage's real body (verified
 // via javap) calls ActiveTextCollector.accept(LEFT, x=0 (hardcoded constant), y=textTop,
@@ -24,8 +22,6 @@ import org.slf4j.LoggerFactory;
 // @ModifyArg's own handler only sees the one int argument being replaced.
 @Mixin(targets = "net.minecraft.client.gui.components.ChatComponent$DrawingFocusedGraphicsAccess")
 public class ChatComponentDrawingFocusedMixin {
-    private static final Logger LOGGER = LoggerFactory.getLogger("EUClient/BetterChat");
-
     @Unique private int euclient$xOffset = 0;
 
     @Inject(method = "handleMessage", at = @At("HEAD"))
@@ -43,7 +39,6 @@ public class ChatComponentDrawingFocusedMixin {
 
         float width = net.minecraft.client.Minecraft.getInstance().font.width(message);
         euclient$xOffset = Math.round(-width * (1f - progress));
-        LOGGER.info("[BetterChat] slide-in x offset={}", euclient$xOffset);
     }
 
     @ModifyArg(

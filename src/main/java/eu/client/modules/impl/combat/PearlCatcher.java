@@ -43,7 +43,7 @@ public class PearlCatcher extends Module {
 
     @SubscribeEvent
     public void onEntitySpawn(EntitySpawnEvent event) {
-        if(!(event.getEntity() instanceof ThrownEnderpearl pearl) || (!whileEating.getValue() && mc.player.isUsingItem())) return;
+        if(!(event.getEntity() instanceof ThrownEnderpearl pearl) || (!whileEating.getValue() && eu.client.utils.minecraft.EntityUtils.isEating())) return;
 
         if(!(pearl.getOwner() instanceof Player owner) || !validTarget(owner)) return;
 

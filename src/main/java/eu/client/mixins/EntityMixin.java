@@ -10,6 +10,8 @@ import eu.client.events.impl.UpdateVelocityEvent;
 import eu.client.modules.impl.movement.NoSlowModule;
 import eu.client.modules.impl.movement.VelocityModule;
 import eu.client.modules.impl.player.RotationLockModule;
+import eu.client.modules.impl.visuals.FreecamModule; // Thêm import FreecamModule
+import eu.client.modules.impl.visuals.PopChamsModule;
 import eu.client.utils.IMinecraft;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
@@ -26,6 +28,36 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(Entity.class)
 public abstract class EntityMixin implements IMinecraft {
+    
+    @Inject(method = "tick", at = @At("HEAD"), cancellable = true)
+    private void euclient$cancelGhostTick(CallbackInfo ci) {
+        if ((Object) this instanceof net.minecraft.client.player.RemotePlayer ghost) {
+            PopChamsModule popChams = EUClient.MODULE_MANAGER != null ? EUClient.MODULE_MANAGER.getModule(PopChamsModule.class) : null;
+            if (popChams != null && popChams.isGhost(ghost)) {
+                ci.cancel();
+                return;
+            }
+            eu.client.modules.impl.visuals.LogoutSpotModule logoutSpot = EUClient.MODULE_MANAGER != null ? EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.visuals.LogoutSpotModule.class) : null;
+            if (logoutSpot != null && logoutSpot.isGhost(ghost)) {
+                ci.cancel();
+            }
+        }
+    }
+
+    // --- [THÊM MỚI] Inject chặn sự kiện xoay chuột của Freecam ---
+    @Inject(method = "turn", at = @At("HEAD"), cancellable = true)
+    public void onTurn(double cursorDeltaYaw, double cursorDeltaPitch, CallbackInfo ci) {
+        if ((Object) this == mc.player) {
+            FreecamModule freecam = EUClient.MODULE_MANAGER.getModule(FreecamModule.class);
+            
+            if (freecam != null && freecam.isToggled() && !freecam.getRotate().getValue()) {
+                freecam.onMouseTurn(cursorDeltaYaw, cursorDeltaPitch);
+                ci.cancel();
+            }
+        }
+    }
+    // -------------------------------------------------------------
+
     @Inject(method = "push(Lnet/minecraft/world/entity/Entity;)V", at = @At("HEAD"), cancellable = true)
     private void pushAwayFrom(Entity entity, CallbackInfo info) {
         if ((Object) this == mc.player && EUClient.MODULE_MANAGER.getModule(VelocityModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(VelocityModule.class).antiPush.getValue()) {
@@ -60,22 +92,6 @@ public abstract class EntityMixin implements IMinecraft {
     private void getYaw(CallbackInfoReturnable<Float> info) {
         if (EUClient.MODULE_MANAGER.getModule(RotationLockModule.class).isToggled() && (EUClient.MODULE_MANAGER.getModule(RotationLockModule.class).mode.getValue().equals("Yaw") || EUClient.MODULE_MANAGER.getModule(RotationLockModule.class).mode.getValue().equals("Both")) && (Object) this == mc.player) {
             info.setReturnValue(EUClient.MODULE_MANAGER.getModule(RotationLockModule.class).yaw.getValue().floatValue());
-            return;
-        }
-        // ControlRocket's camera-decouple, ported from example-addon-master's ControlRocket.java +
-        // its companion MixinEntity: between PlayerUpdateEvent (sets the entity's real yaw/pitch
-        // to the flight direction so local elytra physics AND the movement packet use it) and
-        // UpdateMovementEvent.Post (restores it), getYRot()/getXRot() -- NOT the raw fields --
-        // are what the first-person arm renderer, HeldItemRenderer and Camera.update() all read.
-        // Without this, they'd see the flight direction rather than the real camera rotation for
-        // that whole window and the hand/view could flick toward it, same symptom the reference's
-        // own comment describes. mc.player's OWN tick/aiStep call getYRot() directly too (not
-        // through this wildcard-matched injection's overloads specifically, but the point stands),
-        // so this only ever needs to fool RENDER-side callers -- sendMovementPackets() builds the
-        // outbound packet from the raw field, unaffected by this override.
-        if ((Object) this == mc.player) {
-            var elytraFly = EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.movement.ElytraFlyModule.class);
-            if (elytraFly.isCrCameraOverrideActive()) info.setReturnValue(elytraFly.getCrSavedYaw());
         }
     }
 
@@ -83,12 +99,35 @@ public abstract class EntityMixin implements IMinecraft {
     private void getPitch(CallbackInfoReturnable<Float> info) {
         if (EUClient.MODULE_MANAGER.getModule(RotationLockModule.class).isToggled() && (EUClient.MODULE_MANAGER.getModule(RotationLockModule.class).mode.getValue().equals("Pitch") || EUClient.MODULE_MANAGER.getModule(RotationLockModule.class).mode.getValue().equals("Both")) && (Object) this == mc.player) {
             info.setReturnValue(EUClient.MODULE_MANAGER.getModule(RotationLockModule.class).pitch.getValue().floatValue());
-            return;
         }
-        if ((Object) this == mc.player) {
-            var elytraFly = EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.movement.ElytraFlyModule.class);
-            if (elytraFly.isCrCameraOverrideActive()) info.setReturnValue(elytraFly.getCrSavedPitch());
-        }
+    }
+
+    // ControlRocket's camera-decouple, re-verified against example-addon-master's own MixinEntity
+    // (src/main/java/com/example/addon/mixin/MixinEntity.java): the reference ONLY overrides the
+    // tickDelta-taking overload -- `getXRot(F)F`/`getYRot(F)F`, used for RENDER interpolation
+    // (first-person arm, HeldItemRenderer, Camera.update) -- and deliberately leaves the no-arg
+    // `getYRot()`/`getXRot()` alone, because that's what vanilla's own physics/packet code calls
+    // directly. Our port previously used the wildcard `getYRot*`/`getXRot*` above for this too,
+    // which matches BOTH overloads -- so it ALSO intercepted the no-arg calls .mcref confirmed
+    // LocalPlayer#sendPosition (and travel()/aiStep()) actually make, feeding them the saved
+    // CAMERA yaw instead of targetYaw for the entire tick. That's why WASD only ever steered the
+    // packet's rotation label, not the real flight direction or the firework boost -- reported
+    // "chỉ điều khiển hướng bay qua chuột", "không bay lên được". A prior fix pass removed the
+    // override entirely on the theory that render never interleaves with tick() so it can't
+    // matter -- wrong fix for the wrong half of the problem; the reference's own working design
+    // already scopes it correctly, so match that instead of deleting it.
+    @Inject(method = "getYRot(F)F", at = @At("HEAD"), cancellable = true)
+    private void controlRocket$overrideYaw(float tickDelta, CallbackInfoReturnable<Float> info) {
+        if ((Object) this != mc.player) return;
+        var elytraFly = EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.movement.ElytraFlyModule.class);
+        if (elytraFly.isCrCameraOverrideActive()) info.setReturnValue(elytraFly.getCrSavedYaw());
+    }
+
+    @Inject(method = "getXRot(F)F", at = @At("HEAD"), cancellable = true)
+    private void controlRocket$overridePitch(float tickDelta, CallbackInfoReturnable<Float> info) {
+        if ((Object) this != mc.player) return;
+        var elytraFly = EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.movement.ElytraFlyModule.class);
+        if (elytraFly.isCrCameraOverrideActive()) info.setReturnValue(elytraFly.getCrSavedPitch());
     }
 
     @Inject(method = "setYRot", at = @At("HEAD"), cancellable = true)

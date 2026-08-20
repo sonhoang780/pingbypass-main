@@ -59,6 +59,12 @@ public class InventoryUtils implements IMinecraft {
         return !SILENT_RESTORE.isEmpty();
     }
 
+    private static final ThreadLocal<Boolean> PROGRAMMATIC_SWITCH = ThreadLocal.withInitial(() -> false);
+
+    public static boolean isProgrammaticSwitching() {
+        return PROGRAMMATIC_SWITCH.get();
+    }
+
     /**
      * The slot the server rests on when nobody is borrowing the player's hand: the player's own
      * selection, full stop. NOT the server's current slot -- that is the thing being borrowed.
@@ -177,20 +183,25 @@ public class InventoryUtils implements IMinecraft {
     }
 
     private static void flushPendingRestore(int slot) {
-        Pending pending = PENDING.remove(slot);
-        if (pending == null || mc.getConnection() == null) return;
-        // Same ownership rule as armPendingRestore: the hand moved on without us, leave it alone.
-        if (slot != EUClient.POSITION_MANAGER.getServerSlot()) return;
+        PROGRAMMATIC_SWITCH.set(true);
+        try {
+            Pending pending = PENDING.remove(slot);
+            if (pending == null || mc.getConnection() == null) return;
+            // Same ownership rule as armPendingRestore: the hand moved on without us, leave it alone.
+            if (slot != EUClient.POSITION_MANAGER.getServerSlot()) return;
 
-        int clientSlot = mc.player == null ? -1 : mc.player.getInventory().getSelectedSlot();
-        // The player changed their own selection while we were holding: follow them instead of
-        // yanking the server back to a target captured before they did. Locally their vanilla
-        // SetCarriedItem already went out so this early-outs below; on the proxy it's what lands it.
-        int target = clientSlot != -1 && clientSlot != pending.clientSlot() ? clientSlot : pending.target();
+            int clientSlot = mc.player == null ? -1 : mc.player.getInventory().getSelectedSlot();
+            // The player changed their own selection while we were holding: follow them instead of
+            // yanking the server back to a target captured before they did. Locally their vanilla
+            // SetCarriedItem already went out so this early-outs below; on the proxy it's what lands it.
+            int target = clientSlot != -1 && clientSlot != pending.clientSlot() ? clientSlot : pending.target();
 
-        if (target == -1 || target == EUClient.POSITION_MANAGER.getServerSlot()) return;
+            if (target == -1 || target == EUClient.POSITION_MANAGER.getServerSlot()) return;
 
-        mc.getConnection().send(new ServerboundSetCarriedItemPacket(target));
+            mc.getConnection().send(new ServerboundSetCarriedItemPacket(target));
+        } finally {
+            PROGRAMMATIC_SWITCH.set(false);
+        }
     }
 
     /**
@@ -202,58 +213,63 @@ public class InventoryUtils implements IMinecraft {
         if (mode.equalsIgnoreCase("None")) return true;
         if (slot == -1 || previousSlot == -1) return false;
 
-        // Before the serverSlot early-out, not after: re-entering a hold we already own has to
-        // disarm its pending restore, or that restore fires mid-burst and we're back to the
-        // per-action oscillation this exists to kill. Switching to a DIFFERENT slot restores the
-        // previous hold first (unchanged from the immediate-restore behaviour).
-        // Only our OWN hold is cancelled here. Flushing everyone else's first (what the single
-        // global pendingSlot did) just emits a restore packet that the switch below immediately
-        // overrides -- their own dwell lands them on the resting slot afterwards anyway.
-        PENDING.remove(slot);
+        PROGRAMMATIC_SWITCH.set(true);
+        try {
+            // Before the serverSlot early-out, not after: re-entering a hold we already own has to
+            // disarm its pending restore, or that restore fires mid-burst and we're back to the
+            // per-action oscillation this exists to kill. Switching to a DIFFERENT slot restores the
+            // previous hold first (unchanged from the immediate-restore behaviour).
+            // Only our OWN hold is cancelled here. Flushing everyone else's first (what the single
+            // global pendingSlot did) just emits a restore packet that the switch below immediately
+            // overrides -- their own dwell lands them on the resting slot afterwards anyway.
+            PENDING.remove(slot);
 
-        if (slot == EUClient.POSITION_MANAGER.getServerSlot()) return true;
+            if (slot == EUClient.POSITION_MANAGER.getServerSlot()) return true;
 
-        // Surround/SelfTrap react to a crystal spawn straight off the netty IO thread (our
-        // packet-receive mixin posts PacketReceiveEvent from Connection.channelRead0, before
-        // vanilla hands off to the main thread -- see WorldUtils.destroyCrystals' own note about
-        // the CME that same fact used to cause). "Normal" writes mc.player's selected slot and
-        // Alt* replays a container click through mc.gameMode: both mutate client-side inventory
-        // state the main thread is concurrently ticking and rendering, which is where the visible
-        // item duplication/jumbling comes from. Only the packet-only path is safe off-thread, so
-        // degrade to it -- server-side the effect is identical, and it costs no latency (the whole
-        // point of reacting on this thread).
-        if (!mc.isSameThread() && !mode.equalsIgnoreCase("Silent")) {
-            // Alt* deliberately searches the FULL inventory, and a slot outside the hotbar can't be
-            // expressed as a held-slot packet at all -- refuse rather than place with the wrong item.
-            if (slot > HOTBAR_END) return false;
-            mode = "Silent";
+            // Surround/SelfTrap react to a crystal spawn straight off the netty IO thread (our
+            // packet-receive mixin posts PacketReceiveEvent from Connection.channelRead0, before
+            // vanilla hands off to the main thread -- see WorldUtils.destroyCrystals' own note about
+            // the CME that same fact used to cause). "Normal" writes mc.player's selected slot and
+            // Alt* replays a container click through mc.gameMode: both mutate client-side inventory
+            // state the main thread is concurrently ticking and rendering, which is where the visible
+            // item duplication/jumbling comes from. Only the packet-only path is safe off-thread, so
+            // degrade to it -- server-side the effect is identical, and it costs no latency (the whole
+            // point of reacting on this thread).
+            if (!mc.isSameThread() && !mode.equalsIgnoreCase("Silent")) {
+                // Alt* deliberately searches the FULL inventory, and a slot outside the hotbar can't be
+                // expressed as a held-slot packet at all -- refuse rather than place with the wrong item.
+                if (slot > HOTBAR_END) return false;
+                mode = "Silent";
+            }
+
+            switch (mode) {
+                case "Normal" -> {
+                    mc.player.getInventory().setSelectedSlot(slot);
+                    ((ClientPlayerInteractionManagerAccessor) mc.gameMode).invokeSyncSelectedSlot();
+                    syncSlotToClientIfProxy(slot);
+                }
+                case "Silent" -> {
+                    SILENT_RESTORE.put(slot, restingSlot());
+                    mc.getConnection().send(new ServerboundSetCarriedItemPacket(slot));
+                }
+                // Chained the same way "Silent" is: record what should be restored TO before doing
+                // the swap, keyed by target slot, so switchBack picks up the freshest value instead
+                // of whatever stale previousSlot the caller captured before some other module's
+                // switch/restore already moved things around in between.
+                case "AltPickup" -> {
+                    SILENT_RESTORE.put(slot, previousSlot);
+                    swap("Pickup", slot, previousSlot);
+                }
+                case "AltSwap" -> {
+                    SILENT_RESTORE.put(slot, previousSlot);
+                    swap("Swap", slot, previousSlot);
+                }
+            }
+
+            return true;
+        } finally {
+            PROGRAMMATIC_SWITCH.set(false);
         }
-
-        switch (mode) {
-            case "Normal" -> {
-                mc.player.getInventory().setSelectedSlot(slot);
-                ((ClientPlayerInteractionManagerAccessor) mc.gameMode).invokeSyncSelectedSlot();
-                syncSlotToClientIfProxy(slot);
-            }
-            case "Silent" -> {
-                SILENT_RESTORE.put(slot, restingSlot());
-                mc.getConnection().send(new ServerboundSetCarriedItemPacket(slot));
-            }
-            // Chained the same way "Silent" is: record what should be restored TO before doing
-            // the swap, keyed by target slot, so switchBack picks up the freshest value instead
-            // of whatever stale previousSlot the caller captured before some other module's
-            // switch/restore already moved things around in between.
-            case "AltPickup" -> {
-                SILENT_RESTORE.put(slot, previousSlot);
-                swap("Pickup", slot, previousSlot);
-            }
-            case "AltSwap" -> {
-                SILENT_RESTORE.put(slot, previousSlot);
-                swap("Swap", slot, previousSlot);
-            }
-        }
-
-        return true;
     }
 
     // switchBack()'s "Normal" case is intentionally a no-op (mirrors what a real player switching
@@ -263,9 +279,14 @@ public class InventoryUtils implements IMinecraft {
     public static void switchBackNormal(int previousSlot) {
         if (previousSlot == -1 || previousSlot == EUClient.POSITION_MANAGER.getServerSlot()) return;
 
-        mc.player.getInventory().setSelectedSlot(previousSlot);
-        ((ClientPlayerInteractionManagerAccessor) mc.gameMode).invokeSyncSelectedSlot();
-        syncSlotToClientIfProxy(previousSlot);
+        PROGRAMMATIC_SWITCH.set(true);
+        try {
+            mc.player.getInventory().setSelectedSlot(previousSlot);
+            ((ClientPlayerInteractionManagerAccessor) mc.gameMode).invokeSyncSelectedSlot();
+            syncSlotToClientIfProxy(previousSlot);
+        } finally {
+            PROGRAMMATIC_SWITCH.set(false);
+        }
     }
 
     /**
@@ -290,34 +311,39 @@ public class InventoryUtils implements IMinecraft {
         if (mode.equalsIgnoreCase("None")) return;
         if (previousSlot == -1) return;
 
-        // Keyed off `slot`, so this also picks up a switch that switchSlot() degraded to Silent
-        // off-thread -- without it a degraded "Normal" (whose switchBack case is a deliberate
-        // no-op) would strand the server on the block slot forever. AltPickup/AltSwap also chain
-        // through this now (see switchSlot's own note on those cases) -- `remembered` there means
-        // "the slot index to swap back into", not a carried-item slot, so which packet/action it
-        // resolves to still has to route through `mode` below rather than assuming a carried-item
-        // packet like the "Silent"/degraded-Normal case does.
-        Integer remembered = SILENT_RESTORE.remove(slot);
-        int restoreTarget = remembered != null ? remembered : previousSlot;
+        PROGRAMMATIC_SWITCH.set(true);
+        try {
+            // Keyed off `slot`, so this also picks up a switch that switchSlot() degraded to Silent
+            // off-thread -- without it a degraded "Normal" (whose switchBack case is a deliberate
+            // no-op) would strand the server on the block slot forever. AltPickup/AltSwap also chain
+            // through this now (see switchSlot's own note on those cases) -- `remembered` there means
+            // "the slot index to swap back into", not a carried-item slot, so which packet/action it
+            // resolves to still has to route through `mode` below rather than assuming a carried-item
+            // packet like the "Silent"/degraded-Normal case does.
+            Integer remembered = SILENT_RESTORE.remove(slot);
+            int restoreTarget = remembered != null ? remembered : previousSlot;
 
-        switch (mode) {
-            case "Silent" -> {
-                if (restoreTarget == EUClient.POSITION_MANAGER.getServerSlot()) return;
-                armPendingRestore(slot, restoreTarget);
-            }
-            // Off-thread these mutate the container menu concurrently with the main thread -- see
-            // switchSlot's own note. switchSlot already refused to make the switch in that case.
-            case "AltPickup" -> { if (mc.isSameThread()) swap("Pickup", slot, restoreTarget); }
-            case "AltSwap" -> { if (mc.isSameThread()) swap("Swap", slot, restoreTarget); }
-            default -> {
-                // A switch that degraded to Silent off-thread (e.g. a "Normal" caller) only ever
-                // shows up here via `remembered` -- restore it the same way Silent does, since
-                // that's what was actually sent, regardless of the mode string the caller passes.
-                if (remembered != null) {
+            switch (mode) {
+                case "Silent" -> {
                     if (restoreTarget == EUClient.POSITION_MANAGER.getServerSlot()) return;
                     armPendingRestore(slot, restoreTarget);
                 }
+                // Off-thread these mutate the container menu concurrently with the main thread -- see
+                // switchSlot's own note. switchSlot already refused to make the switch in that case.
+                case "AltPickup" -> { if (mc.isSameThread()) swap("Pickup", slot, restoreTarget); }
+                case "AltSwap" -> { if (mc.isSameThread()) swap("Swap", slot, restoreTarget); }
+                default -> {
+                    // A switch that degraded to Silent off-thread (e.g. a "Normal" caller) only ever
+                    // shows up here via `remembered` -- restore it the same way Silent does, since
+                    // that's what was actually sent, regardless of the mode string the caller passes.
+                    if (remembered != null) {
+                        if (restoreTarget == EUClient.POSITION_MANAGER.getServerSlot()) return;
+                        armPendingRestore(slot, restoreTarget);
+                    }
+                }
             }
+        } finally {
+            PROGRAMMATIC_SWITCH.set(false);
         }
     }
 

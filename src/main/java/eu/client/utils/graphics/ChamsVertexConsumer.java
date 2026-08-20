@@ -28,6 +28,7 @@ public class ChamsVertexConsumer implements VertexConsumer {
     private final boolean outline;
     private final int outlineColor;
     private final boolean shine;
+    private final boolean suppressReal;
 
     private final float[] xs = new float[4];
     private final float[] ys = new float[4];
@@ -35,17 +36,24 @@ public class ChamsVertexConsumer implements VertexConsumer {
     private int i = 0;
 
     public ChamsVertexConsumer(VertexConsumer real, boolean fill, int fillColor, boolean outline, int outlineColor, boolean shine) {
+        this(real, fill, fillColor, outline, outlineColor, shine, false);
+    }
+
+    public ChamsVertexConsumer(VertexConsumer real, boolean fill, int fillColor, boolean outline, int outlineColor, boolean shine, boolean suppressReal) {
         this.real = real;
         this.fill = fill;
         this.fillColor = fillColor;
         this.outline = outline;
         this.outlineColor = outlineColor;
         this.shine = shine;
+        this.suppressReal = suppressReal;
     }
 
     @Override
     public VertexConsumer addVertex(float x, float y, float z) {
-        real.addVertex(x, y, z);
+        if (!suppressReal && real != null) {
+            real.addVertex(x, y, z);
+        }
 
         xs[i] = x;
         ys[i] = y;
@@ -85,43 +93,43 @@ public class ChamsVertexConsumer implements VertexConsumer {
 
     @Override
     public VertexConsumer setColor(int red, int green, int blue, int alpha) {
-        real.setColor(red, green, blue, alpha);
+        if (!suppressReal && real != null) real.setColor(red, green, blue, alpha);
         return this;
     }
 
     @Override
     public VertexConsumer setColor(int argb) {
-        real.setColor(argb);
+        if (!suppressReal && real != null) real.setColor(argb);
         return this;
     }
 
     @Override
     public VertexConsumer setUv(float u, float v) {
-        real.setUv(u, v);
+        if (!suppressReal && real != null) real.setUv(u, v);
         return this;
     }
 
     @Override
     public VertexConsumer setUv1(int u, int v) {
-        real.setUv1(u, v);
+        if (!suppressReal && real != null) real.setUv1(u, v);
         return this;
     }
 
     @Override
     public VertexConsumer setUv2(int u, int v) {
-        real.setUv2(u, v);
+        if (!suppressReal && real != null) real.setUv2(u, v);
         return this;
     }
 
     @Override
     public VertexConsumer setNormal(float x, float y, float z) {
-        real.setNormal(x, y, z);
+        if (!suppressReal && real != null) real.setNormal(x, y, z);
         return this;
     }
 
     @Override
     public VertexConsumer setLineWidth(float width) {
-        real.setLineWidth(width);
+        if (!suppressReal && real != null) real.setLineWidth(width);
         return this;
     }
 }

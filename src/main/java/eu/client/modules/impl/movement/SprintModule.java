@@ -13,7 +13,10 @@ import eu.client.settings.impl.BooleanSetting;
 import eu.client.settings.impl.ModeSetting;
 import eu.client.settings.impl.NumberSetting;
 import eu.client.utils.minecraft.MovementUtils;
+import eu.client.utils.minecraft.NetworkUtils;
+import net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket;
 import net.minecraft.util.Mth;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.phys.Vec2;
 import net.minecraft.world.phys.Vec3;
@@ -179,6 +182,11 @@ public class SprintModule extends Module {
         boolean sprint = shouldSprint();
 
         if (sprint) {
+            // On 1.20.x (legacy protocol), the slot-swap desync needed to cancel the "using item"
+            // state on the server is now handled by NoSlowModule.onPlayerUpdate() -- it fires at
+            // PlayerUpdateEvent (same event as us, before super.tick()/aiStep()), so by the time
+            // aiStep() detects the sprint transition and sends START_SPRINTING, the server already
+            // thinks the player stopped eating. No separate desync needed here.
             mc.player.setSprinting(true);
         } else if (mc.player.isSprinting()) {
             // Was never explicitly desprinting here, only ever force-asserting TRUE every tick

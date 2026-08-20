@@ -12,6 +12,8 @@ public interface IChamsCapture {
     boolean euclient$chamsOutline();
     int euclient$chamsOutlineColor();
     boolean euclient$chamsShine();
+    boolean euclient$chamsSuppressReal();
 
     void euclient$setChams(boolean fill, int fillColor, boolean outline, int outlineColor, boolean shine);
+    void euclient$setChams(boolean fill, int fillColor, boolean outline, int outlineColor, boolean shine, boolean suppressReal);
 }

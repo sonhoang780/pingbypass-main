@@ -5,6 +5,7 @@ import eu.client.events.impl.ClientConnectEvent;
 import eu.client.events.impl.PacketReceiveEvent;
 import eu.client.events.impl.PlayerConnectEvent;
 import eu.client.events.impl.PlayerDeathEvent;
+import eu.client.events.impl.TickEvent;
 import eu.client.modules.Module;
 import eu.client.modules.RegisterModule;
 import eu.client.settings.impl.BooleanSetting;
@@ -20,7 +21,7 @@ public class SuicideModule extends Module {
     public void onPlayerDeath(PlayerDeathEvent event) {
         if (!deathDisable.getValue()) return;
         if (event.getPlayer() != mc.player) return;
-
+        if (event.getPlayer().getId() != mc.player.getId()) return;
         setToggled(false);
     }
 

@@ -32,13 +32,28 @@ public class DescriptionFrame {
             setY(mouseY - dragY);
         }
 
-        Renderer2D.renderQuad(context, x, y, x + width, y + height, ClickGuiScreen.getButtonColor(y, 100));
+        // Header matching Frame.java
+        Renderer2D.renderQuad(context, x, y, x + width, y + height, new Color(20, 20, 25, 200));
+        Color accentColor = ClickGuiScreen.getButtonColor(y, 200);
+        Renderer2D.renderQuad(context, x, y + height - 1, x + width, y + height, accentColor);
         EUClient.FONT_MANAGER.drawTextWithShadow(context, "Description", x + textPadding, y + 2, Color.WHITE);
-        if(!description.isEmpty()) {
-            List<String> wrappedText =FormattingUtils.wrapText(description, width - textPadding*2);
-            Color color = EUClient.MODULE_MANAGER.getModule(ClickGuiModule.class).color.getColor();
 
-            Renderer2D.renderQuad(context, x, y + height, x + width, y + height + (wrappedText.size()*EUClient.FONT_MANAGER.getHeight()) + 4, EUClient.MODULE_MANAGER.getModule(ClickGuiModule.class).isRainbow() ? new Color(0, 0, 0, 100) : new Color((int) (color.getRed()*0.3), (int) (color.getGreen()*0.3), (int) (color.getBlue()*0.3), 100));
+        if(!description.isEmpty()) {
+            List<String> wrappedText = FormattingUtils.wrapText(description, width - textPadding*2);
+            ClickGuiModule clickGui = EUClient.MODULE_MANAGER.getModule(ClickGuiModule.class);
+            boolean shaderFill = !clickGui.fillMode.getValue().equalsIgnoreCase("Default");
+            int contentHeight = (wrappedText.size() * EUClient.FONT_MANAGER.getHeight()) + 4;
+
+            if (shaderFill) {
+                int alpha = Math.round(clickGui.neekeriOpacity.getValue().floatValue() / 100.0f * 255.0f);
+                context.enableScissor(x, y + height, x + width, y + height + contentHeight);
+                eu.client.utils.graphics.NeekeriFill.fill(context, x, y + height, width, contentHeight, alpha);
+                context.disableScissor();
+            } else {
+                Color color = clickGui.color.getColor();
+                Renderer2D.renderQuad(context, x, y + height, x + width, y + height + contentHeight, clickGui.isRainbow() ? new Color(0, 0, 0, 100) : new Color((int) (color.getRed()*0.3), (int) (color.getGreen()*0.3), (int) (color.getBlue()*0.3), 100));
+            }
+
             int i = 0;
             for(String s : wrappedText) {
                 EUClient.FONT_MANAGER.drawTextWithShadow(context, s, x + textPadding, y + height + 2 + (EUClient.FONT_MANAGER.getHeight()*i), Color.WHITE);

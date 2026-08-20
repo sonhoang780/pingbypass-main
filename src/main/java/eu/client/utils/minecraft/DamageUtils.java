@@ -102,6 +102,14 @@ public class DamageUtils implements IMinecraft {
         return x;
     }
 
+    // 2026-08-19: reverted an uncommitted "early probing" rewrite (5 probe points -> all-miss
+    // returns 1.0f / all-hit returns 0.0f, otherwise fall through to the 45-point grid, plus a
+    // fluid pass-through and an isCollisionShapeFullBlock() shortcut in raycast). The 5/45
+    // bookkeeping was consistent, but the two short-circuits are NOT equivalent to the grid: a
+    // target whose 5 probes all miss while some of the other 40 are blocked reported full exposure,
+    // and the `!getFluidState().isEmpty()` pass-through let WATERLOGGED blocks (real collision) be
+    // treated as no obstruction. Both inflate predicted damage on partially covered targets --
+    // exactly the real-player case. Back to vanilla's own sampling, unconditionally.
     private static float getExposure(Vec3 source, AABB box, BlockPos exception, boolean ignoreTerrain) {
         int hitCount = 0;
         int count = 0;

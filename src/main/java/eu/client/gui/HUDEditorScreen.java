@@ -3,12 +3,28 @@ package eu.client.gui;
 import eu.client.EUClient;
 import eu.client.gui.api.Button;
 import eu.client.gui.api.Frame;
+import eu.client.gui.api.ExpandableRow;
 import eu.client.gui.impl.HudElementButton;
+import eu.client.gui.impl.CategoryButton;
+import eu.client.gui.impl.BooleanButton;
+import eu.client.gui.impl.NumberButton;
+import eu.client.gui.impl.BindButton;
+import eu.client.gui.impl.ModeButton;
+import eu.client.gui.impl.WhitelistButton;
+import eu.client.gui.impl.StringButton;
+import eu.client.gui.impl.ColorButton;
 import eu.client.managers.HudElementRegistry;
 import eu.client.modules.impl.core.HUDEditorModule;
 import eu.client.modules.impl.core.HUDModule;
 import eu.client.settings.Setting;
+import eu.client.settings.impl.BooleanSetting;
 import eu.client.settings.impl.CategorySetting;
+import eu.client.settings.impl.NumberSetting;
+import eu.client.settings.impl.BindSetting;
+import eu.client.settings.impl.ModeSetting;
+import eu.client.settings.impl.WhitelistSetting;
+import eu.client.settings.impl.StringSetting;
+import eu.client.settings.impl.ColorSetting;
 import eu.client.settings.impl.PositionSetting;
 import eu.client.utils.color.ColorUtils;
 import eu.client.utils.graphics.Renderer2D;
@@ -16,11 +32,15 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.MouseButtonEvent;
+import net.minecraft.client.input.KeyEvent;
+import net.minecraft.client.input.CharacterEvent;
 import net.minecraft.network.chat.Component;
 
 import java.awt.*;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.HashSet;
 
 /**
  * Left-click and drag a highlighted HUD element to reposition it; right-click toggles it on/off.
@@ -40,31 +60,41 @@ public class HUDEditorScreen extends Screen {
     public HUDEditorScreen() {
         super(Component.literal(EUClient.MOD_ID + "-hud-editor"));
 
-        // (3,3) (top-left corner) used to sit right on top of Watermark/Welcomer's own default
-        // render position -- both fighting for the same screen corner. Docked lower/inward
-        // instead, clear of every default HUD element position. Fractions of the GUI-scaled
-        // window (not fixed pixels) so it lands in the same relative spot at any GUI scale.
         int guiWidth = Minecraft.getInstance().getWindow().getGuiScaledWidth();
         int guiHeight = Minecraft.getInstance().getWindow().getGuiScaledHeight();
         int frameX = Math.round(guiWidth * 0.23f);
         int frameY = Math.round(guiHeight * 0.14f);
 
         elementsFrame = new Frame("HUD", List.of(), frameX, frameY, 110, 13);
-        List<Setting> hudSettings = EUClient.MODULE_MANAGER.getModule(HUDModule.class).getSettings();
+        
+        HUDModule hudModule = EUClient.MODULE_MANAGER.getModule(HUDModule.class);
+        List<Setting> hudSettings = hudModule.getSettings();
+        Set<CategorySetting> boundCategories = new HashSet<>();
+
+        // 1. Thêm các HUD Elements có thể kéo thả
         for (HudElementRegistry.Element element : HudElementRegistry.getElements().values()) {
-            // The "Enabled" BooleanSetting behind each category (e.g. HUDModule's own
-            // watermarkCategory/watermark pair) IS element.enabled() -- already exposed as this
-            // row's own left-click toggle (see HudElementButton.mouseClicked), so listing it
-            // again as a child row is pure duplication. Same skip ModuleButton's constructor
-            // already does for the same reason, just filtered here instead of by adjacency.
+            if (element.category() != null) {
+                boundCategories.add(element.category());
+            }
             List<Setting> ownSettings = element.category() == null ? List.of() : hudSettings.stream()
                     .filter(s -> s.getVisibility() instanceof CategorySetting.Visibility v && v.getValue() == element.category())
                     .filter(s -> !(s instanceof eu.client.settings.impl.BooleanSetting) || !s.getTag().equals("Enabled"))
                     .toList();
             elementsFrame.getButtons().add(new HudElementButton(element, ownSettings, elementsFrame, 13));
         }
-    }
 
+        // 2. Thêm các Category còn lại (Potions, Color,...) và tự động gom nhóm setting con của chúng
+        for (Setting setting : hudSettings) {
+            if (setting instanceof CategorySetting cat && !boundCategories.contains(cat)) {
+                // Lọc ra các setting thuộc Category này
+                List<Setting> catSettings = hudSettings.stream()
+                        .filter(s -> s.getVisibility() instanceof CategorySetting.Visibility v && v.getValue() == cat)
+                        .toList();
+                
+                elementsFrame.getButtons().add(new CustomCategoryButton(cat, catSettings, elementsFrame, 13));
+            }
+        }
+    }
     @Override
     public void extractBackground(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta) {
         // Intentionally no dimming -- the whole point is to see the real HUD while positioning it.
@@ -76,7 +106,13 @@ public class HUDEditorScreen extends Screen {
             String name = entry.getKey();
             HudElementRegistry.Element element = entry.getValue();
             float[] bounds = HudElementRegistry.getBounds(name);
-            if (bounds == null) continue;
+            
+            // Tạo Box mặc định cho các mục đang TẮT để người chơi có thể định vị trước khi bật
+            if (bounds == null) {
+                float ox = element.offset().getX();
+                float oy = element.offset().getY();
+                bounds = new float[]{ox, oy, ox + 60, oy + 15};
+            }
 
             boolean hovering = mouseX >= bounds[0] && mouseX <= bounds[2] && mouseY >= bounds[1] && mouseY <= bounds[3];
             boolean enabled = element.enabled().getValue();
@@ -100,8 +136,6 @@ public class HUDEditorScreen extends Screen {
         elementsFrame.render(context, mouseX, mouseY, delta);
     }
 
-    /** Rough screen-space bounds of the elements column (header + whatever is currently revealed),
-     *  so overlay drag-hit-testing below doesn't compete with the column for the same click. */
     private boolean insideElementsFrame(double mouseX, double mouseY) {
         return mouseX >= elementsFrame.getX() && mouseX <= elementsFrame.getX() + elementsFrame.getWidth()
                 && mouseY >= elementsFrame.getY() && mouseY <= elementsFrame.getY() + elementsFrame.getTotalHeight() + 4;
@@ -120,7 +154,13 @@ public class HUDEditorScreen extends Screen {
             String name = entry.getKey();
             HudElementRegistry.Element element = entry.getValue();
             float[] bounds = HudElementRegistry.getBounds(name);
-            if (bounds == null) continue;
+            
+            if (bounds == null) {
+                float ox = element.offset().getX();
+                float oy = element.offset().getY();
+                bounds = new float[]{ox, oy, ox + 60, oy + 15};
+            }
+            
             if (mouseX < bounds[0] || mouseX > bounds[2] || mouseY < bounds[1] || mouseY > bounds[3]) continue;
 
             if (event.button() == 1) {
@@ -169,6 +209,27 @@ public class HUDEditorScreen extends Screen {
     }
 
     @Override
+    public boolean keyPressed(KeyEvent event) {
+        int keyCode = event.key(), scanCode = event.scancode(), modifiers = event.modifiers();
+        elementsFrame.keyPressed(keyCode, scanCode, modifiers);
+        if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE && !eu.client.gui.impl.BindButton.isAnyListening()) {
+            onClose();
+            return true;
+        }
+        // Esc reach here only if isAnyListening() was true. Return true so vanilla doesn't process it.
+        if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE) return true;
+        return super.keyPressed(event);
+    }
+
+    @Override
+    public boolean charTyped(CharacterEvent event) {
+        char chr = (char) event.codepoint();
+        int modifiers = 0;
+        elementsFrame.charTyped(chr, modifiers);
+        return super.charTyped(event);
+    }
+
+    @Override
     public void onClose() {
         super.onClose();
         EUClient.MODULE_MANAGER.getModule(HUDEditorModule.class).setToggled(false);
@@ -177,5 +238,113 @@ public class HUDEditorScreen extends Screen {
     @Override
     public boolean isPauseScreen() {
         return false;
+    }
+    private static class CustomCategoryButton extends CategoryButton implements eu.client.gui.api.ExpandableRow {
+        private final List<Button> childButtons = new java.util.ArrayList<>();
+        private final CategorySetting category;
+        private int revealHeight = 0;
+
+        public CustomCategoryButton(CategorySetting category, List<Setting> settings, Frame parent, int height) {
+            super(category, null, parent, height);
+            this.category = category;
+            for (Setting setting : settings) {
+                if (setting instanceof BooleanSetting s) childButtons.add(new BooleanButton(s, parent, height));
+                else if (setting instanceof NumberSetting s) childButtons.add(new NumberButton(s, parent, height));
+                else if (setting instanceof CategorySetting s) childButtons.add(new CategoryButton(s, null, parent, height));
+                else if (setting instanceof BindSetting s) childButtons.add(new BindButton(s, parent, height));
+                else if (setting instanceof ModeSetting s) childButtons.add(new ModeButton(s, parent, height));
+                else if (setting instanceof WhitelistSetting s) childButtons.add(new WhitelistButton(s, parent, height));
+                else if (setting instanceof StringSetting s) childButtons.add(new StringButton(s, parent, height));
+                else if (setting instanceof ColorSetting s) childButtons.add(new ColorButton(s, parent, height));
+            }
+        }
+
+        @Override
+        public String getRowName() { return category.getTag(); }
+
+        @Override
+        public boolean isOpen() { return category.isOpen(); }
+
+        @Override
+        public float getOpenAmount() { return category.getOpenAmount(); }
+
+        @Override
+        public List<Button> getButtons() { return childButtons; }
+
+        @Override
+        public void setRevealHeight(int height) { this.revealHeight = height; }
+
+        @Override
+        public void setSearchQuery(String query) { }
+
+        @Override
+        public void render(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta) {
+            super.render(context, mouseX, mouseY, delta);
+
+            if (revealHeight > 0) {
+                int clipTop = getY() + getHeight();
+                context.enableScissor(getX(), clipTop, getX() + getWidth(), clipTop + revealHeight);
+                for (Button button : childButtons) {
+                    if (!button.isVisible()) continue;
+                    button.render(context, mouseX, mouseY, delta);
+                }
+                context.disableScissor();
+            }
+        }
+
+        @Override
+        public void mouseClicked(double mouseX, double mouseY, int button) {
+            super.mouseClicked(mouseX, mouseY, button);
+            if (category.isOpen()) {
+                for (Button b : childButtons) {
+                    if (!b.isVisible()) continue;
+                    b.mouseClicked(mouseX, mouseY, button);
+                }
+            }
+        }
+
+        @Override
+        public void mouseReleased(double mouseX, double mouseY, int button) {
+            super.mouseReleased(mouseX, mouseY, button);
+            if (category.isOpen()) {
+                for (Button b : childButtons) {
+                    if (!b.isVisible()) continue;
+                    b.mouseReleased(mouseX, mouseY, button);
+                }
+            }
+        }
+
+        @Override
+        public void mouseDragged(double mouseX, double mouseY, int button, double deltaX, double deltaY) {
+            super.mouseDragged(mouseX, mouseY, button, deltaX, deltaY);
+            if (category.isOpen()) {
+                for (Button b : childButtons) {
+                    if (!b.isVisible()) continue;
+                    b.mouseDragged(mouseX, mouseY, button, deltaX, deltaY);
+                }
+            }
+        }
+
+        @Override
+        public void keyPressed(int keyCode, int scanCode, int modifiers) {
+            super.keyPressed(keyCode, scanCode, modifiers);
+            if (category.isOpen()) {
+                for (Button b : childButtons) {
+                    if (!b.isVisible()) continue;
+                    b.keyPressed(keyCode, scanCode, modifiers);
+                }
+            }
+        }
+
+        @Override
+        public void charTyped(char chr, int modifiers) {
+            super.charTyped(chr, modifiers);
+            if (category.isOpen()) {
+                for (Button b : childButtons) {
+                    if (!b.isVisible()) continue;
+                    b.charTyped(chr, modifiers);
+                }
+            }
+        }
     }
 }

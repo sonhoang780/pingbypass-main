@@ -13,6 +13,7 @@ public class EntityRenderStateMixin implements IChamsCapture, ISelfState {
     @Unique private boolean chamsOutline = false;
     @Unique private int chamsOutlineColor = 0;
     @Unique private boolean chamsShine = false;
+    @Unique private boolean chamsSuppressReal = false;
     @Unique private boolean isSelf = false;
 
     @Override
@@ -51,11 +52,22 @@ public class EntityRenderStateMixin implements IChamsCapture, ISelfState {
     }
 
     @Override
+    public boolean euclient$chamsSuppressReal() {
+        return chamsSuppressReal;
+    }
+
+    @Override
     public void euclient$setChams(boolean fill, int fillColor, boolean outline, int outlineColor, boolean shine) {
+        euclient$setChams(fill, fillColor, outline, outlineColor, shine, false);
+    }
+
+    @Override
+    public void euclient$setChams(boolean fill, int fillColor, boolean outline, int outlineColor, boolean shine, boolean suppressReal) {
         this.chamsFill = fill;
         this.chamsFillColor = fillColor;
         this.chamsOutline = outline;
         this.chamsOutlineColor = outlineColor;
         this.chamsShine = shine;
+        this.chamsSuppressReal = suppressReal;
     }
 }

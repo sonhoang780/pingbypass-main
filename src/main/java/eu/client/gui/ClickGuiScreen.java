@@ -57,6 +57,15 @@ public class ClickGuiScreen extends Screen {
     private final Animation slideAnim = new Animation(SLIDE_DURATION_MS, Easing.Method.EASE_OUT_CUBIC);
     private boolean closing = false;
 
+    // Requested: each category Frame slides down (and back up on close) staggered, wave-style,
+    // instead of the whole bar moving as one rigid block. Reuses slideAnim's own startTime/easing
+    // (retargeted by cancelClose()/requestClose() on open/close, same trigger as the global slide)
+    // so a reopen mid-close restarts the wave cleanly, same as the global animation already does --
+    // just computed per-frame with an index*stagger delay instead of one shared progress value.
+    // Only the category Frames wave; descriptionFrame/searchFrame/pingBypassFrame keep the plain
+    // global slide (see extractRenderState) since they aren't a row of repeated items.
+    private static final int CATEGORY_STAGGER_MS = 35;
+
     // Deferred close: instead of removing the screen immediately, play the slide-up first and only
     // actually call mc.setScreen(null) once it's finished (checked each frame in extractRenderState).
     public void requestClose() {
@@ -93,7 +102,12 @@ public class ClickGuiScreen extends Screen {
 
         float progress = slideAnim.get(closing ? 0f : 1f);
 
-        if (closing && progress <= 0.001f) {
+        // The LAST frame's wave doesn't finish until its own stagger delay has also elapsed on top
+        // of the normal slide duration -- waiting on the plain global `progress` alone would remove
+        // the screen (and cut the tail of the wave off) before the last category finished sliding.
+        long waveElapsed = System.currentTimeMillis() - slideAnim.getStartTime();
+        long waveTotalMs = SLIDE_DURATION_MS + (long) Math.max(0, frames.size() - 1) * CATEGORY_STAGGER_MS;
+        if (closing && progress <= 0.001f && waveElapsed >= waveTotalMs) {
             // Slide-up finished -- actually remove the screen now. This triggers onClose() on us,
             // which resets the search box and toggles ClickGuiModule off (a no-op if that's already
             // what closed us, e.g. the keybind path -- Module.setToggled() guards same-state calls).
@@ -104,16 +118,33 @@ public class ClickGuiScreen extends Screen {
         descriptionFrame.setDescription("");
         String query = searchFrame.getQuery();
 
+        for (int i = 0; i < frames.size(); i++) {
+            float frameProgress = categoryFrameProgress(i);
+            context.pose().pushMatrix();
+            context.pose().translate(0, (1f - frameProgress) * -SLIDE_DISTANCE);
+            frames.get(i).render(context, mouseX, mouseY, delta, query);
+            context.pose().popMatrix();
+        }
+
         context.pose().pushMatrix();
         context.pose().translate(0, (1f - progress) * -SLIDE_DISTANCE);
 
-        for(Frame frame : frames) frame.render(context, mouseX, mouseY, delta, query);
         pingBypassFrame.render(context, mouseX, mouseY, delta, query);
 
         descriptionFrame.render(context, mouseX, mouseY, delta);
         searchFrame.render(context, mouseX, mouseY, delta);
 
         context.pose().popMatrix();
+    }
+
+    /** Same easing/duration/direction as slideAnim (`prev -> current`), delayed by
+     *  index*CATEGORY_STAGGER_MS off its own startTime -- opening ramps 0->1 (visible-ness rising),
+     *  closing ramps 1->0 (visible-ness falling), matching the global `progress` this mirrors. */
+    private float categoryFrameProgress(int index) {
+        long elapsed = System.currentTimeMillis() - slideAnim.getStartTime() - (long) index * CATEGORY_STAGGER_MS;
+        float t = net.minecraft.util.Mth.clamp(elapsed / (float) SLIDE_DURATION_MS, 0f, 1f);
+        float eased = Easing.ease(t, slideAnim.getEasing());
+        return closing ? 1f - eased : eased;
     }
 
     @Override

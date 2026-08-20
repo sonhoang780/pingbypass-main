@@ -25,6 +25,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.Vec3i;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.level.block.Blocks;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -40,6 +41,7 @@ public class SelfTrapModule extends Module {
     public BooleanSetting await = new BooleanSetting("Await", "Waits for blocks to be registered by the client before placing on them.", false);
     public BooleanSetting rotate = new BooleanSetting("Rotate", "Sends a packet rotation whenever placing a block.", true);
     public BooleanSetting strictDirection = new BooleanSetting("StrictDirection", "Only places using directions that face you.", false);
+    public BooleanSetting airPlace = new BooleanSetting("AirPlace", "Places blocks in the air without needing neighboring blocks.", false);
     public BooleanSetting crystalDestruction = new BooleanSetting("CrystalDestruction", "Destroys any crystals that interfere with block placement.", true);
     public BooleanSetting antiStep = new BooleanSetting("AntiStep", "Adds additional blocks that prevent anyone from stepping out of the hole.", false);
     public BooleanSetting antiBomb = new BooleanSetting("AntiBomb", "Places an extra block above your head to prevent you from getting bombed.", false);
@@ -50,6 +52,14 @@ public class SelfTrapModule extends Module {
 
     public BooleanSetting render = new BooleanSetting("Render", "Whether or not to render the place position.", true);
 
+    private int packetsSent = 0;
+    private boolean isWorking = false;
+
+    @Override
+    public String getMetaData() {
+        return "Packet: " + packetsSent;
+    }
+
     private List<BlockPos> targetPositions = new ArrayList<>();
 
     private int ticks = 0;
@@ -59,7 +69,7 @@ public class SelfTrapModule extends Module {
     @SubscribeEvent
     public void onPlayerUpdate(PlayerUpdateEvent event) {
         if (shouldRunOnProxy()) return;
-        if (!whileEating.getValue() && mc.player.isUsingItem()) return;
+        if (!whileEating.getValue() && eu.client.utils.minecraft.EntityUtils.isEating()) return;
 
         Runnable runnable = () -> {
             blocksPlaced = 0;
@@ -68,10 +78,9 @@ public class SelfTrapModule extends Module {
                 return;
             }
 
-            if (autoSwitch.getValue().equalsIgnoreCase("None") && !(mc.player.getMainHandItem().getItem() instanceof BlockItem)) {
-                // Ported from the deleted ItemDisable setting's own notification -- always on now
-                // (hardcoded), matches SurroundModule's own copy of the same fix.
-                EUClient.CHAT_MANAGER.tagged("You are currently not holding any blocks.", getName());
+            // [FIXED] Block cầm trên tay phải là block chống nổ
+            if (autoSwitch.getValue().equalsIgnoreCase("None") && (!(mc.player.getMainHandItem().getItem() instanceof BlockItem blockItem) || !isBlastProof(blockItem.getBlock()))) {
+                EUClient.CHAT_MANAGER.tagged("You are currently not holding any blast-proof blocks.", getName());
                 setToggled(false);
                 targetPositions = new ArrayList<>();
                 return;
@@ -79,11 +88,11 @@ public class SelfTrapModule extends Module {
 
             if(holeCheck.getValue() && !HoleUtils.isPlayerInHole(mc.player)) return;
 
-            int slot = InventoryUtils.findHardestBlock(0, autoSwitch.getValue().equalsIgnoreCase("AltSwap") || autoSwitch.getValue().equalsIgnoreCase("AltPickup") ? 35 : 8);
+            int slot = findBlastProofBlock(0, autoSwitch.getValue().equalsIgnoreCase("AltSwap") || autoSwitch.getValue().equalsIgnoreCase("AltPickup") ? 35 : 8);
             int previousSlot = mc.player.getInventory().getSelectedSlot();
 
             if (slot == -1) {
-                EUClient.CHAT_MANAGER.tagged("No blocks could be found in your hotbar.", getName());
+                EUClient.CHAT_MANAGER.tagged("No blast-proof blocks could be found in your hotbar.", getName());
                 setToggled(false);
                 targetPositions = new ArrayList<>();
                 return;
@@ -103,83 +112,78 @@ public class SelfTrapModule extends Module {
                 return;
             }
 
-            InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
+            isWorking = true;
+            try {
+                if (blocksPlaced > limit.getValue().intValue()) return;
 
-            // Surround's own placement loop (SurroundModule.onPlayerUpdate) uses a single support
-            // level and it's enough there because getFeetPositions gives it ankle/floor-level
-            // targets already sitting right next to the ground the player is standing on. SelfTrap's
-            // Full-mode wall ring sits ONE BLOCK HIGHER (chest height, y+1) than
-            // that, so reaching the same ground Surround anchors against directly takes one more
-            // fallback level -- a single level (y-1, feet height) can still be open air on a
-            // ledge/overhang, with nothing solid until y-2. Two bounded levels, not unbounded
-            // cascading/BFS (tried and reverted -- wandered past actual place range chasing a
-            // "technically valid" anchor too far from the player to ever be interacted with).
-            List<BlockPos> placedPositions = new ArrayList<>();
-            for (BlockPos position : targetPositions) {
-                if (blocksPlaced >= limit.getValue().intValue()) break;
 
-                Direction direction = WorldUtils.getDirection(position, placedPositions, strictDirection.getValue());
-                if (direction == null) {
-                    List<BlockPos> supports = new ArrayList<>();
-                    BlockPos probe = position;
-                    Direction anchorDirection = null;
 
-                    for (int level = 0; level < 2; level++) {
-                        probe = probe.below();
-                        if (!WorldUtils.isPlaceable(probe)) break;
-                        supports.add(probe);
-                        anchorDirection = WorldUtils.getDirection(probe, placedPositions, strictDirection.getValue());
-                        if (anchorDirection != null) break;
-                    }
+                InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
 
-                    if (anchorDirection == null) continue;
-
-                    // Place from the found anchor (bottom of `supports`) back UP toward `position`
-                    // -- each newly placed support becomes the next one's own anchor.
-                    boolean failed = false;
-                    for (int i = supports.size() - 1; i >= 0; i--) {
-                        if (blocksPlaced >= limit.getValue().intValue()) { failed = true; break; }
-
-                        BlockPos support = supports.get(i);
-                        Direction supportDirection = WorldUtils.getDirection(support, placedPositions, strictDirection.getValue());
-                        // Only count/reserve the slot as used when a block ACTUALLY placed -- a
-                        // false return means a crystal was in the way and only got attacked this
-                        // tick (see WorldUtils.placeBlock), and burning the per-tick limit on a
-                        // no-op starved the other, unblocked positions of their own attempt.
-                        if (supportDirection == null || !WorldUtils.placeBlock(support, supportDirection, InteractionHand.MAIN_HAND, rotate.getValue(), crystalDestruction.getValue(), render.getValue())) {
-                            failed = true;
-                            break;
-                        }
-                        placedPositions.add(support);
-                        blocksPlaced++;
-
-                        // Await: only place one new support per tick, same pacing the original
-                        // single-level fallback used.
-                        if (await.getValue()) { failed = true; break; }
-                    }
-                    if (failed) continue;
+                List<BlockPos> placedPositions = new ArrayList<>();
+                for (BlockPos position : targetPositions) {
                     if (blocksPlaced >= limit.getValue().intValue()) break;
 
-                    direction = WorldUtils.getDirection(position, placedPositions, strictDirection.getValue());
-                    if (direction == null) continue;
+                    Direction direction = WorldUtils.getDirection(position, placedPositions, strictDirection.getValue());
+                    if (direction == null) {
+                        if (airPlace.getValue()) {
+                            direction = Direction.UP;
+                        } else {
+                            List<BlockPos> supports = new ArrayList<>();
+                            BlockPos probe = position;
+                            Direction anchorDirection = null;
+
+                            for (int level = 0; level < 2; level++) {
+                                probe = probe.below();
+                                if (!WorldUtils.isPlaceable(probe)) break;
+                                supports.add(probe);
+                                anchorDirection = WorldUtils.getDirection(probe, placedPositions, strictDirection.getValue());
+                                if (anchorDirection != null) break;
+                            }
+
+                            if (anchorDirection == null) continue;
+
+                            boolean failed = false;
+                            for (int i = supports.size() - 1; i >= 0; i--) {
+                                if (blocksPlaced >= limit.getValue().intValue()) { failed = true; break; }
+
+                                BlockPos support = supports.get(i);
+                                Direction supportDirection = WorldUtils.getDirection(support, placedPositions, strictDirection.getValue());
+                                if (supportDirection == null || !WorldUtils.placeBlock(support, supportDirection, InteractionHand.MAIN_HAND, rotate.getValue(), crystalDestruction.getValue(), render.getValue())) {
+                                    failed = true;
+                                    break;
+                                }
+                                placedPositions.add(support);
+                                blocksPlaced++;
+
+                                if (await.getValue()) { failed = true; break; }
+                            }
+                            if (failed) continue;
+                            if (blocksPlaced >= limit.getValue().intValue()) break;
+
+                            direction = WorldUtils.getDirection(position, placedPositions, strictDirection.getValue());
+                            if (direction == null) continue;
+                        }
+                    }
+
+                    if (!WorldUtils.placeBlock(position, direction, InteractionHand.MAIN_HAND, rotate.getValue(), crystalDestruction.getValue(), render.getValue()))
+                        continue;
+                    placedPositions.add(position);
+                    blocksPlaced++;
                 }
 
-                if (!WorldUtils.placeBlock(position, direction, InteractionHand.MAIN_HAND, rotate.getValue(), crystalDestruction.getValue(), render.getValue()))
-                    continue;
-                placedPositions.add(position);
-                blocksPlaced++;
+                InventoryUtils.switchBack(autoSwitch.getValue(), slot, previousSlot);
+
+                ticks = 0;
+            } finally {
+                isWorking = false;
             }
-
-            InventoryUtils.switchBack(autoSwitch.getValue(), slot, previousSlot);
-
-            ticks = 0;
         };
 
         if (asynchronous.getValue()) ThreadExecutor.execute(runnable);
         else runnable.run();
     }
 
-    // Ported from Surround's own reactive fast-path (onPacketReceive's ClientboundAddEntityPacket
     // branch) -- SelfTrap had only the tick-polled attackThreateningCrystal below, up to a full
     // tick slower to react than Surround's instant off-the-spawn-packet attack. Uses packet.getId()
     // for the actual attack (the real server-assigned id) -- NOT a freshly `new`'d EndCrystal's own
@@ -197,9 +201,9 @@ public class SelfTrapModule extends Module {
             if (!new AABB(position).intersects(crystal.getBoundingBox())) continue;
 
             if (blocksPlaced > limit.getValue().intValue()) return;
-            if (!whileEating.getValue() && mc.player.isUsingItem()) return;
+            if (!whileEating.getValue() && eu.client.utils.minecraft.EntityUtils.isEating()) return;
 
-            int slot = InventoryUtils.findHardestBlock(0, autoSwitch.getValue().equalsIgnoreCase("AltSwap") || autoSwitch.getValue().equalsIgnoreCase("AltPickup") ? 35 : 8);
+            int slot = findBlastProofBlock(0, autoSwitch.getValue().equalsIgnoreCase("AltSwap") || autoSwitch.getValue().equalsIgnoreCase("AltPickup") ? 35 : 8);
             int previousSlot = mc.player.getInventory().getSelectedSlot();
             if (slot == -1) return;
 
@@ -210,7 +214,6 @@ public class SelfTrapModule extends Module {
             if (!InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot)) return;
             WorldUtils.placeBlock(position, direction, InteractionHand.MAIN_HAND, () -> {
                 mc.player.connection.send(new ServerboundAttackPacket(packet.getId()));
-                mc.player.connection.send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
             }, rotate.getValue(), false, render.getValue());
             blocksPlaced++;
             InventoryUtils.switchBack(autoSwitch.getValue(), slot, previousSlot);
@@ -247,7 +250,6 @@ public class SelfTrapModule extends Module {
         // distance, and faking a look here only risks tripping rotation-based anticheat right next
         // to an attack packet for zero gain. Matches Shoreline's own crystal-defense attack.
         mc.player.connection.send(new ServerboundAttackPacket(best.getId()));
-        mc.player.connection.send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
     }
 
     // Same 1-horizontal/2-vertical adjacency radius as Surround's threatensSurround.
@@ -260,7 +262,9 @@ public class SelfTrapModule extends Module {
 
     @Override
     public void onEnable() {
-        if (mc.player == null || mc.level == null) setToggled(false);
+        if (mc.player == null || mc.level == null) return;
+        packetsSent = 0;
+        targetPositions.clear();
     }
 
     @Override
@@ -268,9 +272,47 @@ public class SelfTrapModule extends Module {
         targetPositions = new ArrayList<>();
     }
 
-    @Override
-    public String getMetaData() {
-        if (targetPositions == null) return "0";
-        return String.valueOf(targetPositions.size());
+
+
+    // ----- Helper Methods cho Blast-Proof Blocks -----
+    private boolean isBlastProof(net.minecraft.world.level.block.Block block) {
+        return block == Blocks.OBSIDIAN ||
+               block == Blocks.ENDER_CHEST ||
+               block == Blocks.CRYING_OBSIDIAN ||
+               block == Blocks.NETHERITE_BLOCK ||
+               block == Blocks.RESPAWN_ANCHOR ||
+               block == Blocks.ANCIENT_DEBRIS ||
+               block == Blocks.ENCHANTING_TABLE ||
+               block == Blocks.ANVIL ||
+               block == Blocks.CHIPPED_ANVIL ||
+               block == Blocks.DAMAGED_ANVIL;
+    }
+
+    private int findBlastProofBlock(int start, int end) {
+        float bestHardness = -1;
+        int bestSlot = -1;
+
+        for (int i = start; i <= end; i++) {
+            if (!(mc.player.getInventory().getItem(i).getItem() instanceof BlockItem item)) continue;
+
+            net.minecraft.world.level.block.Block block = item.getBlock();
+            if (!isBlastProof(block)) continue;
+
+            float hardness = block.defaultDestroyTime();
+            if (hardness == -1) return i; 
+            if (hardness > bestHardness) {
+                bestHardness = hardness;
+                bestSlot = i;
+            }
+        }
+
+        return bestSlot;
+    }
+
+    @SubscribeEvent
+    public void onPacketSend(eu.client.events.impl.PacketSendEvent.Post event) {
+        if (isWorking) {
+            packetsSent++;
+        }
     }
 }

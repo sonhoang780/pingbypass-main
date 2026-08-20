@@ -68,23 +68,81 @@ public class WhitelistEditorScreen extends Screen {
         this.allEntries = buildEntries(setting);
     }
 
+    // Group shortcut: 1 click adds a whole dye-color family (wool, carpet, bed, candle, concrete,
+    // terracotta, glazed_terracotta, stained_glass(_pane), shulker_box, banner...) instead of 16+
+    // individual clicks. Generic by DYE_COLORS prefix match on the registry path, not a hardcoded
+    // per-block-type list -- covers every current and future colored block/item family for free.
+    // Group-add only (no toggle-off, no "already in" state) -- group ids never match a real
+    // registry id so they never disappear from the pool.
+    private static final String GROUP_PREFIX = "group:";
+    private static final String[] DYE_COLORS = {
+            "white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray",
+            "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black"
+    };
+    // Below this, a coincidental "<color>_something" match (there aren't many, but not zero) isn't
+    // worth a group button for -- 16 is the full dye set, so anything with most of them present is
+    // a real family.
+    private static final int MIN_FAMILY_SIZE = 8;
+
+    /** Strips a leading "<color>_" (or bare "<color>") from a registry path, null if no color prefix matches. */
+    private static String familyOf(String path) {
+        for (String color : DYE_COLORS) {
+            if (path.equals(color)) return "";
+            if (path.startsWith(color + "_")) return path.substring(color.length() + 1);
+        }
+        return null;
+    }
+
     private static List<Entry> buildEntries(WhitelistSetting setting) {
         List<Entry> entries = new ArrayList<>();
+        java.util.Map<String, List<Entry>> families = new java.util.LinkedHashMap<>();
+
         if (setting.getType() == WhitelistSetting.Type.BLOCKS) {
             BuiltInRegistries.BLOCK.entrySet().forEach(e -> {
                 Block block = e.getValue();
                 String id = e.getKey().identifier().toString();
                 Item item = block.asItem();
                 ItemStack icon = item == net.minecraft.world.item.Items.AIR ? ItemStack.EMPTY : new ItemStack(item);
-                entries.add(new Entry(id, id.replace("minecraft:", ""), icon, block));
+                Entry entry = new Entry(id, id.replace("minecraft:", ""), icon, block);
+                entries.add(entry);
+                String family = familyOf(id.substring("minecraft:".length()));
+                if (family != null && !family.isEmpty()) families.computeIfAbsent(family, k -> new ArrayList<>()).add(entry);
+            });
+        } else if (setting.getType() == WhitelistSetting.Type.POTIONS) {
+            // 2026-08-20 FIX (reported: search "turtle master" -> nothing). "Turtle Master" is a
+            // REAL POTION name (Potion.name() == "turtle_master", SLOWNESS+RESISTANCE combo) --
+            // the previous version built one entry per raw MobEffect id, so no entry ever matched
+            // named/combo potions (turtle_master, long_fire_resistance, strong_healing, ...) at
+            // all -- the list simply had nothing that could ever match. Build from the real
+            // BuiltInRegistries.POTION registry instead, same as the brewing stand/vanilla potion
+            // search -- Potion.name() IS the searchable/display name (e.g. "turtle_master").
+            BuiltInRegistries.POTION.entrySet().forEach(e -> {
+                net.minecraft.world.item.alchemy.Potion potionType = e.getValue();
+                String id = e.getKey().identifier().toString();
+                net.minecraft.core.Holder<net.minecraft.world.item.alchemy.Potion> holder = BuiltInRegistries.POTION.wrapAsHolder(potionType);
+                ItemStack icon = new ItemStack(net.minecraft.world.item.Items.SPLASH_POTION);
+                icon.set(net.minecraft.core.component.DataComponents.POTION_CONTENTS, new net.minecraft.world.item.alchemy.PotionContents(holder));
+                String label = "Splash Potion of " + potionType.name().replace("_", " ");
+                entries.add(new Entry(id, label, icon, potionType));
             });
         } else {
             BuiltInRegistries.ITEM.entrySet().forEach(e -> {
                 Item item = e.getValue();
                 String id = e.getKey().identifier().toString();
-                entries.add(new Entry(id, id.replace("minecraft:", ""), new ItemStack(item), item));
+                Entry entry = new Entry(id, id.replace("minecraft:", ""), new ItemStack(item), item);
+                entries.add(entry);
+                String family = familyOf(id.substring("minecraft:".length()));
+                if (family != null && !family.isEmpty()) families.computeIfAbsent(family, k -> new ArrayList<>()).add(entry);
             });
         }
+
+        for (var f : families.entrySet()) {
+            if (f.getValue().size() < MIN_FAMILY_SIZE) continue;
+            Entry sample = f.getValue().get(0);
+            String label = f.getKey().replace("_", " ");
+            entries.add(new Entry(GROUP_PREFIX + f.getKey(), label + " (all colors)", sample.icon, null));
+        }
+
         entries.sort((a, b) -> a.name.compareToIgnoreCase(b.name));
         return entries;
     }
@@ -175,8 +233,17 @@ public class WhitelistEditorScreen extends Screen {
     private void renderSearchColumn(GuiGraphicsExtractor context, int mouseX, int mouseY, int x, List<Entry> results, List<String> whitelistIds) {
         Renderer2D.renderQuad(context, x, colY, x + COL_WIDTH, colY + HEADER_H, new Color(20, 20, 25, 200));
         Renderer2D.renderQuad(context, x, colY + HEADER_H - 1, x + COL_WIDTH, colY + HEADER_H, ClickGuiScreen.getButtonColor(colY, 200));
-        String display = query.isEmpty() ? "Items (search...)" : query + (showLine ? "|" : " ");
-        EUClient.FONT_MANAGER.drawTextWithShadow(context, display, x + 3, colY + 2, query.isEmpty() ? Color.GRAY : Color.WHITE);
+        if (query.isEmpty()) {
+            String placeholder = "Items (search...)";
+            int cursorWidth = EUClient.FONT_MANAGER.getWidth(" ");
+            if (showLine) {
+                EUClient.FONT_MANAGER.drawTextWithShadow(context, "|", x + 3, colY + 2, Color.WHITE);
+            }
+            EUClient.FONT_MANAGER.drawTextWithShadow(context, placeholder, x + 3 + cursorWidth, colY + 2, Color.GRAY);
+        } else {
+            String display = query + (showLine ? "|" : " ");
+            EUClient.FONT_MANAGER.drawTextWithShadow(context, display, x + 3, colY + 2, Color.WHITE);
+        }
 
         int bodyY = colY + HEADER_H;
         int bodyHeight = colHeight - HEADER_H;
@@ -250,12 +317,32 @@ public class WhitelistEditorScreen extends Screen {
     }
 
     private void addToWhitelist(Entry entry) {
+        if (entry.id.startsWith(GROUP_PREFIX)) {
+            String family = entry.id.substring(GROUP_PREFIX.length());
+            // Colored members (familyOf match) plus the bare/plain variant if one exists under the
+            // family name itself (e.g. "shulker_box" -- the 17th, uncolored shulker) -- a no-op for
+            // families with no plain variant (wool, carpet, ...).
+            if (setting.getType() == WhitelistSetting.Type.BLOCKS) {
+                BuiltInRegistries.BLOCK.entrySet().forEach(e -> {
+                    String path = e.getKey().identifier().toString().substring("minecraft:".length());
+                    if (family.equals(familyOf(path)) || path.equals(family)) setting.add(e.getValue());
+                });
+            } else {
+                BuiltInRegistries.ITEM.entrySet().forEach(e -> {
+                    String path = e.getKey().identifier().toString().substring("minecraft:".length());
+                    if (family.equals(familyOf(path)) || path.equals(family)) setting.add(e.getValue());
+                });
+            }
+            return;
+        }
         if (setting.getType() == WhitelistSetting.Type.BLOCKS) setting.add(IdentifierUtils.getBlock(entry.id));
+        else if (setting.getType() == WhitelistSetting.Type.POTIONS) setting.add(IdentifierUtils.getPotion(entry.id));
         else setting.add(IdentifierUtils.getItem(entry.id));
     }
 
     private void removeFromWhitelist(Entry entry) {
         if (setting.getType() == WhitelistSetting.Type.BLOCKS) setting.remove(IdentifierUtils.getBlock(entry.id));
+        else if (setting.getType() == WhitelistSetting.Type.POTIONS) setting.remove(IdentifierUtils.getPotion(entry.id));
         else setting.remove(IdentifierUtils.getItem(entry.id));
     }
 

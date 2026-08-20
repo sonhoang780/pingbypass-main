@@ -24,6 +24,9 @@ public class LightmapTextureManagerMixin {
             renderState.blockFactor = 1.0f;
             renderState.skyFactor = 1.0f;
             renderState.brightness = 1.0f;
+            renderState.nightVisionEffectIntensity = 1.0f;
+            renderState.darknessEffectScale = 0.0f;
+            renderState.bossOverlayWorldDarkening = 0.0f;
             renderState.needsUpdate = true;
         }
 

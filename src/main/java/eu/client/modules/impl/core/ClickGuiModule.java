@@ -16,7 +16,7 @@ public class ClickGuiModule extends Module {
     public BooleanSetting sounds = new BooleanSetting("Sounds", "Plays Minecraft UI sounds when interacting with the client's GUI.", true);
     public BooleanSetting blur = new BooleanSetting("Blur", "Whether or not to blur the background behind the GUI.", true);
     public NumberSetting scrollSpeed = new NumberSetting("ScrollSpeed", "The speed at which the scrolling of the frames will be at.", 15, 1, 50);
-    public ColorSetting color = new ColorSetting("Color", "The color that will be used in the GUI.", new ColorSetting.Color(new Color(160, 120, 255), true, false));
+    public ColorSetting color = new ColorSetting("Color", "The color that will be used in the GUI.", new ColorSetting.Color(new Color(160, 120, 255), false, false));
     // All 9 ShadersModule animated patterns (EspShader.MODES minus "None"), not just Neekeri --
     // same shader dispatcher (neekeri_ui.fsh's esp_color), picked by name here instead.
     private static final String[] FILL_MODES = buildFillModes();
@@ -42,11 +42,13 @@ public class ClickGuiModule extends Module {
             setToggled(false);
             return;
         }
-
+        if (color.getValue() != null && color.getValue().isSync()) {
+            color.getValue().setSync(false);
+        }
         EUClient.CLICK_GUI.cancelClose();
         mc.setScreen(EUClient.CLICK_GUI);
     }
-
+    
     @Override
     public void onDisable() {
         // Deferred close: EUClient.CLICK_GUI plays its slide-up animation and removes itself (via
@@ -59,7 +61,6 @@ public class ClickGuiModule extends Module {
     }
 
     public boolean isRainbow() {
-        if(color.isSync()) return EUClient.MODULE_MANAGER.getModule(ColorModule.class).color.isRainbow();
         return color.isRainbow();
     }
 }

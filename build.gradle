@@ -1,3 +1,5 @@
+import groovy.json.JsonSlurper
+
 plugins {
 	id 'java'
 	id 'net.fabricmc.fabric-loom' version '1.17-SNAPSHOT'
@@ -13,6 +15,8 @@ base {
 }
 
 repositories {
+	mavenLocal()
+	mavenCentral()
 	maven {
 		name = "meteor-maven"
 		url = "https://maven.meteordev.org/releases"
@@ -20,6 +24,33 @@ repositories {
 	maven {
 		name = "meteor-maven"
 		url = "https://maven.meteordev.org"
+	}
+	maven { url = "https://maven.lavalink.dev/releases" }
+	maven { url = "https://maven.lavalink.dev/snapshots" }
+	maven { url = "https://jitpack.io" }
+	maven { url = "https://packages.jetbrains.team/maven/p/ui/dev" }
+}
+
+// Hàm tự động gọi GitHub API lấy commit SHA mới nhất của youtube-source nhánh main
+// (2026-08-20: repo's default branch is "main", not "master" -- the old "master" URL 404'd on
+// every build, so this always silently fell through to the hardcoded fallback SHA below and
+// never actually updated. Confirmed via the crash log's own yts.version matching that fallback
+// verbatim. Fixed to the real branch name + refreshed the fallback to a current commit.)
+def getLatestYtCommit = { ->
+	try {
+		def url = new URI("https://api.github.com/repos/lavalink-devs/youtube-source/commits/main").toURL()
+		def conn = (HttpURLConnection) url.openConnection()
+		conn.setRequestProperty("User-Agent", "Gradle-Build-Script")
+		conn.setConnectTimeout(3000)
+		conn.setReadTimeout(3000)
+
+		def json = new JsonSlurper().parse(conn.getInputStream())
+		conn.disconnect()
+		return json.sha
+	} catch (Exception e) {
+		// Mã SHA dự phòng nếu không có mạng hoặc bị giới hạn API -- refreshed 2026-08-20 to a
+		// commit that includes the TV-client PS4 User-Agent + client-version fixes.
+		return "f45bbb7aebfcbc1c553769e04af6cd43afa8b7c3"
 	}
 }
 
@@ -35,6 +66,38 @@ dependencies {
 
 	implementation(shadow("org.reflections:reflections:0.10.2"))
 	implementation(shadow("meteordevelopment:discord-ipc:1.1"))
+
+	// Skija native GPU rendering
+	def skijaVersion = "0.143.17"
+	def typesVersion = "0.2.0"
+	implementation "io.github.humbleui:types:${typesVersion}"
+	implementation "io.github.humbleui:skija-shared:${skijaVersion}"
+	implementation "io.github.humbleui:skija-windows-x64:${skijaVersion}"
+	implementation "io.github.humbleui:skija-linux-x64:${skijaVersion}"
+	implementation "io.github.humbleui:skija-macos-x64:${skijaVersion}"
+	implementation "io.github.humbleui:skija-macos-arm64:${skijaVersion}"
+
+	// Lavaplayer & YouTube audio engine (Tự động cập nhật snapshot từ commit mới nhất)
+	def lavaplayerVersion = "2.2.7"
+	def ytSourceVersion = "${getLatestYtCommit()}-SNAPSHOT"
+	def jacksonVersion = "2.18.3"
+	def rhinoVersion = "1.9.1"
+
+	implementation "commons-logging:commons-logging:1.3.0"
+	implementation "dev.arbjerg:lavaplayer:${lavaplayerVersion}"
+	implementation "dev.arbjerg:lava-common:${lavaplayerVersion}"
+	implementation "dev.arbjerg:lavaplayer-natives:${lavaplayerVersion}"
+	implementation "dev.lavalink.youtube:common:${ytSourceVersion}"
+
+	implementation "org.apache.httpcomponents:httpclient:4.5.14"
+	implementation "org.apache.httpcomponents:httpcore:4.4.16"
+	implementation "commons-io:commons-io:2.13.0"
+	implementation "com.fasterxml.jackson.core:jackson-core:${jacksonVersion}"
+	implementation "com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}"
+	implementation "com.fasterxml.jackson.core:jackson-annotations:${jacksonVersion}"
+	implementation "com.grack:nanojson:1.8"
+	implementation "org.mozilla:rhino:${rhinoVersion}"
+	implementation "org.mozilla:rhino-engine:${rhinoVersion}"
 
 	testImplementation "net.jqwik:jqwik:1.9.2"
 	testImplementation "org.junit.jupiter:junit-jupiter:5.11.4"
@@ -53,7 +116,6 @@ def getRevisionCount = { ->
 	gitProcess.waitFor()
 	return gitProcess.text.trim()
 }
-
 
 buildConfig {
 	className("BuildConstants")

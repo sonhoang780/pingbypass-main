@@ -144,7 +144,12 @@ public class FakeLagModule extends Module {
     @Override
     public void onEnable() {
         timer.reset();
-        safety.reset();
+        // 2026-08-13 FIX (diagnosed: rubberband/no-choke bug -- friend saw normal movement despite
+        // FakeLag on). shouldChoke() gates on safety.hasTimeElapsed(1000) -- resetting `safety` here
+        // opened a 1000ms dead window after EVERY enable during which shouldChoke() is always false,
+        // so any movement in that window sent real, un-choked position packets. `safety` only needs
+        // resetting at real choke-window boundaries (onPacketReceive above), not on toggle-on --
+        // removing this stray reset lets it carry over from whenever it was last genuinely reset.
         isChoking = false;
         // Was only armed once an actual choke window finished and released its packets -- if
         // nothing ever gets choked (standing still, nothing to buffer), that never happens and

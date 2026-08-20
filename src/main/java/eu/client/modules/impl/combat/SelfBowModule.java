@@ -88,7 +88,13 @@ public class SelfBowModule extends Module {
             if (arrow != bestArrow) InventoryUtils.swap("Pickup", arrow, bestArrow);
         }
 
-        EUClient.ROTATION_MANAGER.packetRotate(mc.player.getYRot(), -90.0f);
+        if (mc.getConnection() != null) {
+            eu.client.pingbypass.server.ProxyServerTickListener.allowSend(() ->
+                    mc.getConnection().send(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.PosRot(
+                            EUClient.POSITION_MANAGER.getServerX(), EUClient.POSITION_MANAGER.getServerY(),
+                            EUClient.POSITION_MANAGER.getServerZ(), mc.player.getYRot(), -90.0f,
+                            EUClient.POSITION_MANAGER.isServerOnGround(), mc.player.horizontalCollision)));
+        }
         mc.options.keyUse.setDown(false);
         mc.gameMode.releaseUsingItem(mc.player);
         chargeTicks = 0;

@@ -4,7 +4,10 @@ import com.mojang.authlib.GameProfile;
 import lombok.Getter;
 import eu.client.EUClient;
 import eu.client.events.SubscribeEvent;
+import eu.client.events.impl.ClientConnectEvent;
+import eu.client.events.impl.PlayerDeathEvent;
 import eu.client.events.impl.PlayerUpdateEvent;
+import eu.client.events.impl.RenderWorldEvent;
 import eu.client.modules.Module;
 import eu.client.modules.RegisterModule;
 import eu.client.settings.impl.*;
@@ -24,17 +27,16 @@ import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket;
 import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
 import net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.Pose;
+import net.minecraft.util.Mth;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.UUID;
 
-// proxyEnhanced so the toggle reaches the proxy: combat modules like AutoCrystal
-// run their real logic on the proxy's own mc.level (the actual connection to the
-// real server) and scan mc.level.players() there -- a dummy spawned only on this
-// client's own (mostly unused, pre-real-connection) level is invisible to them.
-// shouldRunOnProxy() below skips the client-side spawn while proxying so there's
-// only ever one copy, spawned on whichever side is actually driving gameplay.
 @RegisterModule(name = "FakePlayer", description = "Spawns in a fake player entity that you can use to test modules on.", category = Module.Category.MISCELLANEOUS, proxyEnhanced = true)
 public class FakePlayerModule extends Module {
     public StringSetting name = new StringSetting("Name", "The name that will be assigned to the fake player.", "Dummy");
@@ -50,40 +52,112 @@ public class FakePlayerModule extends Module {
     @Getter private RemotePlayer player = null;
 
     private double[] direction = generateDirection();
-
     private final Timer timer = new Timer();
-
     private boolean stepping = false;
     private final Timer stepTimer = new Timer();
+
+    private enum RecordState { NONE, RECORDING, PLAYING }
+    @Getter private RecordState recordState = RecordState.NONE;
+    private final List<RecordFrame> frames = new ArrayList<>();
+    private int playIndex = 0;
+
+    public record RecordFrame(double x, double y, double z, float yRot, float xRot, float yHeadRot, Pose pose) {}
+
+    public void startRecording() {
+        if (player == null) {
+            EUClient.CHAT_MANAGER.warn("Spawn a fake player first before recording!");
+            return;
+        }
+        frames.clear();
+        recordState = RecordState.RECORDING;
+        EUClient.CHAT_MANAGER.tagged("Started recording movements...", "FakePlayer");
+    }
+
+    public void stopRecording() {
+        recordState = RecordState.NONE;
+        EUClient.CHAT_MANAGER.tagged("Record!", "FakePlayer");
+    }
+
+    public void startPlaying() {
+        if (frames.isEmpty()) {
+            EUClient.CHAT_MANAGER.warn("No recorded frames to play! Use '.fakeplayer record' first.");
+            return;
+        }
+        if (player == null) {
+            setToggled(true); 
+        }
+        recordState = RecordState.PLAYING;
+        playIndex = 0;
+        EUClient.CHAT_MANAGER.tagged("Playing recorded movements in a loop...", "FakePlayer");
+    }
+
+    @SubscribeEvent
+    public void onDisconnect(ClientConnectEvent event) {
+        if (isToggled()) {
+            setToggled(false);
+        }
+    }
+
+    // Requested: auto-off on quit/die -- FakePlayer replaying old movement/rotation over a dead
+    // or gone player is nonsense state to keep armed.
+    @SubscribeEvent
+    public void onPlayerDeath(PlayerDeathEvent event) {
+        if (event.getPlayer() != mc.player) return; // fires for ANY player death, filter to local
+        if (isToggled()) {
+            setToggled(false);
+        }
+    }
 
     @SubscribeEvent
     public void onPlayerUpdate(PlayerUpdateEvent event) {
         if (mc.player == null || mc.level == null) return;
+
+        // Ghi lại chuyển động ở mức Game Tick (20 Hz)
+        if (recordState == RecordState.RECORDING) {
+            frames.add(new RecordFrame(
+                    mc.player.getX(), mc.player.getY(), mc.player.getZ(),
+                    mc.player.getYRot(), mc.player.getXRot(), mc.player.getYHeadRot(),
+                    mc.player.getPose()
+            ));
+            return;
+        }
+
+        // Tăng chỉ số frame theo Game Tick khi đang phát lại
+        if (recordState == RecordState.PLAYING) {
+            if (player == null || frames.isEmpty()) return;
+            playIndex++;
+            if (playIndex >= frames.size()) {
+                playIndex = 0;
+            }
+            broadcastPosition();
+            return;
+        }
+
+        // Logic chuyển động ngẫu nhiên (Random)
         if (player == null) return;
         if (!movementMode.getValue().equalsIgnoreCase("Random")) return;
 
         BlockPos position = player.blockPosition();
-        boolean changeDirection = false;
+        boolean changeDir = false;
 
         if (this.changeDirection.getValue() && timer.hasTimeElapsed(timeout.getValue().longValue() * 1000L)) {
-            changeDirection = true;
+            changeDir = true;
             timer.reset();
         }
 
         if (hasObstruction(position)) {
-            for (Direction direction : Direction.values()) {
-                BlockPos offsetPosition = position.relative(direction);
-                if ((WorldUtils.blocksMovement(mc.level.getBlockState(offsetPosition)) || WorldUtils.blocksMovement(mc.level.getBlockState(offsetPosition.above()))) && WorldUtils.blocksMovement(mc.level.getBlockState(offsetPosition.above().above())) && player.getDirection().equals(direction)) {
-                    changeDirection = true;
+            for (Direction dir : Direction.values()) {
+                BlockPos offsetPosition = position.relative(dir);
+                if ((WorldUtils.blocksMovement(mc.level.getBlockState(offsetPosition)) || WorldUtils.blocksMovement(mc.level.getBlockState(offsetPosition.above()))) && WorldUtils.blocksMovement(mc.level.getBlockState(offsetPosition.above().above())) && player.getDirection().equals(dir)) {
+                    changeDir = true;
                     timer.reset();
                 }
             }
         }
 
-        if (changeDirection) {
+        if (changeDir) {
             double[] newDirection = generateDirection();
             if (direction == newDirection) newDirection = generateDirection();
-
             direction = newDirection;
         }
 
@@ -105,9 +179,46 @@ public class FakePlayerModule extends Module {
         broadcastPosition();
     }
 
-    /** Mirrors the fake player's current position/rotation to the connected client. */
+    @SubscribeEvent
+    public void onRenderWorld(RenderWorldEvent event) {
+        // Nội suy tuyến tính theo từng Render Frame (FPS)
+        if (recordState != RecordState.PLAYING || player == null || frames.isEmpty()) return;
+
+        int currentIndex = playIndex;
+        int nextIndex = (currentIndex + 1) % frames.size();
+
+        RecordFrame current = frames.get(currentIndex);
+        RecordFrame next = frames.get(nextIndex);
+
+        float delta = event.getTickDelta();
+        if (nextIndex == 0) {
+            delta = 0.0f; // Tránh trượt ngược khi kết thúc vòng lặp
+        }
+
+        double x = Mth.lerp(delta, current.x(), next.x());
+        double y = Mth.lerp(delta, current.y(), next.y());
+        double z = Mth.lerp(delta, current.z(), next.z());
+        float yRot = Mth.rotLerp(delta, current.yRot(), next.yRot());
+        float xRot = Mth.lerp(delta, current.xRot(), next.xRot());
+        float yHeadRot = Mth.rotLerp(delta, current.yHeadRot(), next.yHeadRot());
+
+        player.setPos(x, y, z);
+        player.setYRot(yRot);
+        player.setXRot(xRot);
+        player.yHeadRot = yHeadRot;
+        player.yBodyRot = yRot;
+
+        player.setOldPosAndRot();
+        player.yHeadRotO = yHeadRot;
+        player.yBodyRotO = yRot;
+
+        player.setPose(current.pose());
+        player.refreshDimensions();
+    }
+
     private void broadcastPosition() {
         if (!isRunningOnProxy() || EUClient.PROXY_SERVER == null) return;
+        if (player == null) return;
 
         var teleportPacket = ClientboundTeleportEntityPacket.teleport(
                 player.getId(), net.minecraft.world.entity.PositionMoveRotation.of(player), java.util.Set.of(), player.onGround());
@@ -119,7 +230,7 @@ public class FakePlayerModule extends Module {
     @Override
     public void onEnable() {
         if (shouldRunOnProxy()) return;
-        if (mc.level == null) {
+        if (mc.level == null || mc.player == null) {
             setToggled(false);
             return;
         }
@@ -131,47 +242,33 @@ public class FakePlayerModule extends Module {
         player.setHealth(health.getValue().floatValue());
         player.setAbsorptionAmount(absorption.getValue().floatValue());
 
-        net.minecraft.world.level.storage.TagValueOutput valueOutput = net.minecraft.world.level.storage.TagValueOutput.createWithoutContext(net.minecraft.util.ProblemReporter.DISCARDING);
-        mc.player.saveWithoutId(valueOutput);
-        player.load(net.minecraft.world.level.storage.TagValueInput.create(net.minecraft.util.ProblemReporter.DISCARDING, mc.level.registryAccess(), valueOutput.buildResult()));
-
-        // The NBT round-trip above restores the Inventory tag, but that's the STORAGE-side
-        // inventory -- the RENDER-facing equipment LivingEntity actually draws the model from
-        // (getItemBySlot/setItemSlot) isn't guaranteed to be populated just by loading Inventory
-        // back on a freshly constructed entity outside the normal server tick/sync path that
-        // usually keeps the two in step. Set it explicitly so the spawned model actually shows
-        // armor/held items instead of a bare-handed dummy.
-        for (net.minecraft.world.entity.EquipmentSlot slot : net.minecraft.world.entity.EquipmentSlot.values()) {
+        for (EquipmentSlot slot : EquipmentSlot.values()) {
             player.setItemSlot(slot, mc.player.getItemBySlot(slot).copy());
         }
 
         mc.level.addEntity(player);
-
         player.tick();
         timer.reset();
 
         broadcastSpawn();
+        EUClient.CHAT_MANAGER.tagged("Spawned fake player " + name.getValue(), "FakePlayer");
     }
 
     @Override
     public void onDisable() {
+        recordState = RecordState.NONE;
         if (shouldRunOnProxy()) return;
         if (mc.level == null || player == null) return;
 
         broadcastDespawn();
         mc.level.removeEntity(player.getId(), Entity.RemovalReason.DISCARDED);
+        player = null;
+        EUClient.CHAT_MANAGER.tagged("Removed fake player.", "FakePlayer");
     }
 
-    /**
-     * The fake player is spawned via mc.level.addEntity() directly -- a purely
-     * local operation that never produces a real ClientboundAddEntityPacket, so
-     * S2CForwarder (which only relays packets actually received from the real
-     * server) has nothing to forward. When running on the proxy, synthesize and
-     * send the same packets a real spawn would produce so the connected client
-     * actually sees the model.
-     */
     private void broadcastSpawn() {
         if (!isRunningOnProxy() || EUClient.PROXY_SERVER == null) return;
+        if (player == null) return;
 
         var entries = java.util.List.of(new ClientboundPlayerInfoUpdatePacket.Entry(
                 player.getUUID(), player.getGameProfile(), false, 0,
@@ -198,6 +295,7 @@ public class FakePlayerModule extends Module {
 
     private void broadcastDespawn() {
         if (!isRunningOnProxy() || EUClient.PROXY_SERVER == null) return;
+        if (player == null) return;
 
         var removePacket = new ClientboundRemoveEntitiesPacket(player.getId());
         var infoRemovePacket = new net.minecraft.network.protocol.game.ClientboundPlayerInfoRemovePacket(
@@ -216,7 +314,6 @@ public class FakePlayerModule extends Module {
             if (WorldUtils.blocksMovement(mc.level.getBlockState(offsetPosition))) return true;
             if (WorldUtils.blocksMovement(mc.level.getBlockState(offsetPosition.above()))) return true;
         }
-
         return false;
     }
 
@@ -230,28 +327,23 @@ public class FakePlayerModule extends Module {
                 if (WorldUtils.blocksMovement(mc.level.getBlockState(offsetPosition)) && !WorldUtils.blocksMovement(mc.level.getBlockState(offsetPosition.above())) && player.getDirection().equals(direction) && !WorldUtils.blocksMovement(mc.level.getBlockState(offsetPosition.above().above()))) {
                     stepping = true;
                     stepTimer.reset();
-
                     return 1;
                 }
 
                 if (WorldUtils.blocksMovement(mc.level.getBlockState(offsetPosition.above())) && player.getDirection().equals(direction) && !WorldUtils.blocksMovement(mc.level.getBlockState(offsetPosition.above().above()))) {
                     stepping = true;
                     stepTimer.reset();
-
                     return 2;
                 }
             }
-
             return 0;
         }
-
         return 0;
     }
 
     public double[] generateDirection() {
         double angle = MathUtils.random(2 * Math.PI, 0);
-        double[] direction = new double[]{-Math.sin(angle), Math.cos(angle)};
-
-        return new double[]{direction[0] * velocity.getValue().floatValue(), direction[1] * velocity.getValue().floatValue()};
+        double[] dir = new double[]{-Math.sin(angle), Math.cos(angle)};
+        return new double[]{dir[0] * velocity.getValue().floatValue(), dir[1] * velocity.getValue().floatValue()};
     }
 }

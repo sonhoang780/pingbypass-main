@@ -27,8 +27,8 @@ import java.util.ArrayList;
 @RegisterModule(name = "TextESP", description = "Renders text ESP on the world.", category = Module.Category.VISUALS)
 public class TextESPModule extends Module {
     public BooleanSetting items = new BooleanSetting("Items", "Renders text ESP on item entities.", true);
-    public ModeSetting itemListMode = new ModeSetting("ItemListMode", "All = render on every item. WhiteList = only listed items. BlackList = every item except listed.", new BooleanSetting.Visibility(items, true), "WhiteList", new String[]{"All", "WhiteList", "BlackList"});
-    public WhitelistSetting itemWhitelist = new WhitelistSetting("ItemWhitelist", "Items the WhiteList/BlackList mode compares against.", new BooleanSetting.Visibility(items, true), WhitelistSetting.Type.ITEMS);
+    public ModeSetting itemListMode = new ModeSetting("Mode", "WhiteList = only listed items. BlackList = items NOT in list. All = render on every item.", new BooleanSetting.Visibility(items, true), "WhiteList", new String[]{"WhiteList", "BlackList", "All"});
+    public WhitelistSetting itemWhitelist = new WhitelistSetting("Whitelist", "Items the WhiteList/BlackList mode compares against.", new BooleanSetting.Visibility(items, true), WhitelistSetting.Type.ITEMS);
     public BooleanSetting pearls = new BooleanSetting("Pearls", "Renders text ESP on pearl entities.", true);
     public BooleanSetting chorus = new BooleanSetting("Chorus", "Renders text ESP on chorus sounds.", true);
 

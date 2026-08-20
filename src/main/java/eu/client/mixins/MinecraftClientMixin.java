@@ -6,6 +6,7 @@ import eu.client.events.impl.GameLoopEvent;
 import eu.client.events.impl.TickEvent;
 import eu.client.gui.special.MainMenuScreen;
 import eu.client.modules.impl.core.MenuModule;
+import eu.client.modules.impl.core.NoMiddleClickModule;
 import eu.client.modules.impl.miscellaneous.AutoEscapeModule;
 import eu.client.modules.impl.miscellaneous.AutoRespawnModule;
 import eu.client.modules.impl.player.FastPlaceModule;
@@ -68,6 +69,15 @@ public abstract class MinecraftClientMixin implements IMinecraft {
         EUClient.EVENT_HANDLER.post(new TickEvent());
     }
 
+    // Verified against .mcref: Minecraft.tick() has no early return, and runTick() calls
+    // mouseHandler.handleAccumulatedMovement() (-> turnPlayer) and renderFrame() only AFTER the
+    // whole tick loop -- so TAIL here is after level.tickEntities() and before either. See
+    // TickEvent.Post's own doc.
+    @Inject(method = "tick", at = @At("TAIL"))
+    private void tick$post(CallbackInfo info) {
+        EUClient.EVENT_HANDLER.post(new TickEvent.Post());
+    }
+
     // Was HEAD -- verified via .mcref that startUseItem()'s own body unconditionally sets
     // rightClickDelay = 4 as its SECOND statement (right after the isDestroying() guard), so a
     // HEAD injection's override got immediately clobbered by vanilla's own assignment a few lines
@@ -126,9 +136,15 @@ public abstract class MinecraftClientMixin implements IMinecraft {
 
     @Inject(method = "setScreen", at = @At("HEAD"), cancellable = true)
     private void setScreen(Screen screen, CallbackInfo info) {
+        if (screen instanceof net.minecraft.client.gui.screens.social.SocialInteractionsScreen) {
+            info.cancel();
+            return;
+        }
+
         if (screen instanceof DeathScreen && player != null && EUClient.MODULE_MANAGER.getModule(AutoRespawnModule.class).isToggled()) {
             player.respawn();
             info.cancel();
+            return;
         }
 
         if (screen instanceof TitleScreen) {
@@ -136,6 +152,16 @@ public abstract class MinecraftClientMixin implements IMinecraft {
 
             if (EUClient.MODULE_MANAGER.getModule(MenuModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(MenuModule.class).mainMenu.getValue()) {
                 this.setScreen(new MainMenuScreen());
+                info.cancel();
+            }
+        }
+    }
+
+    @Inject(method = {"pickBlock", "pickBlockOrEntity"}, at = @At("HEAD"), cancellable = true, require = 0)
+    private void euclient$onPickBlock(CallbackInfo info) {
+        if (EUClient.MODULE_MANAGER != null) {
+            NoMiddleClickModule module = EUClient.MODULE_MANAGER.getModule(NoMiddleClickModule.class);
+            if (module != null && module.isToggled()) {
                 info.cancel();
             }
         }

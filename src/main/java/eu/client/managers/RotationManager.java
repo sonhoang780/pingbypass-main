@@ -48,6 +48,17 @@ public class RotationManager implements IMinecraft {
     @Getter private float serverYaw;
     @Getter private float serverPitch;
 
+    // Raw (pre-jitter) target of the last packetRotate/silentRotate call -- dedup compares against
+    // THIS, not serverYaw/serverPitch (which also gets overwritten by real incoming server sync
+    // packets, :301-302, and would make the dedup's meaning depend on unrelated server traffic).
+    // Comparing raw target means "don't resend, jitter is noise, not the actual target" without
+    // that noise defeating the check -- previously applyJitter ran BEFORE the dedup, so two
+    // consecutive calls at the exact same target almost never compared equal and the guard fired
+    // basically never. This ordering isn't a nami port (nami's performSilent has no dedup at all,
+    // see RotationManager class doc/history) -- purely our own call.
+    private float lastPacketTargetYaw = Float.NaN, lastPacketTargetPitch = Float.NaN;
+    private float lastSilentTargetYaw = Float.NaN, lastSilentTargetPitch = Float.NaN;
+
     private float prevRenderYaw, prevRenderPitch;
     private long lastRenderTime = 0L;
 
@@ -307,19 +318,29 @@ public class RotationManager implements IMinecraft {
         packetRotate(rotations[0], rotations[1]);
     }
 
-    // See RotationsModule.jitter's own doc for the reasoning; ported from Nami's JitterMode. Both
-    // packetRotate and silentRotate run every fake rotation through this before the dedup check
-    // (so consecutive sends at the "same" target aren't deduped into never actually varying).
+    // See RotationsModule.jitter's own doc for the reasoning; the offset formulas (Grim/Normal) are
+    // ported from Nami's JitterMode inside performSilent(). The ordering here is NOT a nami port,
+    // though -- nami's performSilent has no dedup at all, so there's nothing there for jitter to
+    // run before or after. Our own dedup (packetRotate/silentRotate's lastXTarget check) runs
+    // BEFORE this on the raw pre-jitter target, so jitter can't defeat it by making two calls at
+    // the same real target compare unequal.
     private float[] applyJitter(float yaw, float pitch) {
+        if (pitch <= -89.5f || pitch >= 89.5f) {
+            return new float[]{yaw, pitch};
+        }
         String mode = EUClient.MODULE_MANAGER.getModule(RotationsModule.class).jitter.getValue();
         if ("Grim".equalsIgnoreCase(mode)) {
-            pitch = Mth.clamp(pitch + (float) ((Math.random() * 2.0 - 1.0) * 0.001f), -90f, 90f);
+            float f = (float) ((Math.random() * 2.0 - 1.0) * 0.001f);
+            pitch = Mth.clamp(pitch + f, -90.0F, 90.0F);
         } else if ("Normal".equalsIgnoreCase(mode)) {
-            float min = 1.25f, max = 2.5f;
-            float jitterYaw = (min + (float) (Math.random() * (max - min))) * (Math.random() < 0.5 ? -1 : 1);
-            float jitterPitch = (min + (float) (Math.random() * (max - min))) * (Math.random() < 0.5 ? -1 : 1);
+            float minJitter = 1.25f;
+            float maxJitter = 2.5f;
+            float jitterYaw = minJitter + (float) (Math.random() * (maxJitter - minJitter));
+            float jitterPitch = minJitter + (float) (Math.random() * (maxJitter - minJitter));
+            jitterYaw *= Math.random() < 0.5 ? -1 : 1;
+            jitterPitch *= Math.random() < 0.5 ? -1 : 1;
             yaw += jitterYaw;
-            pitch = Mth.clamp(pitch + jitterPitch, -90f, 90f);
+            pitch = Mth.clamp(pitch + jitterPitch, -90.0F, 90.0F);
         }
         return new float[]{yaw, pitch};
     }
@@ -346,29 +367,27 @@ public class RotationManager implements IMinecraft {
     }
 
     public void packetRotate(float yawIn, float pitchIn) {
+        if (lastPacketTargetYaw == yawIn && lastPacketTargetPitch == pitchIn) return;
+        lastPacketTargetYaw = yawIn;
+        lastPacketTargetPitch = pitchIn;
         float[] jittered = applyJitter(yawIn, pitchIn);
         final float yaw = jittered[0], pitch = jittered[1];
-        if (serverYaw == yaw && serverPitch == pitch) return;
         lastPacketRotateTime = System.currentTimeMillis();
-        // Same call on both sides -- mc.getConnection() on the proxy IS the real server
-        // connection (see ProxyServer.setServerConnection callers), so this needs no
-        // proxy-specific branch. ProxyServerTickListener now blacklists ServerboundMovePlayerPacket
-        // by default (matches earthhack's Pb2SManager, see PbPlayHandler.handleMovePlayer0) -- this
-        // send needs the same explicit authorization, or the proxy silently drops every
-        // packet-rotate from AutoCrystal/other proxy-side aim modules. allowSend() is a no-op on
-        // the client (that listener is only ever subscribed on the proxy), so this is safe
-        // unconditionally.
-        //
-        // 2026-08-14: back to PosRot (= bản gốc's PlayerMoveC2SPacket.Full), with the SERVER-side
-        // position from POSITION_MANAGER, byte-for-byte what the known-good 1.21.4 version sends.
-        // It had been switched to .Rot on a GrimAC theory; the version the user is comparing against
-        // has always sent the full variant and does not rubberband, so the extra-position theory was
-        // not the cause and the divergence is reverted rather than kept.
+        serverYaw = yaw;
+        serverPitch = pitch;
+        
+        double x = (eu.client.pingbypass.PingBypassFlags.proxyForwardingActive && EUClient.PINGBYPASS_CONFIG != null && EUClient.PINGBYPASS_CONFIG.isServer())
+                ? EUClient.POSITION_MANAGER.getServerX() : mc.player.getX();
+        double y = (eu.client.pingbypass.PingBypassFlags.proxyForwardingActive && EUClient.PINGBYPASS_CONFIG != null && EUClient.PINGBYPASS_CONFIG.isServer())
+                ? EUClient.POSITION_MANAGER.getServerY() : mc.player.getY();
+        double z = (eu.client.pingbypass.PingBypassFlags.proxyForwardingActive && EUClient.PINGBYPASS_CONFIG != null && EUClient.PINGBYPASS_CONFIG.isServer())
+                ? EUClient.POSITION_MANAGER.getServerZ() : mc.player.getZ();
+        boolean onGround = (eu.client.pingbypass.PingBypassFlags.proxyForwardingActive && EUClient.PINGBYPASS_CONFIG != null && EUClient.PINGBYPASS_CONFIG.isServer())
+                ? EUClient.POSITION_MANAGER.isServerOnGround() : mc.player.onGround();
+
         eu.client.pingbypass.server.ProxyServerTickListener.allowSend(() ->
                 mc.getConnection().send(new ServerboundMovePlayerPacket.PosRot(
-                        EUClient.POSITION_MANAGER.getServerX(), EUClient.POSITION_MANAGER.getServerY(),
-                        EUClient.POSITION_MANAGER.getServerZ(), yaw, pitch,
-                        EUClient.POSITION_MANAGER.isServerOnGround(), mc.player.horizontalCollision)));
+                        x, y, z, yaw, pitch, onGround, mc.player.horizontalCollision)));
     }
 
     public void silentRotate(float[] rotations) {
@@ -389,25 +408,50 @@ public class RotationManager implements IMinecraft {
     // "Silent" rotate mode. Sends ServerboundMovePlayerPacket.PosRot immediately (byte-for-byte
     // Nami's own RotationRequestHandler.performSilent()) and arms silentSyncRequired so the
     // sendPosition hook (see that flag's own doc) can keep vanilla's OWN per-tick packet from
-    // contradicting it. The PosRot shape alone, WITHOUT the sendPosition hook, was tried and
-    // reverted twice this session (see git history) -- it's the hook that actually prevents the
-    // flag/stutter-while-moving report, not the packet shape by itself.
+    // contradicting it.
     public void silentRotate(float yawIn, float pitchIn) {
+        if (lastSilentTargetYaw == yawIn && lastSilentTargetPitch == pitchIn) return;
+        lastSilentTargetYaw = yawIn;
+        lastSilentTargetPitch = pitchIn;
         float[] jittered = applyJitter(yawIn, pitchIn);
         final float yaw = jittered[0], pitch = jittered[1];
-        if (serverYaw == yaw && serverPitch == pitch) return;
         lastPacketRotateTime = System.currentTimeMillis();
         silentSyncRequired = true;
+        serverYaw = yaw;
+        serverPitch = pitch;
+
+        double x = (eu.client.pingbypass.PingBypassFlags.proxyForwardingActive && EUClient.PINGBYPASS_CONFIG != null && EUClient.PINGBYPASS_CONFIG.isServer())
+                ? EUClient.POSITION_MANAGER.getServerX() : mc.player.getX();
+        double y = (eu.client.pingbypass.PingBypassFlags.proxyForwardingActive && EUClient.PINGBYPASS_CONFIG != null && EUClient.PINGBYPASS_CONFIG.isServer())
+                ? EUClient.POSITION_MANAGER.getServerY() : mc.player.getY();
+        double z = (eu.client.pingbypass.PingBypassFlags.proxyForwardingActive && EUClient.PINGBYPASS_CONFIG != null && EUClient.PINGBYPASS_CONFIG.isServer())
+                ? EUClient.POSITION_MANAGER.getServerZ() : mc.player.getZ();
+        boolean onGround = (eu.client.pingbypass.PingBypassFlags.proxyForwardingActive && EUClient.PINGBYPASS_CONFIG != null && EUClient.PINGBYPASS_CONFIG.isServer())
+                ? EUClient.POSITION_MANAGER.isServerOnGround() : mc.player.onGround();
+
         eu.client.pingbypass.server.ProxyServerTickListener.allowSend(() ->
                 mc.getConnection().send(new ServerboundMovePlayerPacket.PosRot(
-                        EUClient.POSITION_MANAGER.getServerX(), EUClient.POSITION_MANAGER.getServerY(),
-                        EUClient.POSITION_MANAGER.getServerZ(), yaw, pitch,
-                        EUClient.POSITION_MANAGER.isServerOnGround(), mc.player.horizontalCollision)));
+                        x, y, z, yaw, pitch, onGround, mc.player.horizontalCollision)));
     }
 
-    // Rotate=Packet and Rotate=Silent are both "fire a standalone rotation packet at this target"
-    // -- only the packet shape differs (PosRot vs Rot-only, see silentRotate's own doc). One
-    // dispatcher so every call site just names the mode string instead of re-testing it.
+    // Rotate=Packet and Rotate=Silent are both "fire a standalone rotation packet at this target".
+    // One dispatcher so every call site just names the mode string instead of re-testing it.
+    //
+    // CORRECTED 2026-08-20. This used to claim "only the packet shape differs (PosRot vs Rot-only)".
+    // That was wrong on both counts and misled a previous investigation:
+    //  - BOTH modes send ServerboundMovePlayerPacket.PosRot. Neither sends Rot-only; the Rot
+    //    subclass is never constructed anywhere in this class.
+    //  - PosRot is CORRECT and must stay. Verified against the real nami-public clone:
+    //    RotationRequestHandler.performSilent() sends PosRot too, so silentRotate() already matches
+    //    upstream byte-for-byte. Do NOT "optimise" this to Rot-only -- that would be a divergence
+    //    from nami, not a fix.
+    // The actual difference between the two modes is silentSyncRequired (armed only by
+    // silentRotate) and the sendPosition pitch nudge it drives in ClientPlayerEntityMixin.
+    //
+    // Note on call frequency: nami has NO dedup or coalescing in performSilent() either -- it sends
+    // unconditionally per submit(). Upstream keeps it to one packet per tick purely by CALLER
+    // DISCIPLINE (submit()'s own doc: "YOU SHOULD NEVER SUBMIT MORE THEN ONE DYNAMIC REQUEST"). So
+    // the place to enforce "one rotate per tick" is the calling module, never a coalescer here.
     public void wireRotate(String mode, float[] rotations) {
         if ("Silent".equalsIgnoreCase(mode)) silentRotate(rotations);
         else packetRotate(rotations);

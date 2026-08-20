@@ -82,6 +82,30 @@ public class WorldUtils implements IMinecraft {
             vec3d = vec3d.add(direction.getStepX() / 2.0, direction.getStepY() / 2.0, direction.getStepZ() / 2.0);
         }
 
+        Vec3 playerPos = mc.player.position();
+        double offX = Mth.clamp(playerPos.x - Math.floor(playerPos.x), 0.2, 0.8);
+        double offY = Mth.clamp(playerPos.y - Math.floor(playerPos.y), 0.2, 0.8);
+        double offZ = Mth.clamp(playerPos.z - Math.floor(playerPos.z), 0.2, 0.8);
+
+        Vec3 hitVec = Vec3.atCenterOf(offsetPosition);
+        switch (direction.getOpposite()) {
+            case UP, DOWN -> hitVec = hitVec.add(
+                    offX - 0.5,
+                    direction.getOpposite() == Direction.UP ? 0.5 : -0.5,
+                    offZ - 0.5
+            );
+            case NORTH, SOUTH -> hitVec = hitVec.add(
+                    offX - 0.5,
+                    offY - 0.5,
+                    direction.getOpposite() == Direction.SOUTH ? 0.5 : -0.5
+            );
+            case EAST, WEST -> hitVec = hitVec.add(
+                    direction.getOpposite() == Direction.EAST ? 0.5 : -0.5,
+                    offY - 0.5,
+                    offZ - 0.5
+            );
+        }
+
         // Publish this cell as wanted BEFORE anything else runs this tick -- AutoCrystal reads
         // WorldManager.isReserved() when picking its own placement spot, so it stops re-filling a
         // cell a placement module is actively trying to use instead of winning the whack-a-mole
@@ -90,37 +114,18 @@ public class WorldUtils implements IMinecraft {
         EUClient.WORLD_MANAGER.reservePlacement(position);
 
         // Snapshotted before the rotate, restored after the place, iff RotationsModule.SnapBack is
-        // on -- verbatim from bản gốc 1.21.4's own placeBlock. The port had dropped both this and
-        // the setting itself (see RotationsModule's restore note); packetRotate has no restore of
-        // its own, so without this the server keeps believing the last faked look indefinitely.
+        // on -- verbatim from bản gốc 1.21.4's own placeBlock.
         float prevYaw = EUClient.ROTATION_MANAGER.getServerYaw();
         float prevPitch = EUClient.ROTATION_MANAGER.getServerPitch();
 
-        // 2026-08-15 FIX (reported: Surround/SelfTrap with Rotate off can't place at all on a
-        // native 1.21.x connection, works fine via 1.20.x). Mojang's 1.21.2 networking rewrite
-        // added server-side interaction-consistency validation: ServerboundUseItemOnPacket is
-        // checked against the player's last-KNOWN rotation (from the most recent movement packet
-        // that carried one), and a clicked face too far outside that look gets rejected outright
-        // -- a real vanilla server behavior, not a specific anticheat's. Pre-1.21.2 protocols
-        // never had this check, so ViaFabricPlus's 1.20.x translation never triggers it (the real
-        // server it talks to is native 1.21.x, but nothing in the OLD packet shape asks for the
-        // validation vanilla now gates on). rotate=false used to mean "send no rotation update at
-        // all", which is exactly what a native connection now rejects: the server's last-known
-        // rotation is whatever the camera happened to be facing tick ago, essentially never
-        // pointed at `position`. Silent packet-only rotation (see RotationManager.silentRotate's
-        // own doc) satisfies that server-side check the same way Normal/Packet rotate does,
-        // without moving the camera or touching movement -- exactly what "Rotate off" means to
-        // the user (no VISIBLE rotate), not "tell the server nothing".
-        if (rotate) EUClient.ROTATION_MANAGER.packetRotate(RotationUtils.getRotations(vec3d.x, vec3d.y, vec3d.z));
-        else EUClient.ROTATION_MANAGER.silentRotate(RotationUtils.getRotations(vec3d.x, vec3d.y, vec3d.z));
+        float yaw = (float) eu.client.utils.rotations.RotationUtils.getYRotToVec(mc.player, hitVec);
+        float pitch = (float) eu.client.utils.rotations.RotationUtils.getXRotToVec(mc.player, hitVec);
+        if (rotate) EUClient.ROTATION_MANAGER.silentRotate(yaw, pitch);
+
         if (crystalDestruction) {
             Direction finalDirection = direction;
-            // Retry the instant the server confirms the blocking crystal is actually dead
-            // (WorldManager listens for ClientboundRemoveEntitiesPacket) instead of only waiting
-            // for the caller's own next tick -- shrinks the re-place race window against an enemy
-            // contesting the same cell.
             Runnable retry = () -> placeBlock(position, finalDirection, hand, runnable, rotate, crystalDestruction, render);
-            if (destroyCrystals(position, mc.player.getEyePosition(), vec3d, retry)) return false;
+            if (destroyCrystals(position, mc.player.getEyePosition(), hitVec, retry)) return false;
         }
         if (runnable != null) runnable.run();
 
@@ -134,7 +139,7 @@ public class WorldUtils implements IMinecraft {
         if (!isProxy && sprint) mc.player.connection.send(new ServerboundPlayerCommandPacket(mc.player, ServerboundPlayerCommandPacket.Action.STOP_SPRINTING));
         if (sneak) mc.player.connection.send(new ServerboundPlayerInputPacket(new Input(false, false, false, false, false, true, false)));
 
-        BlockHitResult blockHitResult = new BlockHitResult(vec3d, direction.getOpposite(), offsetPosition, false);
+        BlockHitResult blockHitResult = new BlockHitResult(hitVec, direction.getOpposite(), offsetPosition, false);
         NetworkUtils.sendSequencedPacket(sequence -> new ServerboundUseItemOnPacket(hand, blockHitResult, sequence));
         mc.getConnection().send(new ServerboundSwingPacket(hand));
 
@@ -177,12 +182,12 @@ public class WorldUtils implements IMinecraft {
     // làm được thì client làm được"). AbstractArrow covers both Arrow and SpectralArrow.
     public static boolean isPlaceable(BlockPos position, boolean excludeSelf) {
         if (!mc.level.getBlockState(position).canBeReplaced()) return false;
-        return mc.level.getEntities((Entity) null, new AABB(position), entity -> true).stream().noneMatch(entity -> !(entity instanceof EndCrystal) && !(entity instanceof ExperienceOrb) && !(entity instanceof ItemEntity) && !(entity instanceof net.minecraft.world.entity.projectile.arrow.AbstractArrow) && !(entity.equals(mc.player) && excludeSelf));
+        return mc.level.getEntities((Entity) null, new AABB(position), entity -> true).stream().noneMatch(entity -> !(entity instanceof EndCrystal) && !(entity instanceof ExperienceOrb) && !(entity instanceof ItemEntity) && !(entity instanceof net.minecraft.world.entity.projectile.arrow.AbstractArrow) && !(entity.equals(mc.player) && excludeSelf) && !EntityUtils.isGhost(entity));
     }
 
     public static boolean isCrystalPlaceable(BlockPos position) {
         if (!mc.level.getBlockState(position).canBeReplaced()) return false;
-        return mc.level.getEntities((Entity) null, new AABB(position), entity -> true).stream().noneMatch(entity -> !(entity instanceof EndCrystal) && !(entity instanceof ExperienceOrb) && !(entity instanceof net.minecraft.world.entity.projectile.arrow.AbstractArrow));
+        return mc.level.getEntities((Entity) null, new AABB(position), entity -> true).stream().noneMatch(entity -> !(entity instanceof EndCrystal) && !(entity instanceof ExperienceOrb) && !(entity instanceof net.minecraft.world.entity.projectile.arrow.AbstractArrow) && !EntityUtils.isGhost(entity));
     }
 
     // Hardness-0 blocks (flowers, mushrooms, tall grass, dead bush, saplings, ...) break in a
@@ -256,7 +261,6 @@ public class WorldUtils implements IMinecraft {
         // rotation either -- matched here.
         for (Entity entity : surroundingCrystals) {
             mc.player.connection.send(new ServerboundAttackPacket(entity.getId()));
-            mc.player.connection.send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
             if (retry != null) EUClient.WORLD_MANAGER.onCrystalAttacked(entity.getId(), retry);
         }
         return true;

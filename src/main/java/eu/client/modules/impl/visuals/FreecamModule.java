@@ -3,14 +3,18 @@ package eu.client.modules.impl.visuals;
 import lombok.Getter;
 import lombok.Setter;
 import eu.client.events.SubscribeEvent;
+import eu.client.events.impl.ClientConnectEvent;
 import eu.client.events.impl.KeyboardTickEvent;
+import eu.client.events.impl.PlayerDeathEvent;
 import eu.client.events.impl.TickEvent;
 import eu.client.modules.Module;
 import eu.client.modules.RegisterModule;
+import eu.client.settings.impl.BooleanSetting;
 import eu.client.settings.impl.NumberSetting;
 import eu.client.utils.minecraft.MovementUtils;
 import eu.client.utils.system.MathUtils;
 import net.minecraft.world.entity.player.Input;
+import net.minecraft.util.Mth;
 import org.joml.Vector2d;
 
 @Getter @Setter
@@ -18,6 +22,8 @@ import org.joml.Vector2d;
 public class FreecamModule extends Module {
     public NumberSetting horizontalSpeed = new NumberSetting("HorizontalSpeed", "The speed at which your camera will move horizontally.", 1.0f, 0.1f, 3.0f);
     public NumberSetting verticalSpeed = new NumberSetting("VerticalSpeed", "The speed at which your camera will move vertically.", 0.5f, 0.1f, 3.0f);
+    public BooleanSetting rotate = new BooleanSetting("Rotate", "Rotates your real player model along with the camera.", false);
+    public BooleanSetting shift = new BooleanSetting("Shift", "Allows moving down with shift even when a GUI is open.", false);
 
     private float freeYaw, freePitch;
     private float prevFreeYaw, prevFreePitch;
@@ -29,18 +35,32 @@ public class FreecamModule extends Module {
     public void onTick(TickEvent event) {
         if (mc.player == null) return;
 
+        // Ép xác người thật đứng thẳng mỗi tick để chống lỗi lún Hitbox (Sửa lỗi "Xác vẫn Shift theo")
+        mc.player.setShiftKeyDown(false);
         prevFreeYaw = freeYaw;
         prevFreePitch = freePitch;
 
+        if (rotate.getValue()) {
         freeYaw = mc.player.getYRot();
         freePitch = mc.player.getXRot();
+    }
+}
+    public void onMouseTurn(double cursorDeltaYaw, double cursorDeltaPitch) {
+        float pitchSpeed = (float)cursorDeltaPitch * 0.15F;
+        float yawSpeed = (float)cursorDeltaYaw * 0.15F;
+        
+        this.freePitch = Mth.clamp(this.freePitch + pitchSpeed, -90.0F, 90.0F);
+        this.freeYaw += yawSpeed;
     }
 
     @SubscribeEvent
     public void onKeyboardTick(KeyboardTickEvent event) {
         if (mc.player == null) return;
-
+        
+        float realYaw = mc.player.getYRot(); // 1. Lưu lại hướng nhìn thật của Xác
+        mc.player.setYRot(freeYaw);
         Vector2d motion = MovementUtils.forward(horizontalSpeed.getValue().doubleValue());
+        mc.player.setYRot(realYaw);
 
         prevFreeX = freeX;
         prevFreeY = freeY;
@@ -49,34 +69,20 @@ public class FreecamModule extends Module {
         freeX += motion.x;
         freeZ += motion.y;
 
-        if (mc.options.keyJump.isDown()) freeY += verticalSpeed.getValue().doubleValue();
-        if (mc.options.keyShift.isDown()) freeY -= verticalSpeed.getValue().doubleValue();
+        // Trả lại sự đơn giản nguyên thủy: Jump và Shift dùng chung một logic kiểm tra
+        if (mc.options.keyJump.isDown()) {
+            freeY += verticalSpeed.getValue().doubleValue();
+        }
+        
+        if (mc.options.keyShift.isDown() && (shift.getValue() || mc.screen == null)) {
+            freeY -= verticalSpeed.getValue().doubleValue();
+        }
 
-        // Was forward()/backward()/left()/right() passed through unchanged, only jump/shift/sprint
-        // zeroed -- only stopped the FLOAT moveVector (zeroed below via the event), never these
-        // DISCRETE bits. Anything reading them directly instead of moveVector still saw real WASD:
-        // SprintModule's Grim shouldSprint() (mc.player.input.keyPresses.forward()/backward()/
-        // left()/right(), unconditional of moveVector) forces isSprinting(true) off real input, and
-        // LivingEntity.jumpFromGround()'s sprint-jump boost is itself unconditional of moveVector
-        // (adds real velocity along the current/swapped yaw purely from isSprinting()+yaw) -- so
-        // Sprint Grim could still genuinely translate the REAL hidden player while Freecam was
-        // supposed to have fully suppressed input. Zero every bit, matching the intent already
-        // documented below (event.setMovementForward/Sideways(0)).
+        // Ép mọi tín hiệu đầu vào gửi lên máy chủ thành false
         mc.player.input.keyPresses = new Input(false, false, false, false, false, false, false);
-
-        // Was a direct field write (ClientInputAccessor.setMoveVector(ZERO)) -- that only lasts
-        // until KeyboardInputMixin's own post-listener step, which unconditionally rebuilds
-        // moveVector from event.getMovementForward()/Sideways() whenever event.isCancelled() is
-        // true, REGARDLESS of what any earlier listener already wrote directly to the field. Any
-        // OTHER active silent-rotation (RotationManager's movementFix, e.g. KillAura mid-aim, or
-        // Sprint RageStrict) does exactly that -- reads the event's forward/sideways (still the REAL
-        // WASD values at that point, since the event snapshots them before any listener runs) and
-        // re-cancels with a yaw-corrected nonzero vector, silently overwriting our direct zero right
-        // back to real, moving both the hidden real player (this bug) AND dragging the free camera
-        // toward wherever that other module is aiming (the related KillAura+Freecam report) --
-        // same root cause, one fix. Go through the event's own API instead: canceling with
-        // forward=sideways=0 survives any later movementFix remap regardless of listener order,
-        // since rotating a zero vector by any yaw delta is still zero.
+        mc.player.setShiftKeyDown(false);
+        
+        // Chặn Vector di chuyển
         event.setMovementForward(0.0f);
         event.setMovementSideways(0.0f);
         event.setCancelled(true);
@@ -98,7 +104,16 @@ public class FreecamModule extends Module {
         freeY = prevFreeY = mc.player.getY() + mc.player.getEyeHeight(mc.player.getPose());
         freeZ = prevFreeZ = mc.player.getZ();
     }
+    
+    @SubscribeEvent
+    public void onPlayerDeath(PlayerDeathEvent event) {
+        if (event.getPlayer() == null || mc.player == null) return;
+        setToggled(false);
+    }
 
+    @SubscribeEvent
+    public void onPlayerLogin(ClientConnectEvent event) { setToggled(false); }
+    
     @Override
     public void onDisable() {
         if (mc.player == null || mc.level == null) return;

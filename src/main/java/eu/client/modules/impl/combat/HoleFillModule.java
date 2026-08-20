@@ -60,7 +60,7 @@ public class HoleFillModule extends Module {
     @SubscribeEvent
     public void onPlayerUpdate(PlayerUpdateEvent event) {
         if (shouldRunOnProxy()) return;
-        if (!whileEating.getValue() && mc.player.isUsingItem()) return;
+        if (!whileEating.getValue() && eu.client.utils.minecraft.EntityUtils.isEating()) return;
 
         List<AbstractClientPlayer> players = mc.level.players();
 

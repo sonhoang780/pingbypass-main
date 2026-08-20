@@ -49,14 +49,93 @@ public class RotationUtils implements IMinecraft {
         return new float[]{yaw + (((float) Math.random() - 0.5f) * 4), pitch + (((float) Math.random() - 0.5f) * 4)};
     }
 
-    public static float[] getRotations(Direction direction) {
-        return switch (direction) {
-            case DOWN -> new float[]{mc.player.getYRot(), 90.0f};
-            case UP -> new float[]{mc.player.getYRot(), -90.0f};
-            case NORTH -> new float[]{180.0f, mc.player.getXRot()};
-            case SOUTH -> new float[]{0.0f, mc.player.getXRot()};
-            case WEST -> new float[]{90.0f, mc.player.getXRot()};
-            case EAST -> new float[]{-90.0f, mc.player.getXRot()};
-        };
+    public static double getYRotToVec(Entity entity, Vec3 vec) {
+        double dx = vec.x - entity.getX();
+        double dz = vec.z - entity.getZ();
+        return Mth.wrapDegrees(Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
+    }
+
+    public static double getXRotToVec(Entity entity, Vec3 vec) {
+        double dx = vec.x - entity.getX();
+        double dy = vec.y - (entity.getY() + entity.getEyeHeight());
+        double dz = vec.z - entity.getZ();
+        double dist = Math.sqrt(dx * dx + dz * dz);
+        return Mth.clamp(Mth.wrapDegrees(-Math.toDegrees(Math.atan2(dy, dist))), -90.0, 90.0);
+    }
+
+    public static float[] getExactRotations(Entity entity, Vec3 target) {
+        return new float[]{(float) getYRotToVec(entity, target), (float) getXRotToVec(entity, target)};
+    }
+
+    public static float getYRotToVec(Vec3 from, Vec3 to) {
+        double dx = to.x - from.x;
+        double dz = to.z - from.z;
+        return (float) Mth.wrapDegrees(Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
+    }
+
+    public static float getXRotToVec(Vec3 from, Vec3 to) {
+        double dx = to.x - from.x;
+        double dy = to.y - from.y;
+        double dz = to.z - from.z;
+        return (float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
+    }
+
+    public static Vec3 getClosestPointToEye(Vec3 eyePos, net.minecraft.world.phys.AABB box) {
+        double x = eyePos.x;
+        double y = eyePos.y;
+        double z = eyePos.z;
+
+        final double VEC = 1.0 / 16.0;
+        final double EPS = 1e-9;
+
+        if (eyePos.x < box.minX) x = box.minX;
+        else if (eyePos.x > box.maxX) x = box.maxX;
+
+        if (eyePos.y < box.minY) y = box.minY;
+        else if (eyePos.y > box.maxY) y = box.maxY;
+
+        if (eyePos.z < box.minZ) z = box.minZ;
+        else if (eyePos.z > box.maxZ) z = box.maxZ;
+
+        if (Math.abs(x - box.minX) < EPS) {
+            x = Math.min(box.minX + VEC, box.maxX - EPS);
+        } else if (Math.abs(x - box.maxX) < EPS) {
+            x = Math.max(box.maxX - VEC, box.minX + EPS);
+        }
+
+        if (Math.abs(z - box.minZ) < EPS) {
+            z = Math.min(box.minZ + VEC, box.maxZ - EPS);
+        } else if (Math.abs(z - box.maxZ) < EPS) {
+            z = Math.max(box.maxZ - VEC, box.minZ + EPS);
+        }
+
+        return new Vec3(x, y, z);
+    }
+
+    public static Vec3 getClampClosestPoint(Vec3 eyePos, net.minecraft.world.phys.AABB box) {
+        double x = Mth.clamp(eyePos.x, box.minX, box.maxX);
+        double y = Mth.clamp(eyePos.y, box.minY, box.maxY);
+        double z = Mth.clamp(eyePos.z, box.minZ, box.maxZ);
+        return new Vec3(x, y, z);
+    }
+
+    public static Vec3 getLookVectorFromYRotXRot(float yRot, float xRot) {
+        float f = xRot * ((float) Math.PI / 180F);
+        float f1 = -yRot * ((float) Math.PI / 180F);
+        float f2 = Mth.cos(f1);
+        float f3 = Mth.sin(f1);
+        float f4 = Mth.cos(f);
+        float f5 = Mth.sin(f);
+        return new Vec3(f3 * f4, -f5, f2 * f4);
+    }
+
+    public static net.minecraft.world.phys.EntityHitResult raycastTarget(Vec3 eyePos, Entity target, double reach, float yRot, float xRot) {
+        Vec3 look = getLookVectorFromYRotXRot(yRot, xRot);
+        Vec3 reachEnd = eyePos.add(look.scale(reach));
+        net.minecraft.world.phys.AABB targetBox = target.getBoundingBox();
+        if (targetBox.clip(eyePos, reachEnd).isPresent()) {
+            return new net.minecraft.world.phys.EntityHitResult(target);
+        }
+        return null;
     }
 }

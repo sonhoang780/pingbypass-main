@@ -11,6 +11,7 @@ import eu.client.settings.impl.BooleanSetting;
 import eu.client.settings.impl.CategorySetting;
 import eu.client.settings.impl.ModeSetting;
 import eu.client.settings.impl.NumberSetting;
+import eu.client.modules.impl.player.MultiTaskModule;
 import eu.client.utils.input.KeyboardUtils;
 import eu.client.utils.minecraft.InventoryUtils;
 import eu.client.utils.minecraft.NetworkUtils;
@@ -106,6 +107,12 @@ public class KeyActionModule extends Module {
     }
 
     // ---- Pearls: verbatim ThrowPearlModule.onEnable(), same direct-call treatment.
+    private long lastPearlTime = 0;
+
+    public boolean isPearlActive() {
+        return System.currentTimeMillis() - lastPearlTime < 100;
+    }
+
     private void throwPearl() {
         if (mc.player == null || mc.level == null) return;
 
@@ -116,21 +123,30 @@ public class KeyActionModule extends Module {
 
         if (mc.player.getCooldowns().isOnCooldown(new ItemStack(Items.ENDER_PEARL))) return;
 
-        int slot = InventoryUtils.find(Items.ENDER_PEARL, 0, pearlsSwitch.getValue().equalsIgnoreCase("AltSwap") || pearlsSwitch.getValue().equalsIgnoreCase("AltPickup") ? 35 : 8);
+        lastPearlTime = System.currentTimeMillis();
+
+        // MultiTask (Pearl): while eating, force AltSwap. AltSwap moves the pearl via container SWAP
+        // clicks and never changes the selected slot, so the server never fires stopUsingItem --
+        // unlike Silent/Normal which change the held slot and cancel the eat.
+        MultiTaskModule multiTask = EUClient.MODULE_MANAGER.getModule(MultiTaskModule.class);
+        boolean keepEating = multiTask != null && multiTask.isToggled() && multiTask.pearl.getValue() && mc.player.isUsingItem();
+        String pearlMode = keepEating ? "AltSwap" : pearlsSwitch.getValue();
+
+        int slot = InventoryUtils.find(Items.ENDER_PEARL, 0,
+                (pearlMode.equalsIgnoreCase("AltSwap") || pearlMode.equalsIgnoreCase("AltPickup")) ? 35 : 8);
         int previousSlot = mc.player.getInventory().getSelectedSlot();
 
         if (slot == -1) {
             EUClient.CHAT_MANAGER.tagged("No pearls could be found in your hotbar.", getName());
             return;
         }
-
-        InventoryUtils.switchSlot(pearlsSwitch.getValue(), slot, previousSlot);
-
         if (pearlsRotate.getValue()) EUClient.ROTATION_MANAGER.packetRotate(mc.player.getYRot(), mc.player.getXRot());
-        NetworkUtils.sendSequencedPacket(sequence -> new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, sequence, mc.player.getYRot(), mc.player.getXRot()));
-        mc.getConnection().send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
+        InventoryUtils.switchSlot(pearlMode, slot, previousSlot);
 
-        InventoryUtils.switchBack(pearlsSwitch.getValue(), slot, previousSlot);
+        NetworkUtils.sendSequencedPacket(sequence -> new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, sequence, mc.player.getYRot(), mc.player.getXRot()), this::serverSend);
+        serverSend(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
+
+        InventoryUtils.switchBack(pearlMode, slot, previousSlot);
     }
 
     // Hold/ReverseHold for FireWork/Pearls, same shape as ModuleManager's own module-bind Hold

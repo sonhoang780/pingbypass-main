@@ -12,6 +12,7 @@ import eu.client.modules.impl.player.KeyActionModule;
 import eu.client.settings.impl.*;
 import eu.client.utils.color.ColorUtils;
 import eu.client.utils.minecraft.DamageUtils;
+import eu.client.utils.minecraft.EntityUtils;
 import eu.client.utils.minecraft.InventoryUtils;
 import eu.client.utils.minecraft.PositionUtils;
 import eu.client.utils.minecraft.WorldUtils;
@@ -20,6 +21,7 @@ import eu.client.utils.system.Counter;
 import eu.client.utils.system.Timer;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.item.ItemEntity;
@@ -40,6 +42,8 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.core.Direction;
 import net.minecraft.util.Mth;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.HitResult;
 
 import eu.client.utils.graphics.EspShader;
 
@@ -70,56 +74,22 @@ public class AutoCrystalModule extends Module {
     public BooleanSetting blockDestruction = new BooleanSetting("BlockDestruction", "Places crystals on top of mined blocks in order to damage opponents.", new CategorySetting.Visibility(placeCategory), true);
     public ModeSetting autoSwitch = new ModeSetting("Switch", "Automatically switches to a crystal if you aren't currently holding one.", new CategorySetting.Visibility(placeCategory), "None", new String[]{"None", "Normal", "Silent", "AltSwap"});
     public BooleanSetting swapBack = new BooleanSetting("SwapBack", "Switches back to the item you were holding before the module started switching to crystals, once the module is disabled.", new ModeSetting.Visibility(autoSwitch, "Normal"), false);
+    public NumberSetting swapDelay = new NumberSetting("SwapDelay", "Delay", "The delay in ticks after swapping before placing or attacking crystals.", new CategorySetting.Visibility(placeCategory), 0, 0, 20);
 
     public CategorySetting miscellaneousCategory = new CategorySetting("Miscellaneous", "The category for all miscellaneous settings.");
     public ModeSetting sequential = new ModeSetting("Sequential", "The sequence that the module's processes will be run in.", new CategorySetting.Visibility(miscellaneousCategory), "Strong", new String[]{"None", "Strict", "Strong"});
-    // 2026-08-14: reverted to master (github.com/sonhoang780/pingbypass-main) + diffed against
-    // bản gốc 1.21.4 (Desktop copy). "MovementSync" was a ClientRotationEvent-arbitrated rewrite of
-    // "Normal" invented entirely within this session's branch, never merged to master and with no
-    // equivalent in bản gốc -- removed outright rather than kept as a third option. Normal/Packet
-    // below, and every call site using them, are bản gốc 1.21.4's originals: one yaw swap, only for
-    // the UpdateMovementEvent -> Post window that encloses sendPosition, real input and local
-    // physics untouched. legacyRotate()/legacyQueue is RotationManager's verbatim port of bản gốc's
-    // own rotate()/PriorityBlockingQueue<Rotation> -- same method, kept under its port-era name.
     public ModeSetting rotate = new ModeSetting("Rotate", "Automatically rotates to the crystal whenever attacking or placing.", new CategorySetting.Visibility(miscellaneousCategory), "Normal", new String[]{"None", "Normal", "Packet", "Silent"});
-    // See RotationManager.isRotationReached's own doc -- exposed as its own toggle (on request,
-    // for testing) rather than baked in unconditionally, and now applies to Silent too (was
-    // Normal-only): Silent's own packet is synchronous with the action already, but the SAME
-    // Sprint=Grim-vs-target mismatch this exists for can still land if Sprint's own rotation
-    // packet reaches the wire between silentRotate()'s send and the action packet a few lines
-    // later (both fire off the main/render thread inside the same tick, not atomically).
-    public BooleanSetting rotationReach = new BooleanSetting("RotationReach", "Waits until the server's last-known rotation is actually close to the target before attacking/placing (Normal and Silent only).", new CategorySetting.Visibility(miscellaneousCategory), true);
     public ModeSetting swing = new ModeSetting("Swing", "The hand that will be used for swinging.", new CategorySetting.Visibility(miscellaneousCategory), "Default", new String[]{"Default", "None", "Packet", "Mainhand", "Offhand", "Both"});
     public BooleanSetting yawStep = new BooleanSetting("YawStep", "Performs your rotations over multiple ticks.", new CategorySetting.Visibility(miscellaneousCategory), false);
     public NumberSetting yawStepThreshold = new NumberSetting("YawStepThreshold", "Threshold", "The threshold in order for yaw to be modified.", new BooleanSetting.Visibility(yawStep, true), 75, 1, 180);
     public BooleanSetting raytrace = new BooleanSetting("Raytrace", "Avoids attacking or placing any crystals through walls.", new CategorySetting.Visibility(miscellaneousCategory), false);
-    // Multitarget scans every candidate position against EVERY player in getPlayers() (see
-    // calculateCrystals/calculatePlacements) -- O(positions * players), and calculatePlacements
-    // deliberately doesn't early-exit (see the comment on that method), so cost scales close to
-    // linearly with player count. Async execution (see `asynchronous` below) keeps that off the
-    // render thread on a normal tick, but onDestroyBlock's own recompute (blockDestruction) can
-    // still land on it synchronously in the async-off fallback -- and either way, more targets is
-    // strictly more work somewhere. "All" keeps the existing behavior (best damage across every
-    // player); the other three collapse the player list to exactly one candidate before the
-    // position scan even starts, turning it back into O(positions) regardless of how many
-    // opponents are actually nearby.
     public ModeSetting targetMode = new ModeSetting("Target", "Which player to target when multiple are in range -- narrowing this to one collapses the per-position player scan from O(players) to O(1), the actual fix for multitarget FPS drops.", new CategorySetting.Visibility(miscellaneousCategory), "All", new String[]{"All", "Nearest", "Farthest", "Health"});
     public NumberSetting extrapolation = new NumberSetting("Extrapolation", "Extrapolates the target's position to calculate positions ahead of time.", new CategorySetting.Visibility(miscellaneousCategory), 0, 0, 20);
     public NumberSetting enemyRange = new NumberSetting("EnemyRange", "The maximum distance at which enemies can be at.", new CategorySetting.Visibility(miscellaneousCategory), 10.0, 0.0, 24.0);
     public BooleanSetting chestBreak = new BooleanSetting("ChestBreak", "Prevents other players from getting obsidian from ender chests by destroying the dropped items.", new CategorySetting.Visibility(miscellaneousCategory), false);
-    // Pre-places a crystal on (or beside) whatever SpeedMine is currently mining, a few ticks
-    // before that block actually breaks, then detonates it the instant the block is gone -- so the
-    // explosion lands right as the support block disappears instead of racing calculatePlacements'
-    // full scan + normal place/attack timers AFTER the fact. Reads SpeedMineModule.getPrimary()'s
-    // own progress/speed directly (Action.getTicksRemaining()) rather than duplicating its mining
-    // math here.
     public BooleanSetting mineIgnore = new BooleanSetting("MineIgnore", "Pre-places a crystal on the block SpeedMine is about to break, and detonates it the instant that block is gone.", new CategorySetting.Visibility(miscellaneousCategory), false);
     public NumberSetting mineIgnoreTicks = new NumberSetting("MineIgnoreTicks", "Tick", "How many ticks before the block breaks to place the crystal.", new BooleanSetting.Visibility(mineIgnore, true), 3, 0, 10);
     public BooleanSetting asynchronous = new BooleanSetting("Asynchronous", "Performs calculations on separate threads.", new CategorySetting.Visibility(miscellaneousCategory), true);
-    // 2026-08-15 (requested): "AutoCrystal khi thấy block secondary đã tới thời điểm vỡ thì dừng
-    // lại, để block kia vỡ rồi mới autocrystal tiếp". Both SpeedMine secondary models are covered
-    // (FarReach's Secondary hold/release latch vs the legacy dual-Action pair), same branch
-    // mineTargetSecondary already uses to tell which one is live.
     public BooleanSetting pauseOnSecondaryMine = new BooleanSetting("PauseOnSecondaryMine", "Pauses AutoCrystal for one tick while SpeedMine's secondary block is about to break, so it finishes first.", new CategorySetting.Visibility(miscellaneousCategory), true);
     public BooleanSetting gameLoop = new BooleanSetting("GameLoop", "Runs the module on loop instead of ticks.", new CategorySetting.Visibility(miscellaneousCategory), false);
     public NumberSetting loopDelay = new NumberSetting("LoopDelay", "The delay that has to be waited out before running the module again.", new BooleanSetting.Visibility(gameLoop, true), 50, 0, 1000);
@@ -142,6 +112,13 @@ public class AutoCrystalModule extends Module {
     public NumberSetting health = new NumberSetting("Health", "The health that the target needs to be at in order for the module to start faceplacing.", new BooleanSetting.Visibility(healthPlace, true), 8.0f, 0.0f, 36.0f);
     public BooleanSetting armorPlace = new BooleanSetting("ArmorPlace", "Whether or not to faceplace when the target's armor is low on durability.", new ModeSetting.Visibility(facePlaceMode, "Dynamic"), true);
     public NumberSetting percentage = new NumberSetting("Percentage", "The percentage that one of the target's armor pieces need to be at in order to start faceplacing.", new BooleanSetting.Visibility(armorPlace, true), 10, 1, 100);
+
+    public CategorySetting basePlaceCategory = new CategorySetting("BasePlace", "The category for settings related to placing base obsidian blocks for elevated crystal attacks.");
+    public BooleanSetting basePlace = new BooleanSetting("BasePlace", "Enabled", "Automatically places obsidian base blocks in a line under/next to elevated targets.", new CategorySetting.Visibility(basePlaceCategory), true);
+    public ModeSetting basePlaceSwitch = new ModeSetting("BaseSwitch", "Switch", "Switch mode for placing base blocks.", new CategorySetting.Visibility(basePlaceCategory), "Silent", new String[]{"None", "Normal", "Silent", "AltSwap"});
+    public NumberSetting basePlaceRange = new NumberSetting("BaseRange", "Range", "The maximum distance at which base blocks will be placed.", new CategorySetting.Visibility(basePlaceCategory), 4.5, 0.0, 6.0);
+    public NumberSetting basePlaceDelay = new NumberSetting("BaseDelay", "Delay", "Delay in ticks between placing base blocks.", new CategorySetting.Visibility(basePlaceCategory), 0, 0, 10);
+    public BooleanSetting basePlaceRotate = new BooleanSetting("BaseRotate", "Rotate", "Rotates when placing base blocks.", new CategorySetting.Visibility(basePlaceCategory), false);
 
     public CategorySetting damageCategory = new CategorySetting("Damage", "The category for settings related to damage calculations.");
     public NumberSetting minimumDamage = new NumberSetting("MinimumDamage", "Minimum", "The minimum damage that has to be dealt to enemies.", new CategorySetting.Visibility(damageCategory), 6.0, 0.0, 36.0);
@@ -166,12 +143,6 @@ public class AutoCrystalModule extends Module {
     public NumberSetting iconRadius = new NumberSetting("IconRadius", "The difference between the outer circle and the inner circle.", new BooleanSetting.Visibility(icon, true), 2.0f, 0.0f, 5.0f);
     public ColorSetting iconColor = new ColorSetting("IconColor", "The color that will be used for the crystal icon rendering.", new BooleanSetting.Visibility(icon, true), ColorUtils.getDefaultColor());
 
-    // Animated ESP shaders ported from Sydney-Legacy's "Shaderz" module. Sydney kept these on a
-    // separate hidden CORE module with a per-mode speed slider each (GradSpeed/RainSpeed/GarmSpeed/
-    // ...), every one of them the exact same 0.1-10 multiplier feeding the exact same `time` uniform
-    // -- nine sliders for one number. Collapsed into a single Speed here and hung off the existing
-    // Render category, where every other AutoCrystal render dial already lives, rather than adding a
-    // whole module for settings that only AutoCrystal reads.
     private static final String[] SHADER_MODES = EspShader.MODES;
     private static final String[] SHADER_ACTIVE_MODES = java.util.Arrays.copyOfRange(SHADER_MODES, 1, SHADER_MODES.length);
 
@@ -187,24 +158,8 @@ public class AutoCrystalModule extends Module {
     public ColorSetting shaderGlowColor = new ColorSetting("ShaderGlowColor", "GlowColor", "The color that the glow shader will be tinted with.", new ModeSetting.Visibility(shader, "Glowing"), new ColorSetting.Color(new Color(255, 0, 255, 255), false, false));
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
-    // executor's queue is unbounded and nothing here ever cancels/drains it -- if a task ever
-    // takes longer than the tick interval (GC pause, toggling off mid-task then back on
-    // immediately resubmits without the old one having finished, etc.) tasks pile up and each
-    // toggle-off/on cycle can leave more of a backlog than the last, showing up later as
-    // AutoCrystal getting progressively slower for no visible reason. Track the in-flight task
-    // and skip resubmitting while one is still running instead of queueing another -- only the
-    // latest calculation is ever useful anyway.
     private volatile java.util.concurrent.Future<?> pendingCalc = null;
-    // 2026-08-15: see onUpdateMovement's own doc -- the background executor thread now keeps
-    // itself running continuously (each pass immediately resubmits the next one) instead of
-    // waiting for the next GAME TICK to even consider resubmitting. This flag is the loop's own
-    // off-switch: onDisable()/async-toggled-off clears it so the chain actually stops instead of
-    // resubmitting forever.
     private volatile boolean asyncLoopActive = false;
-    // Reserved-cell snapshot, refreshed every tick on the main thread (cheap: WorldManager's own
-    // set copy) -- the background loop just reads whatever's newest here each pass instead of
-    // being handed a single snapshot per submission. Up to one tick stale at worst, same as
-    // before; only POSITION staleness (the actual reported bug) is what the loop change fixes.
     private volatile Set<BlockPos> latestReservedPlacements = Set.of();
 
     private Runnable attackRunnable = null;
@@ -212,16 +167,20 @@ public class AutoCrystalModule extends Module {
 
     private final Map<Integer, Long> attackedCrystals = new ConcurrentHashMap<>();
     private final Map<BlockPos, Long> placedCrystals = new ConcurrentHashMap<>();
+    // Positions the server confirmed-rejected (placedCrystals' own TTL expired with no live crystal
+    // ever seen there) -- kept out of calculatePlacements briefly so it falls back to the next-best
+    // candidate instead of re-picking the same dead spot every cycle forever. Short-lived on purpose:
+    // this is "the server said no just now", not a permanent judgement about the block.
+    private final Map<BlockPos, Long> placeBlacklist = new ConcurrentHashMap<>();
+    private static final long PLACE_BLACKLIST_MS = 1500L;
     private final Map<BlockPos, Long> countedCrystals = new ConcurrentHashMap<>();
 
     private final Timer attackTimer = new Timer();
     private final Timer placeTimer = new Timer();
     private final Timer facePlaceTimer = new Timer();
     private final Timer loopTimer = new Timer();
-    // Raw monotonic counters (never TTL-cleared, unlike attackedCrystals/placedCrystals) --
-    // ping*2 as the map cleanup TTL means TTL=0 whenever ping reads 0 (e.g. before the first
-    // real keepalive round-trip completes early in a session), which empties those maps
-    // instantly and made the state log always show 0 regardless of what was really happening.
+    private final Timer swapTimer = new Timer();
+    private int lastSelectedSlot = -1;
     private long totalPlaces = 0;
     private long totalAttacks = 0;
 
@@ -236,23 +195,10 @@ public class AutoCrystalModule extends Module {
     private EndCrystal attackTarget = null;
     private PlaceTarget placeTarget = null;
     private PlaceTarget mineTarget = null;
-    // 2026-08-15 FIX (reported: "block xanh vỡ trước, block đỏ vỡ sau, AutoCrystal lại đợi 2
-    // block vỡ hết mới autocrystal" -- SpeedMine Double breaking 2 blocks at once). mineTarget
-    // above is (and always was) computed from SpeedMineModule.getPrimary() ONLY -- see
-    // runCalculation. Whichever of primary/secondary happens to break FIRST, if it's the
-    // secondary, its position never matched mineTarget's tracked exception at all, so
-    // onDestroyBlock's own staleness check discarded it as unrelated and never reacted --
-    // looked exactly like "waiting for both", when really it was just never watching the
-    // secondary block in the first place. A second tracked target for the secondary closes that.
     private PlaceTarget mineTargetSecondary = null;
 
-    // MineIgnore tracking: which SpeedMine target we've already pre-placed a crystal for, and where
-    // that crystal actually landed (may not be directly above minePos -- see mineIgnoreTick).
-    // Cleared whenever SpeedMine stops mining that exact block (target changed/cancelled) or once
-    // it breaks and the crystal's been detonated.
     private BlockPos mineIgnoreMinedPos = null;
     private BlockPos mineIgnorePlacedPos = null;
-
 
     private String calculationTime = "0.00ms";
     private int calculationCount = 0;
@@ -264,76 +210,68 @@ public class AutoCrystalModule extends Module {
     private int highestID = -100000;
     private int kickTicks = 0;
 
-    // Ported from Sydney-Legacy: getPlayers() rebuilt the FULL player list (mc.level.players()
-    // iteration + isAlive + distance + FRIEND_MANAGER string lookup per player) from scratch on
-    // every call -- and it's called up to 3x per tick here (attack calc, place calc, and again for
-    // blockDestruction's mineTarget calc), all within the same tick where the world state hasn't
-    // meaningfully changed. Cache for a short TTL (50ms, same as Sydney -- short enough that a
-    // player actually moving/dying/leaving range is still picked up within a couple of ticks, long
-    // enough to collapse those redundant rebuilds into one per real update).
+
     private List<Player> cachedPlayers = new ArrayList<>();
     private long lastPlayerCacheTime = 0L;
     private static final long PLAYER_CACHE_DURATION = 50L;
 
-    // SwapBack (Switch=Normal only): captured the FIRST time we switch away from a non-crystal item
-    // and left alone on every placement after that -- placeCrystals() reads the CURRENT selected slot
-    // as "previousSlot" each call, which after the first switch would just be the crystal slot itself,
-    // not the real original item. Restored once, when the module is disabled, not after every place.
+    private int basePlaceTicks = 0;
     private int savedSlot = -1;
+
+    private boolean isDead() {
+        if (mc.player == null || mc.level == null) return true;
+        if (!mc.player.isAlive() || mc.player.isDeadOrDying() || mc.player.getHealth() <= 0.0f) return true;
+        if (mc.screen instanceof net.minecraft.client.gui.screens.DeathScreen) return true;
+        return false;
+    }
 
     @SubscribeEvent
     public void onPlayerUpdate(PlayerUpdateEvent event) {
         if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
-        if (mc.player == null || mc.level == null) return;
+        if (isDead()) {
+            attackRunnable = null;
+            placeRunnable = null;
+            target = null;
+            placeTarget = null;
+            attackTarget = null;
+            mineTarget = null;
+            placedCrystals.clear();
+            placeBlacklist.clear();
+            attackedCrystals.clear();
+            countedCrystals.clear();
+            EUClient.RENDER_MANAGER.setRenderPosition(null);
+            return;
+        }
 
-        // ping*2 alone has no floor -- at low/near-zero ping (e.g. a VPS colocated with the
-        // target server) this drops to a handful of ms, LESS than the ~50ms minimum the real
-        // server needs just to process the action and tick out a response (one server tick,
-        // regardless of network latency). The tracking entry then expires before the server's
-        // own confirmation could ever arrive, making "did I just place/attack this" unreliable
-        // on a per-action basis -- sometimes the timing lines up and it works, sometimes it
-        // doesn't, which is exactly what shows up as CPS randomly fluctuating even with a
-        // perfectly stable, near-zero connection. Floor it at one server tick's worth.
+        int currentSlot = mc.player.getInventory().getSelectedSlot();
+        if (lastSelectedSlot != -1 && lastSelectedSlot != currentSlot) {
+            swapTimer.reset();
+        }
+        lastSelectedSlot = currentSlot;
+
         long minTtl = 50L;
         attackedCrystals.entrySet().removeIf(entry -> System.currentTimeMillis() - entry.getValue() > Math.max(EUClient.SERVER_MANAGER.getPing() * 2L, minTtl));
-        // placedCrystals specifically has to OUTLIVE the round trip it exists to bridge:
-        // place() records the position, and onEntitySpawn/calculateCrystals then require
-        // placedCrystals.containsKey(crystal.blockPosition().below()) to recognise the crystal
-        // the server eventually spawns there as "ours" and instant-attack it. That spawn packet
-        // can't come back faster than (proxy->server + one server tick + server->proxy), which
-        // on any real connection is well past the 50ms floor the other two maps use -- so the
-        // entry was usually already evicted by the time its own crystal arrived. The
-        // instant-attack never matched, the Strong-sequential place->attack->place chain never
-        // started, and the one crystal sitting there unattacked became an "obstruction" in
-        // calculatePlacements after 15 ticks, blocking that position for good: place exactly one
-        // crystal, then stall. Give this map a floor that actually covers a full round trip.
         long placedTtl = Math.max(EUClient.SERVER_MANAGER.getPing() * 2L, 500L)
                 + (long) ((20 - attackSpeed.getValue().floatValue()) * 50L);
-        // Don't drop an expired entry while a live EndCrystal is STILL sitting exactly where we
-        // placed one -- that used to permanently strand it. attackCrystals()'s main scan (used
-        // whenever some OTHER placement target is also available this tick, i.e. flag=false)
-        // only recognises a crystal as "ours" via this map; once the entry aged out, an
-        // un-detonated self-placed crystal (target moved away before the attack landed, attack
-        // briefly blocked by something else, whatever delayed it past the round-trip TTL) became
-        // indistinguishable from a stranger's crystal -- skipped by the main scan forever, and
-        // only reachable by the obstruction fallback, which itself only runs when NO alternative
-        // placement exists. Reported: a crystal sitting untouched while the module moved on to
-        // place fresh ones elsewhere, clearable only by attacking it by hand. Keep refreshing the
-        // timestamp instead of removing as long as the crystal is provably still there and alive.
         placedCrystals.entrySet().removeIf(entry -> {
             if (System.currentTimeMillis() - entry.getValue() <= placedTtl) return false;
 
             boolean stillLive = mc.level.getEntities((Entity) null, new AABB(entry.getKey().above()), e -> e instanceof EndCrystal)
                     .stream().anyMatch(Entity::isAlive);
             if (stillLive) {
-                // JDK25 ConcurrentHashMap.removeIf tests against a throwaway immutable
-                // entry (AbstractMap$SimpleImmutableEntry) -- setValue() on it throws
-                // UnsupportedOperationException. Write back through the map itself instead.
                 placedCrystals.put(entry.getKey(), System.currentTimeMillis());
                 return false;
             }
+
+            // Confirmed rejection: we sent the place packet, waited a full ack window (ping-scaled),
+            // and the server never actually spawned a crystal here. Obsidian's still there and
+            // nothing else about the candidate looks invalid, so without this it just wins
+            // calculatePlacements again next cycle -- reported as "AutoCrystal keeps trying a spot
+            // the server won't allow, best-damage cell manual-placing fine elsewhere".
+            placeBlacklist.put(entry.getKey(), System.currentTimeMillis());
             return true;
         });
+        placeBlacklist.entrySet().removeIf(entry -> System.currentTimeMillis() - entry.getValue() > PLACE_BLACKLIST_MS);
         countedCrystals.entrySet().removeIf(entry -> System.currentTimeMillis() - entry.getValue() > Math.max(EUClient.SERVER_MANAGER.getPing() * 2L, minTtl));
 
         crystalsPerSecond = crystalCounter.getCount();
@@ -343,43 +281,13 @@ public class AutoCrystalModule extends Module {
         run();
     }
 
-    // The actual calc-trigger used to sit in onPlayerUpdate above, right where the TTL cleanup
-    // is -- but WorldManager.getReservedPlacements() is what stops this module and a placement
-    // module (SelfFill/Surround/...) whack-a-moling the same cell, and that only works if the
-    // OTHER module has already reserved its cell for the tick before this one reads it. Both
-    // this module and Surround/SelfFill subscribe to the SAME PlayerUpdateEvent -- with the calc
-    // submitted (async) from INSIDE that handler, the background thread could start reading
-    // getReservedPlacements() while OTHER modules' own PlayerUpdateEvent handlers for this same
-    // tick hadn't run yet (dispatch order between modules isn't something either side controls),
-    // seeing an empty/stale set and picking the exact cell Surround was about to reserve --
-    // reported as Surround's render position flickering nonstop despite the reservation check
-    // existing. UpdateMovementEvent fires later, from the player entity's own tick, strictly
-    // after every module's PlayerUpdateEvent handler for this tick has already run -- moving the
-    // submission here (not the attack/place EXECUTION further below, unrelated) guarantees any
-    // reservation made this tick is visible before the read.
-    // 2026-08-15 FIX (reported: can't place/break while moving with Asynchronous on -- target
-    // chronically stale/out-of-range). The old design resubmitted the background calc at most
-    // once per GAME TICK, and only once the PREVIOUS pass had finished -- so freshness was capped
-    // at "once per completed calculation", and every tick in between kept reading a
-    // placeTarget/mineTarget computed against wherever the player WAS during the last pass, not
-    // where they are now. calculatePlacements already reads mc.player's position LIVE, every
-    // iteration -- the actual fix is keeping the background thread running CONTINUOUSLY (each
-    // pass immediately kicks off the next one, see asyncLoopStep) instead of gating resubmission
-    // on tick timing. Freshness is now bounded by how fast one scan completes, not by the tick
-    // rate -- still entirely off the main/render thread, which only ever does the cheap
-    // reservedPlacements snapshot below.
     @SubscribeEvent
     public void onUpdateMovement(UpdateMovementEvent event) {
         if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
-        if (mc.player == null || mc.level == null) return;
+        if (isDead()) return;
 
         mineIgnoreTick();
 
-        // Snapshot NOW, synchronously, on the main thread -- see the big comment on the
-        // (BlockPos, Set<BlockPos>) overload of calculatePlacements for why a live read from
-        // inside the background loop is a race against WorldManager's per-tick clear(). Refreshed
-        // every tick regardless of where the loop currently is -- its next pass just picks up
-        // whatever's newest here.
         latestReservedPlacements = Set.copyOf(EUClient.WORLD_MANAGER.getReservedPlacements());
 
         if (asynchronous.getValue()) {
@@ -393,11 +301,6 @@ public class AutoCrystalModule extends Module {
         }
     }
 
-    // One pass, then immediately resubmits itself (still on the SAME single background thread --
-    // never more than one calculation in flight, same invariant the old isDone() gate enforced,
-    // just without waiting for a tick to re-arm it) as long as the module still wants async
-    // running. asyncLoopActive is the off-switch onDisable()/the sync-mode branch above use to
-    // actually stop the chain instead of it resubmitting forever.
     private void asyncLoopStep() {
         if (!asyncLoopActive || !asynchronous.getValue()) {
             asyncLoopActive = false;
@@ -426,10 +329,6 @@ public class AutoCrystalModule extends Module {
 
         target = placeTarget == null ? null : placeTarget.getPlayer();
 
-        // Verbatim original condition (blockDestruction && asynchronous) -- in the sync branch
-        // this is always skipped, matching the old behavior exactly: onDestroyBlock's own
-        // `stale && !asynchronous.getValue()` fallback is what keeps mineTarget fresh when async
-        // is off, not this method.
         if (blockDestruction.getValue() && async) {
             SpeedMineModule module = EUClient.MODULE_MANAGER.getModule(SpeedMineModule.class);
             BlockPos position = null;
@@ -437,10 +336,6 @@ public class AutoCrystalModule extends Module {
             if (module.getPrimary() != null && module.getPrimary().isMining()) position = module.getPrimary().getPosition();
             if (position != null) mineTarget = calculatePlacements(position, reservedPlacements);
 
-            // 2026-08-15 FIX: was primary-only -- see mineTargetSecondary's own field doc. Double
-            // mode's second block lives in a different field depending on FarReach (Secondary's
-            // hold/release latch model vs the plain dual-Action legacySecondary), same branch
-            // onPlayerUpdate itself already uses to decide which one is live.
             BlockPos secondaryPosition = null;
             if (module.farReach.getValue()) {
                 if (module.getSecondary() != null && module.getSecondary().isMining()) secondaryPosition = module.getSecondary().getPosition();
@@ -454,7 +349,7 @@ public class AutoCrystalModule extends Module {
     @SubscribeEvent
     public void onGameLoop(GameLoopEvent event) {
         if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
-        if (mc.player == null || mc.level == null) return;
+        if (isDead()) return;
         if (!gameLoop.getValue()) return;
         if (!loopTimer.hasTimeElapsed(loopDelay.getValue().longValue()))
             return;
@@ -474,10 +369,21 @@ public class AutoCrystalModule extends Module {
     }
 
     private void run() {
+        if (isDead()) return;
         if (pauseForSecondaryMine()) return;
 
         attackRunnable = null;
         placeRunnable = null;
+
+        if (basePlace.getValue()) {
+            if (basePlaceTicks < basePlaceDelay.getValue().intValue()) {
+                basePlaceTicks++;
+            } else {
+                if (executeBasePlace()) {
+                    basePlaceTicks = 0;
+                }
+            }
+        }
 
         if (sequential.getValue().equalsIgnoreCase("None")) {
             if (sequenceAttack) {
@@ -500,44 +406,28 @@ public class AutoCrystalModule extends Module {
         }
     }
 
-    // 2026-08-15 (requested): let SpeedMine's secondary block finish breaking before AutoCrystal
-    // fires again, instead of racing it. Secondary (FarReach on) has no getTicksRemaining() of
-    // its own -- getProgress() (0..1, clamped) is the closest equivalent, so that branch uses a
-    // ratio threshold instead of an exact tick count.
-    private static final int SECONDARY_PAUSE_TICKS = 2;
+
     private static final float SECONDARY_PAUSE_PROGRESS = 0.85f;
 
     private boolean pauseForSecondaryMine() {
         if (!pauseOnSecondaryMine.getValue()) return false;
 
         SpeedMineModule module = EUClient.MODULE_MANAGER.getModule(SpeedMineModule.class);
+        if (module == null) return false;
+
         if (module.farReach.getValue()) {
             SpeedMineModule.Secondary secondary = module.getSecondary();
-            return secondary != null && secondary.getProgress() >= SECONDARY_PAUSE_PROGRESS;
+            return secondary != null && secondary.isMining() && secondary.getProgress() >= SECONDARY_PAUSE_PROGRESS;
         } else {
             SpeedMineModule.Action legacySecondary = module.getLegacySecondary();
-            return legacySecondary != null && legacySecondary.isMining() && legacySecondary.getTicksRemaining() <= SECONDARY_PAUSE_TICKS;
+            return legacySecondary != null && legacySecondary.isMining() && legacySecondary.getProgress() >= SECONDARY_PAUSE_PROGRESS;
         }
     }
-
-    // See rotationReach setting's own doc.
-    private boolean rotationGated() {
-        if (!rotationReach.getValue()) return false;
-        return rotate.getValue().equalsIgnoreCase("Normal") || rotate.getValue().equalsIgnoreCase("Silent");
-    }
-
-    // 2026-08-15: the Rotate=Normal + MovementFix + Sprint=Grim + AutoCrystal diagonal-flag combo
-    // (see this file's git history / SESSION_2026-08-15_VIA121X_FLAG_FIX.md) used to be worked
-    // around by deferring AutoCrystal's action a whole tick whenever Sprint's Grim mode won
-    // rotation arbitration that tick. Removed on request: MovementFix already keeps position/yaw
-    // resynced the same way Sprint=Legit does (which never needed this defer at all, since Legit
-    // never takes ClientRotationEvent ownership), so the extra tick of latency is no longer
-    // buying anything Sprint needs.
 
     @SubscribeEvent
     public void onUpdateMovement$POST(UpdateMovementEvent.Post event) {
         if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
-        if (mc.player == null || mc.level == null) return;
+        if (isDead()) return;
 
         if (attackRunnable != null) attackRunnable.run();
         if (placeRunnable != null) placeRunnable.run();
@@ -546,7 +436,8 @@ public class AutoCrystalModule extends Module {
     @SubscribeEvent
     public void onEntitySpawn(EntitySpawnEvent event) {
         if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
-        if (mc.player == null || mc.level == null) return;
+        if (isDead() || getPlayers().isEmpty()) return;
+        if (shouldPause("Attack")) return;
 
         if (!attack.getValue() || !instant.getValue()) return;
         if (!attackTimer.hasTimeElapsed(1000.0f - attackSpeed.getValue().floatValue() * 50.0f))
@@ -564,7 +455,6 @@ public class AutoCrystalModule extends Module {
         float[] entityAttackRotations = RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition()));
         if (rotate.getValue().equalsIgnoreCase("Packet") || rotate.getValue().equalsIgnoreCase("Silent")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), entityAttackRotations);
         if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(crystal.blockPosition())), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
-        if (rotationGated() && !EUClient.ROTATION_MANAGER.isRotationReached(entityAttackRotations)) return;
 
         attack(crystal);
 
@@ -577,15 +467,10 @@ public class AutoCrystalModule extends Module {
     @SubscribeEvent
     public void onDestroyBlock(DestroyBlockEvent event) {
         if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
-        if (mc.player == null || mc.level == null) return;
-
+        if (isDead() || getPlayers().isEmpty()) return;
+        if (shouldPause("Place")) return;
         kickTicks = 0;
 
-        // Independent of blockDestruction below -- MineIgnore pre-places on the block BEFORE it
-        // breaks (see mineIgnoreTick()), so by the time this fires the crystal's already down and
-        // waiting; all that's left is detonating it, immediately, no timer/switch/range gate (the
-        // whole point is landing the hit the instant the support block is gone, not racing the
-        // normal attack pipeline's own timers for it).
         if (mineIgnore.getValue() && event.getPosition() != null && event.getPosition().equals(mineIgnoreMinedPos)) mineIgnoreDetonate();
 
         if (!blockDestruction.getValue()) return;
@@ -601,22 +486,6 @@ public class AutoCrystalModule extends Module {
         if (!autoSwitch.getValue().equalsIgnoreCase("None") && slot == -1 && (mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL))
             return;
 
-        // calculatePlacements() is the full, non-early-exit radius x players scan (see the big
-        // comment on that method) -- fine off the async executor thread (onUpdateMovement already
-        // recomputes it there every tick when blockDestruction+asynchronous are both on), but
-        // DestroyBlockEvent fires on whatever thread SpeedMine's own block-breaking runs on (the
-        // main/render thread), repeatedly, every block broken. Recomputing it HERE too meant that
-        // cost landed on the render thread directly, scaling with target count -- reported as severe
-        // FPS drop with multiple real players nearby. Only fall back to a synchronous recompute when
-        // there genuinely isn't an async one already keeping this fresh.
-        //
-        // 2026-08-15 FIX (reported: "SpeedMine Double, block xanh vỡ trước, block đỏ vỡ sau, mà
-        // AutoCrystal đợi 2 block vỡ hết mới phản ứng"). This used to check ONLY this.mineTarget,
-        // which runCalculation only ever populates from SpeedMine's PRIMARY -- whichever block
-        // broke FIRST, if it was the secondary, its position never matched and got treated as
-        // stale/unrelated every time, so AutoCrystal silently never reacted to it at all (looked
-        // like "waiting for both" when it was really "only ever watching one of the two"). Try
-        // BOTH tracked targets against the block that actually just broke.
         PlaceTarget primaryCandidate = this.mineTarget == null ? null : this.mineTarget.clone();
         PlaceTarget secondaryCandidate = this.mineTargetSecondary == null ? null : this.mineTargetSecondary.clone();
 
@@ -626,14 +495,8 @@ public class AutoCrystalModule extends Module {
         } else if (secondaryCandidate != null && secondaryCandidate.getPosition() != null && minedPosition.equals(secondaryCandidate.getException())) {
             mineTarget = secondaryCandidate;
         } else if (!asynchronous.getValue()) {
-            // blockDestruction is already guaranteed true here (checked above) -- asynchronous is
-            // the only thing deciding whether onUpdateMovement is already keeping these fresh off
-            // this thread.
             mineTarget = calculatePlacements(minedPosition);
         } else {
-            // Async on, but neither tracked target's last snapshot was for this exact block (its
-            // own async pass just hasn't landed yet) -- fall back to whichever still exists
-            // rather than dropping the reaction outright.
             mineTarget = primaryCandidate != null ? primaryCandidate : secondaryCandidate;
         }
         if (mineTarget == null || mineTarget.getPosition() == null) {
@@ -643,73 +506,53 @@ public class AutoCrystalModule extends Module {
 
         BlockPos position = mineTarget.getPosition();
 
-        // 2026-08-15 FIX (reported: "place render đặt chỗ xa lắc xa lơ" while moving, correct
-        // while standing still). calculatePlacements can run off the async executor thread (see
-        // its own doc) and land here a tick or more after the target was actually computed --
-        // while moving, the player can easily have covered several blocks in that gap, so a
-        // position that WAS in range the moment it was calculated is stale and out of PlaceRange
-        // by the time it gets here. The range check below already correctly refuses to ACT on a
-        // stale target (no packet ever goes out for it) -- the bug was only that the render call
-        // used to run BEFORE that check, so the stale ghost position still got drawn every time,
-        // even though nothing was ever placed there. Standing still hides the bug entirely
-        // (position never goes stale if the player never moves), which is exactly why it only
-        // showed up while moving. Not Rotate=Silent's doing -- Silent never touches mc.player's
-        // real position, this is the same staleness for every Rotate mode.
         if (mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeRange.getValue().doubleValue())) {
             EUClient.RENDER_MANAGER.setRenderPosition(null);
             return;
         }
         EUClient.RENDER_MANAGER.setRenderPosition(position);
-        // `position` is the SOLID support block (obsidian/bedrock) the crystal sits on. Plain
-        // canSee(position) raycasts to that block's own center, so it's hitting that exact block
-        // and never reports MISS -- "!canSee" was true unconditionally for every candidate, so
-        // beyond PlaceWallsRange (4.5 blocks by default -- easy to be past that just standing
-        // normally near a target) Raytrace's fallback gate silently rejected every single
-        // placement regardless of actual walls. A prior fix raycast to position.above() instead
-        // (the air cell the crystal spawns into) -- but that demands line of sight to empty air a
-        // real player never needs: vanilla lets you place by clicking ANY visible face of the
-        // support block, underside included (standing directly under an overhang and placing on
-        // the block above your head works by hand, reported broken here). canSeeBlock(position)
-        // checks the actual thing that matters -- is there a WALL between the eye and this block,
-        // not "is the specific cell above it in view".
+
         if (!WorldUtils.canSeeBlock(position) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue())))
             return;
 
-        float[] placeRotations = calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0));
-        if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(placeRotations, this, EUClient.ROTATION_MANAGER.getLegacyModulePriority(this) + 1); // place outranks attack, same +1 as ban goc 1.21.4
-        // 2026-08-15: was `!equalsIgnoreCase("None")` (bản gốc 1.21.4's own verbatim behaviour --
-        // fires packetRotate at this SAME target even in Normal mode, on top of the legacyRotate
-        // line above). Deliberate deviation from bản gốc, on request: that duplicate is an EXTRA
-        // ServerboundMovePlayerPacket.PosRot outside the tick's normal sendPosition() cadence --
-        // invisible to a 1.20.x-downgraded connection (ViaFabricPlus strips
-        // ServerboundClientTickEndPacket, so the server has no per-tick packet count to compare
-        // against) but exposed on a 1.21.x connection (native tick-end marker lets the server see
-        // an extra position-carrying packet landed outside the accounted-for tick) -- reported
-        // live as "Normal + MovementFix ổn ở via 1.20.x, flag khi di chuyển + AutoCrystal ở via
-        // 1.21.x". legacyRotate's own queued rotation already reaches the wire next tick through
-        // the ordinary sendPosition() packet; Packet mode has no legacyRotate call at all and
-        // still needs this line as its only delivery mechanism.
-        if (rotate.getValue().equalsIgnoreCase("Packet") || rotate.getValue().equalsIgnoreCase("Silent")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), placeRotations);
+        // A crystal already sitting where we're about to place (leftover from a previous
+        // placement) has to be attacked THIS tick, not aimed-at-then-placed-over. Previously this
+        // rotated toward placeRotations (the placement point) AND, if a crystal existed, rotated
+        // AGAIN toward the crystal right after -- two real rotation packets (Silent/Packet) at two
+        // different targets back-to-back, then an attack fired off the second one with no throttle
+        // of its own (bypassed attack()'s attackTimer/attackedCrystals dedup entirely, raw
+        // ServerboundAttackPacket+Swing send). That double-rotate-then-unthrottled-attack pattern
+        // is what nami never does -- doPlace/doBreak are separate ticks gated by their own
+        // placeTimer/breakTimer, and doBreak only ever submits one rotation, at the crystal.
+        //
+        // Now: attack existing crystal -> rotate once at IT, route through attack() (shares the
+        // same throttle/dedup as every other attack call site), and skip the placement point
+        // entirely this tick. Only rotate toward the placement point when there is nothing to
+        // attack there, since we're actually about to place() at that rotation below.
+        EndCrystal existingCrystal = null;
+        for (Entity entity : mc.level.getEntities((Entity) null, new AABB(position.above()), entity -> true)) {
+            if (entity instanceof EndCrystal crystal) {
+                existingCrystal = crystal;
+                break;
+            }
+        }
 
-        for (Entity entity : mc.level.getEntities((Entity) null, new AABB(position.above()), entity -> true).stream().filter(entity -> entity instanceof EndCrystal).toList()) {
-            float[] entityRotations = RotationUtils.getRotations(entity);
-            if (!rotate.getValue().equalsIgnoreCase("None")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), entityRotations);
-            // See RotationManager.isRotationReached's own doc -- Normal only, Packet/Silent already
-            // sent synchronously on the line above.
-            if (rotationGated() && !EUClient.ROTATION_MANAGER.isRotationReached(entityRotations)) break;
+        if (existingCrystal != null) {
+            float[] entityRotations = RotationUtils.getRotations(existingCrystal);
+            if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(entityRotations, this, EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
+            if (rotate.getValue().equalsIgnoreCase("Packet") || rotate.getValue().equalsIgnoreCase("Silent")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), entityRotations);
 
-            mc.player.connection.send(new ServerboundAttackPacket(entity.getId()));
-            mc.player.connection.send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
-
-            break;
+            attack(existingCrystal);
+        } else {
+            float[] placeRotations = calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0));
+            if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(placeRotations, this, EUClient.ROTATION_MANAGER.getLegacyModulePriority(this) + 1);
+            if (rotate.getValue().equalsIgnoreCase("Packet") || rotate.getValue().equalsIgnoreCase("Silent")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), placeRotations);
         }
 
         SpeedMineModule module = EUClient.MODULE_MANAGER.getModule(SpeedMineModule.class);
         boolean flag = module.switchReset.getValue() && (module.switchMode.getValue().equalsIgnoreCase("Normal") || module.switchMode.getValue().equalsIgnoreCase("AltSwap") || module.switchMode.getValue().equalsIgnoreCase("AltPickup"));
 
-        if (rotationGated() && !EUClient.ROTATION_MANAGER.isRotationReached(placeRotations)) return;
-
-        if (!autoSwitch.getValue().equalsIgnoreCase("None") &&  mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
+        if (!autoSwitch.getValue().equalsIgnoreCase("None") && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
             if (!flag && autoSwitch.getValue().equalsIgnoreCase("Normal") && swapBack.getValue() && savedSlot == -1) savedSlot = previousSlot;
             InventoryUtils.switchSlot(flag ? "AltSwap" : autoSwitch.getValue(), slot, previousSlot);
             switched = true;
@@ -743,9 +586,27 @@ public class AutoCrystalModule extends Module {
     }
 
     @SubscribeEvent
+    public void onPacketSend(PacketSendEvent event) {
+        if (event.getPacket() instanceof net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket) {
+            swapTimer.reset();
+        }
+    }
+
+    @SubscribeEvent
     public void onPlayerDeath(PlayerDeathEvent event) {
         if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
         kickTicks = 0;
+        attackRunnable = null;
+        placeRunnable = null;
+        target = null;
+        placeTarget = null;
+        attackTarget = null;
+        mineTarget = null;
+        placedCrystals.clear();
+        placeBlacklist.clear();
+        attackedCrystals.clear();
+        countedCrystals.clear();
+        EUClient.RENDER_MANAGER.setRenderPosition(null);
     }
 
     @SubscribeEvent
@@ -756,8 +617,6 @@ public class AutoCrystalModule extends Module {
 
     @Override
     public void onDisable() {
-        // Must clear BEFORE cancel() -- asyncLoopStep only stops resubmitting once it observes
-        // this false, so setting it after would still let an in-flight pass queue one more.
         asyncLoopActive = false;
         if (pendingCalc != null) {
             pendingCalc.cancel(false);
@@ -797,34 +656,21 @@ public class AutoCrystalModule extends Module {
         lastPlayerCacheTime = 0L;
     }
 
-
     @Override
     public String getMetaData() {
         return calculationTime + ", " + calculationCount + ", " + calculationDamage + ", " + crystalsPerSecond;
     }
 
     private void attackCrystals() {
+        if (isDead()) return;
+        if (shouldPause("Attack")) return;
+        if (getPlayers().isEmpty()) {
+            attackTarget = null;
+            return;
+        }
+
         EndCrystal overrideCrystal = null;
 
-        // obstructions accumulates EVERY blocked candidate scanned, not just whatever's in the
-        // way of the spot we actually ended up placing at. `flag` switches the SCAN SOURCE to
-        // obstructions-only for the case nothing could be placed anywhere; below that, `isKnown`
-        // separately recognizes an obstruction candidate as attack-worthy even while scanning
-        // entitiesForRendering() with getPosition() != null (an alternate spot WAS found).
-        //
-        // Was: only ever attack-worthy when getPosition() == null (nothing placeable anywhere).
-        // A crystal blocking one candidate (someone else's, a stale manually-placed one, whatever)
-        // that ISN'T also in placedCrystals got permanently ignored the instant calculatePlacements
-        // found ANY other valid spot for the target -- reported live: a FakePlayer target standing
-        // still, a manually-placed crystal sitting right next to it (never went through place(),
-        // so never entered placedCrystals), AutoCrystal found a different spot elsewhere and just
-        // left the manual crystal alone forever, attackable only by hand. calculatePlacements
-        // still recorded it in pt.obstructions every single cycle (see its own `exception == null
-        // && !obstructingCrystals.isEmpty()` branch, unconditional on whether optimalPosition was
-        // also found) -- this just never consulted that list unless it was the ONLY thing in `pt`.
-        // Attacking a real, currently-blocking obstruction doesn't cost anything even when a
-        // different spot also worked -- it's a separate action, not a hijack -- so recognize it
-        // here too instead of only in the getPosition()==null fallback.
         PlaceTarget pt = this.placeTarget;
         boolean flag = pt != null && pt.getPosition() == null && pt.obstructions != null && !pt.obstructions.isEmpty();
         for (Entity entity : flag ? pt.obstructions : mc.level.entitiesForRendering()) {
@@ -848,6 +694,7 @@ public class AutoCrystalModule extends Module {
         float[] attackTargetRotations = calculateRotations(Vec3.atCenterOf(crystal.blockPosition()));
         if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(attackTargetRotations, EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
 
+        if (swapDelay.getValue().intValue() > 0 && !swapTimer.hasTimeElapsed(swapDelay.getValue().longValue() * 50L)) return;
         if (!attackTimer.hasTimeElapsed(1000.0f - attackSpeed.getValue().floatValue() * 50.0f) || attackedSequentially) {
             if (attackedSequentially) attackedSequentially = false;
             return;
@@ -863,7 +710,6 @@ public class AutoCrystalModule extends Module {
         else if (!mc.level.getWorldBorder().isWithinBounds(entity.blockPosition())) bailReason = "border";
         else if (!WorldUtils.canSee(entity) && (raytrace.getValue() || entity.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > Mth.square(attackWallsRange.getValue().doubleValue())))
             bailReason = "cannot-see";
-        else if (rotationGated() && !EUClient.ROTATION_MANAGER.isRotationReached(attackTargetRotations)) bailReason = "rotation-not-reached";
 
         if (bailReason != null) return;
         attackRunnable = () -> {
@@ -874,8 +720,16 @@ public class AutoCrystalModule extends Module {
     }
 
     private void placeCrystals(boolean sequential) {
+        if (isDead()) return;
+        if (shouldPause("Place")) return;
         PlaceTarget placeTarget = this.placeTarget == null ? null : this.placeTarget.clone();
         if (placeTarget == null || placeTarget.getPosition() == null) {
+            EUClient.RENDER_MANAGER.setRenderPosition(null);
+            return;
+        }
+        if (placeTarget.getPlayer() == null || !placeTarget.getPlayer().isAlive() || placeTarget.getPlayer().isDeadOrDying() || placeTarget.getPlayer().getHealth() <= 0.0f) {
+            this.placeTarget = null;
+            this.target = null;
             EUClient.RENDER_MANAGER.setRenderPosition(null);
             return;
         }
@@ -888,10 +742,6 @@ public class AutoCrystalModule extends Module {
 
         BlockPos position = placeTarget.getPosition();
 
-        // See onDestroyBlock's identical 2026-08-15 fix for the full rationale -- render position
-        // is only committed once the target has been confirmed still in range, so a target that
-        // went stale (calculatePlacements ran a tick or more ago, off the async executor thread,
-        // and the player has since moved) never draws a ghost placement out at its old distance.
         if (mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeRange.getValue().doubleValue())) {
             EUClient.RENDER_MANAGER.setRenderPosition(null);
             return;
@@ -902,24 +752,24 @@ public class AutoCrystalModule extends Module {
         if (mc.level.getBlockState(position).getBlock() != Blocks.OBSIDIAN && mc.level.getBlockState(position).getBlock() != Blocks.BEDROCK) return;
         if (!mc.level.getBlockState(position.offset(0, 1, 0)).isAir() || (placements.getValue().equalsIgnoreCase("Protocol") && !mc.level.getBlockState(position.offset(0, 2, 0)).isAir())) return;
         if (!WorldUtils.canSeeBlock(position) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue()))) return;
-        if (mc.level.getEntities((Entity) null, new AABB(position.offset(0, 1, 0)), entity -> true).stream().anyMatch(entity -> entity.isAlive() && !(entity instanceof ExperienceOrb) && !(entity instanceof EndCrystal))) return;
+        if (mc.level.getEntities((Entity) null, getCrystalPlacementBox(position), entity -> true).stream().anyMatch(entity -> entity.isAlive() && !(entity instanceof ExperienceOrb) && !(entity instanceof EndCrystal))) return;
 
         float[] placeTargetRotations = calculateRotations(Vec3.atCenterOf(position).add(0, 1, 0));
         if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(placeTargetRotations, EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
 
+        if (swapDelay.getValue().intValue() > 0 && !swapTimer.hasTimeElapsed(swapDelay.getValue().longValue() * 50L)) return;
         if (!placeTimer.hasTimeElapsed(1000.0f - placeSpeed.getValue().floatValue() * 50.0f)) return;
         if (!sequential && placedSequentially) {
             placedSequentially = false;
             return;
         }
-        if (rotationGated() && !EUClient.ROTATION_MANAGER.isRotationReached(placeTargetRotations)) return;
 
         placeRunnable = () -> {
             boolean switched = false;
 
             if (rotate.getValue().equalsIgnoreCase("Packet") || rotate.getValue().equalsIgnoreCase("Silent")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), RotationUtils.getRotations(Vec3.atCenterOf(position).add(0, 1, 0)));
 
-            if (mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
+            if (mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
                 if (autoSwitch.getValue().equalsIgnoreCase("Normal") && swapBack.getValue() && savedSlot == -1) savedSlot = previousSlot;
                 InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
                 switched = true;
@@ -1016,23 +866,10 @@ public class AutoCrystalModule extends Module {
         return optimalCrystal;
     }
 
-    // See calculatePlacements' own comment on stickyPosition.
-    private static final float STICKY_EPSILON = 0.5f;
-
     private PlaceTarget calculatePlacements(BlockPos exception) {
         return calculatePlacements(exception, EUClient.WORLD_MANAGER.getReservedPlacements());
     }
 
-    // Split out so onUpdateMovement can hand this a SNAPSHOT of the reserved set instead of the
-    // live one. WorldManager.reservedPlacements is cleared every tick at Minecraft.tick() HEAD --
-    // if this whole method runs on the async executor thread (the default), it can execute an
-    // arbitrary amount of wall-clock time after being submitted, easily longer than one tick under
-    // real load (multitarget scans especially). By the time a live getReservedPlacements() read
-    // actually happens, the NEXT tick's clear() may have already wiped the exact reservation a
-    // placement module (Surround/SelfTrap/...) made THIS tick -- so this module would see an empty
-    // set and freely place a crystal on the cell the player is actively trying to place a real
-    // block into. Capturing the set synchronously, on the main thread, at submission time (before
-    // the async lambda ever runs) closes that race entirely.
     private PlaceTarget calculatePlacements(BlockPos exception, Set<BlockPos> reservedPlacements) {
         if (!place.getValue()) return null;
 
@@ -1042,63 +879,56 @@ public class AutoCrystalModule extends Module {
         List<Player> players = selectTargets(getPlayers());
         if (players.isEmpty()) return null;
 
-        BlockPos optimalPosition = null;
-        Player optimalPlayer = null;
+        BlockPos bestPosition = null;
+        Player bestPlayer = null;
+        float bestDamage = 0.0f;
+
+        BlockPos stickyPos = this.placeTarget == null ? null : this.placeTarget.getPosition();
+        Player stickyPlayer = null;
+        float stickyDamage = 0.0f;
+
         List<Entity> obstructions = new ArrayList<>();
-        float optimalDamage = 0.0f;
-
-        // See ServerAutoCrystal's identical fix for the full rationale (ported 1:1, same bug hit
-        // independently in both places): two candidates at genuinely equal (or near-equal,
-        // floating point) damage each traded the lead every cycle as the target moved even
-        // slightly, so the module kept re-committing to a different position instead of just
-        // placing. STICKY_EPSILON boosts whichever candidate matches last cycle's committed
-        // position so a challenger needs to actually be better, not just edge it out by noise.
-        BlockPos stickyPosition = this.placeTarget == null ? null : this.placeTarget.getPosition();
-
         int calculations = 0;
 
-        // Self-origin nearest-first WITH a break-on-first-lethal early exit (matching the
-        // pre-port 1.21.4 implementation) kept picking whichever candidate happened to be
-        // scanned first that merely cleared the target's HP -- against a target that's easy to
-        // one-shot from almost anywhere nearby (low HP, or just not enough armor), that's very
-        // often a spot right next to the PLAYER rather than anywhere near the actual target, since
-        // the scan starts at self and radiates outward. A softer "overkill margin" threshold on
-        // the break helped somewhat but didn't fix the actual defect: the break exits before ever
-        // comparing against the genuinely best candidate. Scans the full candidate set now (no
-        // early exit) and keeps only the single highest-damage one -- this runs off the async
-        // executor thread already (not the render thread), so the extra candidates cost latency,
-        // not FPS.
         for (int i = 0; i < EUClient.WORLD_MANAGER.getRadius(Math.max(placeRange.getValue().doubleValue(), placeWallsRange.getValue().doubleValue())); i++) {
             BlockPos position = mc.player.blockPosition().offset(EUClient.WORLD_MANAGER.getOffset(i));
 
             if (mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeRange.getValue().doubleValue())) continue;
             if (!mc.level.getWorldBorder().isWithinBounds(position)) continue;
             if (mc.level.getBlockState(position).getBlock() != Blocks.OBSIDIAN && mc.level.getBlockState(position).getBlock() != Blocks.BEDROCK) continue;
+            if (placeBlacklist.containsKey(position)) continue;
             if (!mc.level.getBlockState(position.offset(0, 1, 0)).isAir() || (placements.getValue().equalsIgnoreCase("Protocol") && !mc.level.getBlockState(position.offset(0, 2, 0)).isAir())) continue;
 
             if (!WorldUtils.canSeeBlock(position) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(placeWallsRange.getValue().doubleValue()))) continue;
 
-            // A placement module (SelfFill/Surround/...) reserved a cell this tick, meaning it's
-            // actively trying to place a real block there. A crystal here (2x2x2 hitbox, spans the
-            // block it sits on plus one block up and inflates 1 block horizontally) blocks the
-            // server's own placement raytrace even without directly overlapping the target cell --
-            // and since this module never voluntarily gives up an optimal spot, without this check
-            // it whack-a-moles that cell forever against destroyCrystals. Skip the candidate outright.
             AABB crystalBox = new AABB(position.getX() - 1, position.getY() + 1, position.getZ() - 1, position.getX() + 2, position.getY() + 3, position.getZ() + 2);
             if (reservedPlacements.stream().anyMatch(reserved -> crystalBox.intersects(new AABB(reserved)))) continue;
 
-            if (mc.level.getEntities((Entity) null, new AABB(position.offset(0, 1, 0)), entity -> true).stream().anyMatch(entity -> entity.isAlive() && !(entity instanceof ExperienceOrb) && !(entity instanceof EndCrystal))) continue;
+            List<Entity> entitiesAtPos = mc.level.getEntities((Entity) null, getCrystalPlacementBox(position), entity -> entity.isAlive() && !(entity instanceof ExperienceOrb));
+            boolean hasNonCrystalEntity = false;
+            List<Entity> obstructingCrystals = new ArrayList<>();
+            for (Entity entity : entitiesAtPos) {
+                if (entity instanceof EndCrystal crystal) {
+                    if (!placedCrystals.containsKey(crystal.blockPosition().below()) || crystal.tickCount >= (20 - attackSpeed.getValue().intValue()) + 15) {
+                        obstructingCrystals.add(crystal);
+                    }
+                } else {
+                    hasNonCrystalEntity = true;
+                    break;
+                }
+            }
+            if (hasNonCrystalEntity) continue;
 
-            // A crystal WE just placed here needs a moment to actually land its hit before we
-            // treat it as "in the way" and attack it ourselves (the tickCount grace period, keyed
-            // off attackSpeed). Any OTHER crystal already sitting here isn't waiting on anything
-            // and should count as an obstruction immediately -- otherwise calculatePlacements kept
-            // skipping this position for the whole grace window every cycle, repeatedly searching
-            // for (and often failing to find) somewhere else instead of clearing what's actually
-            // blocking the best spot. Not PingBypass-specific -- this module and ServerAutoCrystal
-            // both had the same bug independently.
-            List<Entity> obstructingCrystals = mc.level.getEntities((Entity) null, new AABB(position.offset(0, 1, 0)), entity -> true).stream().filter(entity -> entity instanceof EndCrystal crystal
-                    && (!placedCrystals.containsKey(crystal.blockPosition().below()) || crystal.tickCount >= (20 - attackSpeed.getValue().intValue()) + 15)).toList();
+            // Early exit: Crystal explosion max damage reach is 12.0 blocks. Skip damage raycasts if out of range of all targets.
+            double maxDistSq = Mth.square(12.0);
+            boolean inRange = false;
+            for (Player player : players) {
+                if (player.distanceToSqr(position.getX() + 0.5, position.getY() + 1.0, position.getZ() + 0.5) <= maxDistSq) {
+                    inRange = true;
+                    break;
+                }
+            }
+            if (!inRange) continue;
 
             if (!EUClient.MODULE_MANAGER.getModule(SuicideModule.class).isToggled()) {
                 float selfDamage = DamageUtils.getCrystalDamage(mc.player, null, position, exception, ignoreTerrain.getValue());
@@ -1118,17 +948,58 @@ public class AutoCrystalModule extends Module {
                     break;
                 }
 
-                float comparisonDamage = damage + (position.equals(stickyPosition) ? STICKY_EPSILON : 0.0f);
-                if (comparisonDamage > optimalDamage) {
-                    optimalPosition = position;
-                    optimalPlayer = player;
-                    optimalDamage = comparisonDamage;
+                if (damage > bestDamage) {
+                    bestPosition = position;
+                    bestPlayer = player;
+                    bestDamage = damage;
+                }
+
+                if (stickyPos != null && position.equals(stickyPos)) {
+                    if (damage > stickyDamage) {
+                        stickyPlayer = player;
+                        stickyDamage = damage;
+                    }
                 }
             }
         }
 
-        if (optimalPosition == null) return new PlaceTarget(null, null, obstructions, null, 0.0f, calculations);
-        return new PlaceTarget(optimalPosition, optimalPlayer, obstructions, exception, optimalDamage, calculations);
+        if (bestPosition == null) {
+            return new PlaceTarget(null, null, obstructions, null, 0.0f, calculations);
+        }
+
+        BlockPos finalPosition = bestPosition;
+        Player finalPlayer = bestPlayer;
+        float finalDamage = bestDamage;
+
+        boolean stickyStillValid = stickyPos != null && stickyDamage > 0.0f && stickyPlayer != null 
+                && stickyPlayer.distanceToSqr(Vec3.atCenterOf(stickyPos)) <= Mth.square(2.2);
+
+        if (stickyStillValid && !bestPosition.equals(stickyPos)) {
+            if (stickyDamage < 4.0f && bestDamage < 4.0f) {
+                if (Math.abs(bestDamage - stickyDamage) <= 0.2f) {
+                    double stickyDist = stickyPlayer.distanceToSqr(Vec3.atCenterOf(stickyPos));
+                    double bestDist = bestPlayer.distanceToSqr(Vec3.atCenterOf(bestPosition));
+                    if (stickyDist <= bestDist) {
+                        finalPosition = stickyPos;
+                        finalPlayer = stickyPlayer;
+                        finalDamage = stickyDamage;
+                    }
+                } else if (bestDamage <= stickyDamage + 0.2f) {
+                    finalPosition = stickyPos;
+                    finalPlayer = stickyPlayer;
+                    finalDamage = stickyDamage;
+                }
+            } else {
+                boolean isSignificantlyBetter = (bestDamage > stickyDamage * 1.05f) && (bestDamage >= stickyDamage + 0.8f);
+                if (!isSignificantlyBetter) {
+                    finalPosition = stickyPos;
+                    finalPlayer = stickyPlayer;
+                    finalDamage = stickyDamage;
+                }
+            }
+        }
+
+        return new PlaceTarget(finalPosition, finalPlayer, obstructions, exception, finalDamage, calculations);
     }
 
     private float[] calculateRotations(Vec3 vec3d) {
@@ -1166,12 +1037,6 @@ public class AutoCrystalModule extends Module {
         mc.getConnection().send(new ServerboundAttackPacket(crystal.getId()));
         mc.getConnection().send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
 
-        // Was switchBack(..., 0, previousSlot) -- a hardcoded 0 instead of the slot we actually
-        // switched TO. switchBack keys SILENT_RESTORE off that argument, so it removed key 0
-        // (never present) and left this switch's own entry in the map forever: the restore went to
-        // the stale client previousSlot instead of the real server slot, AND hasActiveSilentSwitch()
-        // stayed permanently true from the first weakness attack onward, which permanently disabled
-        // KillAura's Normal-mode switch (its guard at KillAuraModule:166).
         if (switchedSlot != -1) {
             InventoryUtils.switchBack(antiWeakness.getValue(), switchedSlot, previousSlot);
         }
@@ -1183,10 +1048,11 @@ public class AutoCrystalModule extends Module {
 
     private void place(BlockPos position) {
         InteractionHand hand = mc.player.getOffhandItem().getItem() == Items.END_CRYSTAL ? InteractionHand.OFF_HAND : InteractionHand.MAIN_HAND;
-        Direction direction = WorldUtils.getClosestDirection(position, true);
+        
+        CrystalPlacementHelper.PlacementResult placement = CrystalPlacementHelper.getVisiblePlacement(position);
 
         eu.client.utils.minecraft.NetworkUtils.sendSequencedPacket(sequence ->
-                new ServerboundUseItemOnPacket(hand, new BlockHitResult(WorldUtils.getHitVector(position, direction), direction, position, false), sequence));
+                new ServerboundUseItemOnPacket(hand, new BlockHitResult(placement.hitVec, placement.direction, position, false), sequence));
 
         switch (swing.getValue()) {
             case "Default" -> mc.player.swing(hand);
@@ -1201,14 +1067,11 @@ public class AutoCrystalModule extends Module {
 
         placedCrystals.put(position, System.currentTimeMillis());
         countedCrystals.put(position, System.currentTimeMillis());
+
         placeTimer.reset();
         totalPlaces++;
     }
 
-    // Called synchronously every tick (onUpdateMovement, before the async scan is even submitted --
-    // this is O(1)/O(4), no need to defer it off-thread). Watches SpeedMine's primary target and
-    // pre-places a crystal on it once few enough ticks are left, then leaves it alone until either
-    // the target changes/stops (reset) or the block actually breaks (onDestroyBlock -> detonate).
     private void mineIgnoreTick() {
         if (!mineIgnore.getValue()) {
             mineIgnoreMinedPos = null;
@@ -1225,28 +1088,22 @@ public class AutoCrystalModule extends Module {
 
         BlockPos minePos = primary.getPosition();
         if (!minePos.equals(mineIgnoreMinedPos)) {
-            // A different block than whatever we were last tracking (new target, or SpeedMine
-            // moved on) -- start over. Deliberately doesn't touch a crystal already placed for the
-            // OLD target; that one's now unrelated and left for the normal attack pipeline.
             mineIgnoreMinedPos = minePos;
             mineIgnorePlacedPos = null;
         }
 
-        if (mineIgnorePlacedPos != null) return; // already down for this target, just waiting on it to break
+        if (mineIgnorePlacedPos != null) return;
         if (primary.getTicksRemaining() > mineIgnoreTicks.getValue().intValue()) return;
 
         mineIgnoreTryPlace(minePos);
     }
 
-    // Deliberately self-contained instead of routing through calculatePlacements/placeCrystals'
-    // (this.placeTarget) -- that field is also being overwritten by the async executor on its own
-    // schedule, and shoving a synthetic candidate into it here would just race that overwrite.
-    // Small enough to duplicate the handful of checks/switch-handling directly.
     private void mineIgnoreTryPlace(BlockPos minePos) {
+        if (shouldPause("Place")) return;
         if (!placeTimer.hasTimeElapsed(1000.0f - placeSpeed.getValue().floatValue() * 50.0f)) return;
 
         List<BlockPos> candidates = new ArrayList<>();
-        candidates.add(minePos.above()); // on top of the block itself, tried first
+        candidates.add(minePos.above());
         for (Direction direction : Direction.Plane.HORIZONTAL) candidates.add(minePos.relative(direction).above());
 
         int slot = InventoryUtils.findHotbar(Items.END_CRYSTAL);
@@ -1261,8 +1118,6 @@ public class AutoCrystalModule extends Module {
             if (!mc.level.getBlockState(candidate).isAir()) continue;
             if (mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(candidate)) > Mth.square(placeRange.getValue().doubleValue())) continue;
             if (!mc.level.getWorldBorder().isWithinBounds(candidate)) continue;
-            // Same fix as the main placement path: check line of sight to the support block, not
-            // the air cell above it -- a real player places by clicking the block, not the air.
             if (!WorldUtils.canSeeBlock(support) && (raytrace.getValue() || mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(candidate)) > Mth.square(placeWallsRange.getValue().doubleValue()))) continue;
             if (mc.level.getEntities((Entity) null, new AABB(candidate), entity -> true).stream().anyMatch(entity -> entity.isAlive() && !(entity instanceof ExperienceOrb) && !(entity instanceof EndCrystal))) continue;
 
@@ -1276,13 +1131,10 @@ public class AutoCrystalModule extends Module {
             }
 
             if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(candidate)), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
-            // 2026-08-15: was `!equalsIgnoreCase("None")` -- see the mineIgnore place site's own
-            // note (same duplicate-target pattern, same fix, same reason: via 1.21.x exposes the
-            // extra out-of-cadence packet, via 1.20.x doesn't).
             if (rotate.getValue().equalsIgnoreCase("Packet") || rotate.getValue().equalsIgnoreCase("Silent")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), RotationUtils.getRotations(Vec3.atCenterOf(candidate)));
 
             boolean switched = false;
-            if (mc.player.getMainHandItem().getItem() != Items.END_CRYSTAL && mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
+            if (mc.player.getOffhandItem().getItem() != Items.END_CRYSTAL) {
                 if (autoSwitch.getValue().equalsIgnoreCase("Normal") && swapBack.getValue() && savedSlot == -1) savedSlot = previousSlot;
                 InventoryUtils.switchSlot(autoSwitch.getValue(), slot, previousSlot);
                 switched = true;
@@ -1297,12 +1149,8 @@ public class AutoCrystalModule extends Module {
         }
     }
 
-    // "khi obsidian đó vỡ lập tức break cục crystal đó đi" -- no timer/range/canSee gate on
-    // purpose: the whole feature exists to land this hit the instant the support block is
-    // confirmed gone (onDestroyBlock fires on SpeedMine's own LOCAL break prediction, not a
-    // server round trip -- see DestroyBlockEvent's callsite), not to queue behind the normal
-    // attack pipeline's own pacing.
     private void mineIgnoreDetonate() {
+        if (shouldPause("Attack")) return;
         BlockPos placedPos = mineIgnorePlacedPos;
         mineIgnoreMinedPos = null;
         mineIgnorePlacedPos = null;
@@ -1313,8 +1161,6 @@ public class AutoCrystalModule extends Module {
             if (!crystal.blockPosition().below().equals(placedPos)) continue;
 
             if (rotate.getValue().equalsIgnoreCase("Normal")) EUClient.ROTATION_MANAGER.legacyRotate(calculateRotations(Vec3.atCenterOf(crystal.blockPosition())), EUClient.ROTATION_MANAGER.getLegacyModulePriority(this));
-            // 2026-08-15: was `!equalsIgnoreCase("None")` -- same duplicate-target fix as the
-            // other mineIgnore/place sites above.
             if (rotate.getValue().equalsIgnoreCase("Packet") || rotate.getValue().equalsIgnoreCase("Silent")) EUClient.ROTATION_MANAGER.wireRotate(rotate.getValue(), RotationUtils.getRotations(Vec3.atCenterOf(crystal.blockPosition())));
 
             attack(crystal);
@@ -1322,6 +1168,13 @@ public class AutoCrystalModule extends Module {
         }
     }
 
+    // Was: unconditionally `if (EntityUtils.isGhost(player)) continue;` -- excluded every LogoutSpot
+    // ghost outright instead of targeting them, unlike SpeedMineModule#getTarget/AutoTrapModule
+    // #getTarget's proven pattern (add ghosts as extra candidates, exempt only THEM from the
+    // isAlive() check since a logged-out ghost is inherently "dead" but still a valid target).
+    // Reported: AutoCrystal only working against FakePlayer, dating from when LogoutSpot was added
+    // -- this method is the one place in the three that never got the same treatment. Aligned to
+    // the identical working pattern rather than guessing at what else differed.
     private List<Player> getPlayers() {
         if (EUClient.MODULE_MANAGER.getModule(SuicideModule.class).isToggled()) {
             return List.of(mc.player);
@@ -1330,12 +1183,32 @@ public class AutoCrystalModule extends Module {
         long now = System.currentTimeMillis();
         if (now - lastPlayerCacheTime < PLAYER_CACHE_DURATION) return cachedPlayers;
 
+        eu.client.modules.impl.visuals.PopChamsModule popChams = EUClient.MODULE_MANAGER != null ? EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.visuals.PopChamsModule.class) : null;
+        eu.client.modules.impl.visuals.LogoutSpotModule logoutSpot = EUClient.MODULE_MANAGER != null ? EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.visuals.LogoutSpotModule.class) : null;
+
+        List<Player> allCandidates = new ArrayList<>(mc.level.players());
+        if (logoutSpot != null && logoutSpot.isToggled()) {
+            for (Player ghost : logoutSpot.getGhosts()) {
+                if (ghost != null && !allCandidates.contains(ghost)) {
+                    allCandidates.add(ghost);
+                }
+            }
+        }
+
         List<Player> players = new ArrayList<>();
-        for (Player player : mc.level.players()) {
+        for (Player player : allCandidates) {
             if (player == mc.player) continue;
-            if (!player.isAlive()) continue;
+            if (popChams != null && popChams.isGhost(player)) continue; // Ignore PopChams ghosts
+            if (logoutSpot == null || !logoutSpot.isGhost(player)) {
+                if (!player.isAlive()) continue;
+            }
             if (mc.player.distanceToSqr(player) > Mth.square(enemyRange.getValue().doubleValue())) continue;
-            if (EUClient.FRIEND_MANAGER.contains(player.getName().getString())) continue;
+            if (logoutSpot != null && logoutSpot.isGhost(player)) {
+                eu.client.modules.impl.visuals.LogoutSpotModule.Spot spot = logoutSpot.getSpot((net.minecraft.client.player.RemotePlayer) player);
+                if (spot != null && EUClient.FRIEND_MANAGER.contains(spot.data.name)) continue;
+            } else {
+                if (EUClient.FRIEND_MANAGER.contains(player.getName().getString())) continue;
+            }
 
             players.add(player);
         }
@@ -1345,11 +1218,6 @@ public class AutoCrystalModule extends Module {
         return players;
     }
 
-    // Narrows getPlayers()'s full in-range list down to the single best candidate for targetMode
-    // (or leaves it alone for "All"/a 0-1 length list) -- called at both scan sites so the
-    // O(positions) candidate loop only ever runs its inner player loop once per position instead of
-    // once per player. Doesn't touch cachedPlayers itself: other code (SuicideModule branch, the
-    // cache TTL) still wants the real full list, this is purely a per-call view of it.
     private List<Player> selectTargets(List<Player> players) {
         if (players.size() <= 1 || targetMode.getValue().equalsIgnoreCase("All")) return players;
 
@@ -1360,7 +1228,7 @@ public class AutoCrystalModule extends Module {
             double score = switch (targetMode.getValue()) {
                 case "Nearest" -> -mc.player.distanceToSqr(player);
                 case "Farthest" -> mc.player.distanceToSqr(player);
-                default -> -(player.getHealth() + player.getAbsorptionAmount()); // "Health"
+                default -> -(player.getHealth() + player.getAbsorptionAmount());
             };
 
             if (best == null || score > bestScore) {
@@ -1373,8 +1241,11 @@ public class AutoCrystalModule extends Module {
     }
 
     private boolean shouldPause(String process) {
+        KeyActionModule keyAction = EUClient.MODULE_MANAGER != null ? EUClient.MODULE_MANAGER.getModule(KeyActionModule.class) : null;
+        if (keyAction != null && keyAction.isPearlActive()) return true;
+
         boolean eatingFlag = (whileEating.getValue().equalsIgnoreCase("None") || (process.equalsIgnoreCase("Attack") && whileEating.getValue().equalsIgnoreCase("Place")) || (process.equalsIgnoreCase("Place") && whileEating.getValue().equalsIgnoreCase("Attack")));
-        return eatingFlag && mc.player.isUsingItem();
+        return eatingFlag && eu.client.utils.minecraft.EntityUtils.isEating();
     }
 
     private float getMinimumDamage(Player player, float minimumDamage) {
@@ -1400,6 +1271,159 @@ public class AutoCrystalModule extends Module {
         }
 
         return minimumDamage;
+    }
+
+    private boolean executeBasePlace() {
+    if (isDead()) return false;
+    if (!basePlace.getValue()) return false;
+    if (shouldPause("Place")) return false;
+
+    Player targetPlayer = this.target;
+    if (targetPlayer == null) {
+        double bestDistSq = Double.MAX_VALUE;
+        for (Player player : mc.level.players()) {
+            if (EntityUtils.isGhost(player)) continue;
+            if (player == mc.player || !player.isAlive()) continue;
+            if (EUClient.FRIEND_MANAGER.contains(player.getName().getString())) continue;
+            double distSq = mc.player.distanceToSqr(player);
+            if (distSq <= Mth.square(enemyRange.getValue().doubleValue()) && distSq < bestDistSq) {
+                bestDistSq = distSq;
+                targetPlayer = player;
+            }
+        }
+    }
+
+    if (targetPlayer == null) return false;
+
+    // 1. Kiểm tra nếu AutoCrystal đang có sẵn mục tiêu đặt hợp lệ với sát thương đạt chuẩn
+    PlaceTarget existingPlacement = this.placeTarget;
+    if (existingPlacement != null && existingPlacement.getPosition() != null) {
+        BlockPos pos = existingPlacement.getPosition();
+        BlockPos targetFeet = PositionUtils.getFlooredPosition(targetPlayer);
+        if (pos.getY() >= targetFeet.below().getY() && existingPlacement.getDamage() >= getMinimumDamage(targetPlayer, minimumDamage.getValue().floatValue())) {
+            return false;
+        }
+    }
+
+    // ĐOẠN MỚI (Lấy mc.player làm tâm 3x3):
+    BlockPos targetFeet = PositionUtils.getFlooredPosition(targetPlayer);
+    BlockPos block1 = targetFeet.below();
+
+    Set<BlockPos> candidatePositions = new LinkedHashSet<>();
+    for (Direction dir : Direction.Plane.HORIZONTAL) {
+        Direction right = dir.getClockWise();
+
+        // --- Vòng trong (bán kính 1 block - 8 ô) ---
+        candidatePositions.add(block1.relative(dir));                    // 4 ô thẳng gần
+        candidatePositions.add(block1.relative(dir).relative(right));    // 4 ô chéo gần
+
+        // --- Vòng ngoài (bán kính 2 block - 16 ô) ---
+        candidatePositions.add(block1.relative(dir, 2));                 // 4 ô thẳng xa
+        candidatePositions.add(block1.relative(dir, 2).relative(right));   // 4 ô chữ L (2 thẳng, 1 ngang)
+        candidatePositions.add(block1.relative(dir).relative(right, 2));   // 4 ô chữ L (1 thẳng, 2 ngang)
+        candidatePositions.add(block1.relative(dir, 2).relative(right, 2)); // 4 ô góc chéo xa nhất (2, 2)
+    }
+
+    // 3. [PRE-CHECK]: Kiểm tra xem quanh enemy ĐÃ CÓ bệ Obsidian/Bedrock thực sự hiệu quả chưa
+    for (BlockPos pos : candidatePositions) {
+        BlockState state = mc.level.getBlockState(pos);
+        if (state.getBlock() == Blocks.OBSIDIAN || state.getBlock() == Blocks.BEDROCK) {
+            // Không tính bệ nằm xa hơn khoảng cách giữa bạn và enemy
+            if (mc.player.distanceToSqr(Vec3.atCenterOf(pos)) > mc.player.distanceToSqr(targetPlayer)) {
+                continue;
+            }
+
+            BlockPos crystalSpace = pos.above();
+            BlockState spaceState = mc.level.getBlockState(crystalSpace);
+            if ((spaceState.isAir() || spaceState.canBeReplaced()) && mc.level.getFluidState(crystalSpace).isEmpty()) {
+                boolean hasEntity = mc.level.getEntities((Entity) null, new AABB(crystalSpace),
+                        entity -> entity.isAlive() && !(entity instanceof ExperienceOrb) && !(entity instanceof EndCrystal)).stream().anyMatch(Entity::isAlive);
+
+                if (!hasEntity) {
+                    float existingDamage = DamageUtils.getCrystalDamage(targetPlayer, PositionUtils.extrapolate(targetPlayer, extrapolation.getValue().intValue()), pos, null, ignoreTerrain.getValue());
+                    
+                    // [TỐI ƯU 5x5]: Bệ có sẵn phải đạt đủ sát thương cài đặt (hoặc >= 4.5f) mới được coi là bệ hợp lệ
+                    float minDmg = getMinimumDamage(targetPlayer, minimumDamage.getValue().floatValue());
+                    if (existingDamage >= minDmg || existingDamage >= 4.5f) {
+                        return false; // Đã có bệ gây sát thương lớn -> Dừng đặt
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Nếu CHƯA CÓ bệ hợp lệ nào, tiến hành tìm ô đất/air tốt nhất để đặt Obsidian
+    BlockPos bestCandidate = null;
+    double bestScore = Double.MAX_VALUE;
+
+    for (BlockPos pos : candidatePositions) {
+        if (!isBaseCandidateValid(pos)) continue;
+
+        BlockState state = mc.level.getBlockState(pos);
+        // Bỏ qua các ô đã là Obsidian/Bedrock
+        if (state.getBlock() == Blocks.OBSIDIAN || state.getBlock() == Blocks.BEDROCK) continue;
+
+        // Kiểm tra an toàn cho bản thân
+        if (!EUClient.MODULE_MANAGER.getModule(SuicideModule.class).isToggled()) {
+            float selfDamage = DamageUtils.getCrystalDamage(mc.player, null, pos, null, ignoreTerrain.getValue());
+            if (selfDamage > maximumSelfDamage.getValue().floatValue()) continue;
+            if (antiSuicide.getValue() && selfDamage > mc.player.getHealth() + mc.player.getAbsorptionAmount()) continue;
+        }
+
+        // Tính sát thương gây ra cho mục tiêu
+        float targetDamage = DamageUtils.getCrystalDamage(targetPlayer, PositionUtils.extrapolate(targetPlayer, extrapolation.getValue().intValue()), pos, null, ignoreTerrain.getValue());
+        if (targetDamage < 1.5f) continue;
+
+        double score = -targetDamage * 10.0 + mc.player.distanceToSqr(Vec3.atCenterOf(pos)) + targetPlayer.distanceToSqr(Vec3.atCenterOf(pos));
+        if (score < bestScore) {
+            bestScore = score;
+            bestCandidate = pos;
+        }
+    }
+
+    if (bestCandidate == null) return false;
+
+    int obsidianSlot = basePlaceSwitch.getValue().equalsIgnoreCase("None") ? -1 :
+            InventoryUtils.find(Items.OBSIDIAN, 0, basePlaceSwitch.getValue().equalsIgnoreCase("AltSwap") || basePlaceSwitch.getValue().equalsIgnoreCase("AltPickup") ? InventoryUtils.INVENTORY_END : InventoryUtils.HOTBAR_END);
+    if (obsidianSlot == -1) return false;
+
+    Direction placeDir = WorldUtils.getDirection(bestCandidate, false);
+    if (placeDir == null) placeDir = WorldUtils.getClosestDirection(bestCandidate, true);
+    if (placeDir == null) placeDir = Direction.UP;
+
+    int prevSlot = mc.player.getInventory().getSelectedSlot();
+    InventoryUtils.switchSlot(basePlaceSwitch.getValue(), obsidianSlot, prevSlot);
+    boolean placed = WorldUtils.placeBlock(bestCandidate, placeDir, InteractionHand.MAIN_HAND,
+            basePlaceRotate.getValue(), true,
+            renderMode.getValue().equalsIgnoreCase("Both") || renderMode.getValue().equalsIgnoreCase("Fill"));
+    InventoryUtils.switchBack(basePlaceSwitch.getValue(), obsidianSlot, prevSlot);
+
+    return placed;
+}
+
+    private boolean isBaseCandidateValid(BlockPos pos) {
+        if (mc.level == null) return false;
+        if (mc.player.distanceToSqr(Vec3.atCenterOf(pos)) > Mth.square(basePlaceRange.getValue().doubleValue())) return false;
+
+        BlockState state = mc.level.getBlockState(pos);
+        boolean isObsidianOrBedrock = state.getBlock() == Blocks.OBSIDIAN || state.getBlock() == Blocks.BEDROCK;
+        if (!isObsidianOrBedrock && !WorldUtils.isPlaceable(pos)) return false;
+
+        BlockPos crystalSpace = pos.above();
+        BlockState spaceState = mc.level.getBlockState(crystalSpace);
+        if (!spaceState.isAir() && !spaceState.canBeReplaced()) return false;
+        if (!mc.level.getFluidState(crystalSpace).isEmpty()) return false;
+
+        if (placements.getValue().equalsIgnoreCase("Protocol")) {
+            BlockState spaceState2 = mc.level.getBlockState(pos.above(2));
+            if (!spaceState2.isAir() && !spaceState2.canBeReplaced()) return false;
+        }
+
+        return mc.level.getEntities((Entity) null, getCrystalPlacementBox(pos), entity -> entity.isAlive() && !(entity instanceof ExperienceOrb) && !(entity instanceof EndCrystal)).isEmpty();
+    }
+
+    private AABB getCrystalPlacementBox(BlockPos position) {
+        return new AABB(position.offset(0, 1, 0));
     }
 
     @Getter @AllArgsConstructor

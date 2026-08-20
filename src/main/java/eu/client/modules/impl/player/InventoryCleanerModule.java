@@ -11,7 +11,6 @@ import eu.client.settings.impl.NumberSetting;
 import eu.client.settings.impl.WhitelistSetting;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.gui.screens.inventory.InventoryScreen;
-import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.contents.TranslatableContents;
@@ -29,18 +28,18 @@ import java.util.List;
 // own ClickGui editor), reused here instead of porting a whole separate screen.
 @RegisterModule(name = "InventoryCleaner", description = "Auto-drops unwanted items from your inventory each tick.", category = Module.Category.PLAYER)
 public class InventoryCleanerModule extends Module {
-    public ModeSetting mode = new ModeSetting("Mode", "WhiteList = drop items NOT in list. BlackList = drop items IN list. All = drop everything.", "WhiteList", new String[]{"WhiteList", "BlackList", "All"});
-    public WhitelistSetting whitelist = new WhitelistSetting("List", "Items this mode's WhiteList/BlackList compares against.", WhitelistSetting.Type.ITEMS);
+    public ModeSetting mode = new ModeSetting("Mode", "WhiteList = drop items IN list. BlackList = drop items NOT in list. All = drop everything.", "WhiteList", new String[]{"WhiteList", "BlackList", "All"});
+    public WhitelistSetting whitelist = new WhitelistSetting("Whitelist", "Items this mode's WhiteList/BlackList compares against.", WhitelistSetting.Type.ITEMS);
     public BooleanSetting ignoreHotbar = new BooleanSetting("IgnoreHotbar", "Skip hotbar slots (0-8) when cleaning.", true);
     // Compares base tier via max durability, not remaining HP, so a damaged netherite item still
     // outranks a pristine diamond one of the same kind.
     public BooleanSetting throwWorse = new BooleanSetting("ThrowWorse", "Drop lower-tier duplicate tools/armor of the same type (e.g. diamond+iron pickaxe -> drop iron).", true);
     public BooleanSetting others = new BooleanSetting("Others", "Also drop from other open GUIs like Chest, Shulker, EnderChest.", false);
-    // Per-item CUSTOM_NAME skip protects labeled gear. With Others on, also skips acting on any
+    // IgnoreCustomName now applies ONLY to container GUIs: with Others on, skip acting on any
     // container whose title isn't a vanilla TranslatableContents (a server-set literal like a
     // shop's "Xác nhận mua"), except a ShulkerBoxMenu -- a renamed shulker opened by hand is still
-    // cleaned.
-    public BooleanSetting ignoreCustomName = new BooleanSetting("IgnoreCustomName", "Skip custom-named items, and (with Others on) skip acting on custom-titled containers such as a shop GUI, except shulker boxes.", false);
+    // cleaned. It no longer affects per-item dropping.
+    public BooleanSetting ignoreCustomName = new BooleanSetting("IgnoreCustomName", "(With Others on) skip acting on custom-titled containers such as a shop GUI, except shulker boxes. Does not affect individual items.", false);
     public NumberSetting delay = new NumberSetting("Delay", "Tick delay between drop passes.", 1, 0, 20);
     public NumberSetting actionsPerTick = new NumberSetting("ActionsPerTick", "Max items to drop per pass.", 5, 1, 20);
 
@@ -109,12 +108,11 @@ public class InventoryCleanerModule extends Module {
     }
 
     private boolean shouldDrop(ItemStack stack) {
-        if (ignoreCustomName.getValue() && stack.has(DataComponents.CUSTOM_NAME)) return false;
         boolean listed = whitelist.isWhitelistContains(stack.getItem());
         return switch (mode.getValue()) {
             case "All" -> true;
-            case "BlackList" -> listed;
-            default -> !listed; // WhiteList
+            case "BlackList" -> !listed; // drop items NOT in whitelist
+            default -> listed; // WhiteList: drop items IN whitelist
         };
     }
 

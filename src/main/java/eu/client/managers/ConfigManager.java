@@ -254,12 +254,16 @@ public class ConfigManager {
                         setting.set(Float.parseFloat(data[0]), Float.parseFloat(data[1]));
                     }
                     case WhitelistSetting setting -> {
+                        // Clear first so loading a config REPLACES the list instead of merging on
+                        // top of whatever the previously loaded config (or defaults) left behind.
+                        // The setting instance is shared across the whole runtime, so without this
+                        // one config's whitelist bleeds into the next.
+                        setting.clear();
+
                         String[] data = valueObject.getAsString().split(",");
                         if (data.length == 0) continue;
 
                         for (String object : data) {
-                            if (setting.isWhitelistContains(object)) continue;
-
                             if (setting.getType() == WhitelistSetting.Type.ITEMS) {
                                 Item item = IdentifierUtils.getItem(object);
                                 if (item == null) continue;

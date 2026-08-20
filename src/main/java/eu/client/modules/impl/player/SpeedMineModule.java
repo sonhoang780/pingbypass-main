@@ -10,6 +10,7 @@ import eu.client.modules.RegisterModule;
 import eu.client.settings.impl.*;
 import eu.client.utils.color.ColorUtils;
 import eu.client.utils.graphics.Renderer3D;
+import eu.client.utils.minecraft.EntityUtils;
 import eu.client.utils.minecraft.HoleUtils;
 import eu.client.utils.minecraft.InventoryUtils;
 import eu.client.utils.minecraft.NetworkUtils;
@@ -17,7 +18,9 @@ import eu.client.utils.minecraft.WorldUtils;
 import eu.client.utils.rotations.RotationUtils;
 import eu.client.utils.system.Timer;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.item.Items;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.network.protocol.game.ServerboundSwingPacket;
@@ -35,79 +38,51 @@ import net.minecraft.world.level.GameType;
 import java.awt.*;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
 
-// No proxyEnhanced -- matches earthhack's Speedmine exactly: it has no user-facing Auto/Proxy/
-// Local choice at all. Its ListenerUpdate/ListenerMotion gate on PingBypass.isConnected() (proxy
-// side, automatic) and ClientDiggingService gates on the same "PingBypass connected" condition
-// (client side, automatic) -- dual execution kicks in purely from being connected, never from a
-// setting. See isDeferringToProxy()/isProxyActive() below.
 @RegisterModule(name = "SpeedMine", description = "Automatically mines blocks at a faster speed using packets.", category = Module.Category.PLAYER)
 public class SpeedMineModule extends Module {
     public ModeSetting switchMode = new ModeSetting("Switch", "The mode that will be used for automatically switching to the fastest item.", "Silent", InventoryUtils.SWITCH_MODES);
     public NumberSetting range = new NumberSetting("Range", "The maximum distance at which blocks will be mined.", 6.0, 0.0, 8.0);
-    public NumberSetting speed = new NumberSetting("Speed", "The speed at which the module will mine blocks.", 1.0, 0.6, 1.0);
-    // boze's own description (Discord screenshot, 2026-08-12): "Bypass for Duration 0.7 on Grim" /
-    // "Try this if normal AutoMine doesn't work". Two DIFFERENT techniques bundled under one toggle,
-    // confirmed (2026-08-12) against homovore-public's actual SpeedMineModule.java (github.com/
-    // leonetics/homovore-public) rather than guessed from GrimAC's formulas alone:
-    //  1. "Duration 0.7" = homovore's own `Threshold` setting, default 0.7 -- getSpeed() below
-    //     overrides Speed to 0.7 while this is on, completing at 70% of the real per-tick progress
-    //     a legit break needs instead of 100%.
-    //  2. "Bypass" = homovore's `GrimDecoy` setting (also default true there) -- see
-    //     Action.start()'s grimDecoyPos() send. GrimAC's FastBreak check (checks/impl/breaking/
-    //     FastBreak.java) tracks targetBlockPosition/maximumBlockDamage/startBreak as ONE set of
-    //     fields, not per-position -- sending a SECOND START_DESTROY_BLOCK for a block 2000Y below
-    //     the real target (out of the world, the real server silently no-ops it) right after the
-    //     real one overwrites FastBreak's own tracking with the decoy's (bogus) block-damage value,
-    //     poisoning its predictedTime calc for whatever FINISHED_DIGGING follows -- not a speed
-    //     trick, a state-tracking exploit. Threshold alone (no decoy) still legitimately completes
-    //     faster than 1.0, i.e. still has SOME predictedTime-vs-realTime gap; the decoy is what
-    //     actually makes that gap harmless to FastBreak's math.
-    // Overrides the Speed setting outright while on (doesn't blend with it) and does NOT touch
-    // Range/doubleMine/instant -- confirmed against boze's actual in-game behavior, not assumed.
+    // Floor 0.7, NOT 0.6 -- vanilla hard limit, same floor nami uses (DoubleSetting("Speed", 1.0,
+    // 0.7, 1.0)). ServerPlayerGameMode:220-234 (.mcref): on STOP_DESTROY_BLOCK the server breaks the
+    // block ONLY if its own destroyProgress >= 0.7F; below that it parks ONE delayed destroy
+    // (hasDelayedDestroy, a single slot) that finishes at full mining time instead.
+    //
+    // So Speed < 0.7 was never "faster", it was desync: we STOP early, predict the block air
+    // locally (stopDestroyBlock -> removeBlock) and flip instantMine, while the server has not
+    // broken anything yet -- the sweep then advances on a block that is still solid server-side.
+    // Reported as "0.6 không đợi cả primary lẫn secondary vỡ". The pair asymmetry has the same
+    // cause: the single delayed slot is taken by primary's sub-0.7 STOP, so the demoted partner's
+    // own STOP (threshold 1.0, nami BlockBreakingTask(pos, facing, 1.0f) parity) does nothing until
+    // primary's delayed destroy completes and frees it -- hence "secondary vỡ chậm hơn primary".
+    // At >= 0.7 primary destroys instantly via destroyAndAck, never touching that slot, and both
+    // land together, exactly as the user observed at 0.7.
+    public NumberSetting speed = new NumberSetting("Speed", "The speed at which the module will mine blocks.", 1.0, 0.7, 1.0);
     public BooleanSetting farReach = new BooleanSetting("FarReach", "Bypass for Duration 0.7 on Grim. Try this if normal AutoMine doesn't work.", false);
-    // 2026-08-14: reverted to master + diffed against bản gốc 1.21.4 (Desktop copy). "MovementSync"
-    // was invented within this session's branch (ClientRotationEvent arbitration), never merged to
-    // master and with no equivalent in bản gốc -- removed. Normal/Packet below are bản gốc's
-    // originals, routed through RotationManager.legacyRotate()/packetRotate() (its verbatim port of
-    // bản gốc's own rotate()/PriorityBlockingQueue<Rotation>).
     public ModeSetting rotate = new ModeSetting("Rotate", "Automatically rotates to the block when mining it.", "Packet", new String[]{"None", "Normal", "Packet", "Silent"});
-    // See AutoCrystalModule's own rotationReach setting doc -- same mechanism, exposed the same
-    // way here.
-    public BooleanSetting rotationReach = new BooleanSetting("RotationReach", "Waits until the server's last-known rotation is actually close to the target before completing a break (Normal and Silent only).", true);
 
     public BooleanSetting auto = new BooleanSetting("Auto", "Automatically mines blocks deemed optimal for defeating your opponents.", false);
-    public BooleanSetting cityOnly = new BooleanSetting("CityOnly", "Only mines the target's city positions.", new BooleanSetting.Visibility(auto, true), false);
-    public BooleanSetting bed = new BooleanSetting("Bed", "Also targets the 4 blocks beside the target's head, in case they anti-crystal with a bed up there.", new BooleanSetting.Visibility(auto, true), false);
-    public BooleanSetting holeCheck = new BooleanSetting("HoleCheck", "Only mine the player in hole.", new BooleanSetting.Visibility(auto, true), false);
+    public ModeSetting logic = new ModeSetting("Logic", "Auto mining targeting logic.", new BooleanSetting.Visibility(auto, true), "Grim", new String[]{"Grim", "NCP"});
+    public BooleanSetting avoidSharing = new BooleanSetting("AvoidSharing", "Avoids mining blocks that are part of your own surround or safety ring.", new BooleanSetting.Visibility(auto, true), true);
     public BooleanSetting switchReset = new BooleanSetting("SwitchReset", "Resets the mining when switching slots.", new ModeSetting.Visibility(switchMode, "None", "AltSwap", "AltPickup"), true);
     public BooleanSetting doubleMine = new BooleanSetting("Double", "Allows the mining of 2 blocks at the same time.", false);
-    public ModeSetting sequence = new ModeSetting("Sequence", "Sequence of mining for double mine", new BooleanSetting.Visibility(doubleMine, true), "Surround", new String[]{"Surround", "Phase"});
+    public BooleanSetting terrain = new BooleanSetting("Terrain", "Automatically mines terrain blocks to place obsidian when target has no crystal base or is fluid-covered.", new BooleanSetting.Visibility(auto, true), false);
+    public BooleanSetting terrainPlace = new BooleanSetting("TerrainPlace", "Automatically places obsidian once the terrain block is broken.", new BooleanSetting.Visibility(terrain, true), true);
+    public BooleanSetting shift = new BooleanSetting("Shift", "Selects the block behind according to crosshair as secondary when clicking while holding shift.", new BooleanSetting.Visibility(doubleMine, true), true);
     public BooleanSetting antiCrawl = new BooleanSetting("AntiCrawl", "While crawling, mines the block above/below your feet to stand back up instead of staying trapped.", new BooleanSetting.Visibility(doubleMine, true), true);
-    public BooleanSetting instant = new BooleanSetting("Instant", "Instantly mines blocks once they have been replaced.", false);
-    public NumberSetting instantDelay = new NumberSetting("InstantDelay", "The amount of time that has to pass before instantly mining blocks.", new BooleanSetting.Visibility(instant, true), 0, 0, 20);
-    public NumberSetting instantTimeout = new NumberSetting("InstantTimeout", "The amount of time that cancel instantly mine while no block to mine.", new BooleanSetting.Visibility(instant, true), 60, 0, 100);
-    // Instant's own air-check normally idles (waits, doesn't resend) while the position reads
-    // as air, only firing again once the block solidifies -- InstantTimeout is just the ceiling
-    // on how long that idle wait lasts before giving up. Async instead keeps firing the rebreak
-    // burst continuously through the air tick itself, ignoring InstantTimeout entirely (the
-    // whole point is to not wait). Target acquisition (Auto/getTarget/handle) is untouched --
-    // this only changes what an already-tracked primary/secondary/legacySecondary does while
-    // ITS OWN position is air, never which positions get selected.
-    public BooleanSetting async = new BooleanSetting("Async", "Keeps instantly re-firing even while the target position is currently air, instead of waiting for it to solidify.", new BooleanSetting.Visibility(instant, true), false);
+    public ModeSetting rebreak = new ModeSetting("Rebreak", "Automatically re-mines blocks once they have been replaced.", "None", new String[]{"None", "Fast", "Instant"});
+    public NumberSetting instantDelay = new NumberSetting("InstantDelay", "The amount of time that has to pass before instantly mining blocks.", new ModeSetting.Visibility(rebreak, "Fast", "Instant"), 0, 0, 20);
+    public NumberSetting instantTimeout = new NumberSetting("InstantTimeout", "The amount of time that cancel instantly mine while no block to mine.", new ModeSetting.Visibility(rebreak, "Fast", "Instant"), 60, 0, 100);
+    public BooleanSetting async = new BooleanSetting("Async", "Keeps instantly re-firing even while the target position is currently air, instead of waiting for it to solidify.", new ModeSetting.Visibility(rebreak, "Fast", "Instant"), false);
     public BooleanSetting grim = new BooleanSetting("Grim", "Adds a bypass catered to the Grim anticheat.", false);
-    // Was dropped entirely during the 1.21.4 -> 26.1.2 port -- Instant relies on this to make the
-    // block go locally-air the INSTANT we fire the break packet, not whenever the server's own
-    // block-update packet round-trips back. Without it, mining==true (Instant deliberately never
-    // clears it) but the position's BlockState never locally changes, so process() just re-fires
-    // the same STOP_DESTROY_BLOCK/swing burst on the SAME stale block every tick instead of ever
-    // seeing canBeReplaced()==true and cancelling out to let the caller re-target -- i.e. Instant
-    // never actually reacts to a target re-placing the block, it just spams the old one.
     public BooleanSetting strict = new BooleanSetting("Strict", "Waits for the server to tick you before switching back.", false);
     public BooleanSetting whileEating = new BooleanSetting("WhileEating", "Mines blocks while eating.", true);
-    public ModeSetting whitelistMode = new ModeSetting("ListMode", "All = mine every block. WhiteList = mine only listed blocks. BlackList = mine every block except listed.", "All", new String[]{"All", "WhiteList", "BlackList"});
-    public WhitelistSetting whitelist = new WhitelistSetting("Whitelist", "Blocks the WhiteList/BlackList mode compares against.", WhitelistSetting.Type.BLOCKS);
+    public ModeSetting whitelistMode = new ModeSetting("Mode", "All = mine every block. WhiteList = mine only listed blocks. BlackList = mine every block except listed.", "All", new String[]{"All", "WhiteList", "BlackList"});
+    public WhitelistSetting whitelist = new WhitelistSetting("List", "Blocks the WhiteList/BlackList mode compares against.", WhitelistSetting.Type.BLOCKS);
 
     public CategorySetting renderCategory = new CategorySetting("Render", "The category containing all settings related to rendering.");
     public ModeSetting render = new ModeSetting("Render", "Mode", "The rendering that will be applied to the blocks highlighted.", new CategorySetting.Visibility(renderCategory), "Both", new String[]{"None", "Fill", "Outline", "Both"});
@@ -118,114 +93,285 @@ public class SpeedMineModule extends Module {
     public ModeSetting instantRender = new ModeSetting("InstantRender", "Instant", "The color that will be used for rendering instantly mined blocks.", new CategorySetting.Visibility(renderCategory), "None", new String[]{"None", "Default", "Custom"});
     public ColorSetting instantColor = new ColorSetting("InstantColor", "The custom color used for instantly mined blocks.", new ModeSetting.Visibility(instantRender, "Custom"), new ColorSetting.Color(new Color(148, 0, 211), false, false));
 
-    // ═══════════════════════════════════════════════════════════════════
-    // State ownership -- three DISTINCT machines, deliberately not one:
-    //
-    //  1. primary  (Action)     ACTIVE. Owns the progress loop, the START, the completing
-    //                           STOP burst, rotations, slot switching, Instant/rebreak.
-    //                           Exactly one at a time. Unchanged in spirit by this rewrite.
-    //
-    //  2. secondary (Secondary) PASSIVE. Never sends a digging packet, ever. Created only by
-    //                           Action.demote(), which fires ONE real STOP_DESTROY_BLOCK for
-    //                           the position being handed over. Below the server's 0.7
-    //                           threshold that STOP does not break the block -- it parks it in
-    //                           ServerPlayerGameMode's delayed-destroy slot (hasDelayedDestroy
-    //                           / delayedDestroyPos / delayedTickStart, verified in .mcref
-    //                           mojmap), which the SERVER then finishes on its own over the
-    //                           following ticks with zero further packets from us. So all the
-    //                           secondary does is watch canBeReplaced() and fire this project's
-    //                           completion side-effects when the break actually lands, with a
-    //                           timeout to write it off. This is homovore-public's
-    //                           tickSecondary() model (github.com/leonetics/homovore-public).
-    //
-    //                           The old design made `secondary` just another Action, i.e. a
-    //                           second copy of the ACTIVE machine, which re-drove packets for a
-    //                           target the server was already finishing -- and when its
-    //                           completing STOP got rejected it re-fired fireBreakBurst() every
-    //                           tick forever (confirmed live 2026-08-12). That whole class of
-    //                           bug is structurally impossible now: Secondary owns no sender.
-    //
-    //  3. rebreak  (Action.instantMine) ACTIVE, but only ever on the PRIMARY. Once a primary
-    //                           completes with Instant on it stays alive and idle through the
-    //                           air ticks, then fires a bare STOP the instant the position is
-    //                           solid again. Untouched by this rewrite -- it is simply no
-    //                           longer entangled with the secondary (an Action can never BE
-    //                           the secondary anymore, so the old `if (secondary) instantMine
-    //                           = false` cross-talk is gone).
-    // ═══════════════════════════════════════════════════════════════════
     @Getter private Action primary = null;
     @Getter private Secondary secondary = null;
-    // FarReach off: bản gốc 1.21.4's dual-Action doubleMine model, restored verbatim -- the
-    // secondary slot is just another Action instance (same class, same start/process/cancel),
-    // not the Secondary hold/release/ticks latch above. Only ever populated while
-    // !farReach.getValue(); the demote()-based Secondary model above owns doubleMine when
-    // FarReach is on. See Action's own farReach branches (start/process/cancel/getSpeed).
     @Getter private Action legacySecondary = null;
 
-    /** homovore's SECONDARY_TIMEOUT: grace ticks past the predicted server completion. */
+    public Action getPrimary() { return primary; }
+    public Secondary getSecondary() { return secondary; }
+    public Action getLegacySecondary() { return legacySecondary; }
+
     private static final int SECONDARY_TIMEOUT = 10;
-    // Secondary.hold()/release()'s single-slot latch state -- lives on the module, not on the
-    // Secondary instance, since it names a REAL inventory slot that must be restored even if the
-    // instance holding it gets replaced/dropped out from under it.
     private int secondaryHoldSlot = -1;
     private int secondaryOriginalSlot = -1;
-    // ponytail: hard ceiling so a slow held item (crystal, totem...) can't wedge the one
-    // secondary slot for minutes. Raise it only if a legitimately slow break gets cut off.
     private static final int SECONDARY_MAX_TICKS = 60;
 
-    // Re-entrancy guard: cancel()/start() below send a ServerboundSetCarriedItemPacket themselves,
-    // which re-fires this same PacketSendEvent.Post listener and matches the same condition --
-    // without this guard that recurses forever (StackOverflowError).
+    private boolean doubleEngaged = false;
+    // 2026-08-20 FIX v7 (reported: "chỉ 1 trong 2 block primary/secondary vỡ là chuyển sang
+    // isSurround luôn" -- speed<0.7 exposes it, speed>=0.7 just narrows the timing window).
+    // Tracks whether the CURRENT primary already has an established partner (a Secondary it was
+    // demoted-into-existence alongside). `hasSecondarySlot()` alone can't tell "never paired yet"
+    // apart from "was paired, partner already finished" -- both read as false once the partner is
+    // gone, so slotsFull()/phaseSlotsFull() wrongly let the ring/phase sweep steal an UNFINISHED
+    // primary the instant its partner (not itself) breaks. Set true only at the exact moment a
+    // demote-swap creates a partner for the new primary; cleared whenever primary changes identity
+    // or goes null. See slotsFull()/phaseSlotsFull() for the actual gate.
+    private boolean primaryPaired = false;
     private boolean handlingSwitchReset = false;
 
     private final Timer instantTimer = new Timer();
     private final Timer mineTimer = new Timer();
 
-    // FarReach/GrimDecoy's self-throttle, ported verbatim from homovore-public's SpeedMineModule
-    // (canBegin/trackStarts/delayBalance/lastStopMs -- github.com/leonetics/homovore-public). This
-    // is the piece that was missing after just porting the decoy send itself: it's homovore's OWN
-    // local simulation of GrimAC's FastBreak.blockDelayBalance formula (checks/impl/breaking/
-    // FastBreak.java: breakDelay>=275 ? balance*=0.9 : balance+=300-breakDelay; flags past 1000),
-    // used to pre-emptively hold off starting a NEW mine (see Action.tryStart()) whenever doing so
-    // NOW would push Grim's real balance past a safety margin (900) -- without it, decoy mode sends
-    // TWICE the START_DESTROY_BLOCK traffic (trackStarts counts the decoy as its own start) with NO
-    // pacing, which is worse for FastBreak than not using decoy at all, not better.
     private double delayBalance = 0;
     private long lastStopMs = 0;
 
-    // homovore's `breakDelay` setting (default 6 ticks). Not exposed as a setting here on purpose
-    // (user constraint: FarReach must stay a single toggle) -- hardcoded to homovore's default.
-    // ponytail: fixed 6 ticks, promote to a NumberSetting only if a server needs different pacing.
     private static final int STOP_COOLDOWN_TICKS = 6;
     private int stopCooldown = 0;
 
+    private final List<BlockPos> pendingTerrainPlacements = new ArrayList<>();
+    private TerrainPair activeTerrainPair = null;
+    private UUID activeTerrainTarget = null;
+
+    public record TerrainPair(Direction direction, BlockPos surroundPos, BlockPos basePos, double score) {}
+
+    private boolean isRealTerrainBase(BlockPos pos) {
+        if (pos == null || mc.level == null) return false;
+        net.minecraft.world.level.block.Block block = mc.level.getBlockState(pos).getBlock();
+        return block == Blocks.OBSIDIAN || block == Blocks.BEDROCK;
+    }
+
     /**
-     * homovore's `stopCooldown == 0 && canBegin()` gate (startMine/onTick). THIS is what was
-     * missing: trackStarts() was already charging the balance but nothing ever refused to start.
-     * Only applied while FarReach is on -- the plain (no-decoy) path is the pre-existing
-     * known-good behaviour and stays unthrottled.
+     * The REAL base (obsidian/bedrock) of the terrain pair we are currently working. Never a legal
+     * mining target -- terrain itself only ever picks a base while !hasRealBase, so any slot that
+     * ends up here is a leftover Action whose block turned back solid under it.
      */
-    // Mode-agnostic "is the one extra mining slot taken" check -- FarReach on reads Secondary,
-    // FarReach off reads legacySecondary. Both models only ever have one passive slot at a time.
+    private boolean isProtectedTerrainBase(BlockPos pos) {
+        return terrain.getValue() && activeTerrainPair != null && pos != null
+                && pos.equals(activeTerrainPair.basePos()) && isRealTerrainBase(pos);
+    }
+
+    private boolean allSidesTerraformed(Player target) {
+        BlockPos feet = target.blockPosition();
+        boolean sawCandidate = false;
+        for (Direction dir : Direction.Plane.HORIZONTAL) {
+            BlockPos surroundPos = feet.relative(dir);
+            BlockPos basePos = surroundPos.below();
+            if (isOutOfRange(surroundPos) || isOutOfRange(basePos)) continue;
+
+            BlockState surroundState = mc.level.getBlockState(surroundPos);
+            if (surroundState.getBlock().defaultDestroyTime() < 0) continue;
+
+            sawCandidate = true;
+            BlockState baseState = mc.level.getBlockState(basePos);
+            boolean hasRealBase = baseState.getBlock() == Blocks.OBSIDIAN || baseState.getBlock() == Blocks.BEDROCK;
+            if (!hasRealBase) return false;
+        }
+        return sawCandidate;
+    }
+
+    public TerrainPair getBestTerrainPair(Player target) {
+        if (target == null || mc.level == null || mc.player == null) {
+            activeTerrainPair = null;
+            activeTerrainTarget = null;
+            return null;
+        }
+
+        if (allSidesTerraformed(target)) {
+            activeTerrainPair = null;
+            activeTerrainTarget = null;
+            return null;
+        }
+
+        UUID targetUUID = target.getUUID();
+        BlockPos targetFeet = target.blockPosition();
+
+        if (activeTerrainPair != null && targetUUID.equals(activeTerrainTarget)) {
+            BlockPos currentSurround = activeTerrainPair.surroundPos();
+            BlockPos currentBase = activeTerrainPair.basePos();
+
+            boolean inRange = !isOutOfRange(currentSurround) && !isOutOfRange(currentBase);
+            boolean nearTarget = targetFeet.distManhattan(currentSurround) <= 2;
+
+            BlockState surroundState = mc.level.getBlockState(currentSurround);
+            BlockState baseState = mc.level.getBlockState(currentBase);
+
+            boolean surroundBreakable = surroundState.getBlock().defaultDestroyTime() >= 0;
+            boolean baseBreakable = baseState.getBlock().defaultDestroyTime() >= 0 || baseState.getBlock() == Blocks.BEDROCK || baseState.getBlock() == Blocks.OBSIDIAN || pendingTerrainPlacements.contains(currentBase);
+
+            boolean surroundDone = surroundState.canBeReplaced();
+            boolean baseDone = baseState.getBlock() == Blocks.OBSIDIAN || baseState.getBlock() == Blocks.BEDROCK;
+
+            if (inRange && nearTarget && surroundBreakable && baseBreakable && (!surroundDone || !baseDone)) {
+                return activeTerrainPair;
+            }
+        }
+
+        Set<BlockPos> selfSurround = new HashSet<>();
+        if (avoidSharing.getValue()) {
+            selfSurround.addAll(HoleUtils.getFeetPositions(mc.player, true, false, true));
+            for (BlockPos p : HoleUtils.getInsidePositions(mc.player)) {
+                for (Direction dir : Direction.Plane.HORIZONTAL) {
+                    selfSurround.add(p.relative(dir));
+                }
+            }
+        }
+
+        TerrainPair bestPair = null;
+        double bestScore = Double.MAX_VALUE;
+
+        for (Direction dir : Direction.Plane.HORIZONTAL) {
+            BlockPos surroundPos = targetFeet.relative(dir);
+            BlockPos basePos = surroundPos.below();
+
+            if (isOutOfRange(surroundPos) || isOutOfRange(basePos)) continue;
+
+            BlockState surroundState = mc.level.getBlockState(surroundPos);
+            BlockState baseState = mc.level.getBlockState(basePos);
+
+            if (surroundState.getBlock().defaultDestroyTime() < 0) continue;
+            if (baseState.getBlock().defaultDestroyTime() < 0 && baseState.getBlock() != Blocks.BEDROCK && baseState.getBlock() != Blocks.OBSIDIAN && !pendingTerrainPlacements.contains(basePos)) continue;
+
+            double score = 0;
+
+            if (avoidSharing.getValue() && (selfSurround.contains(surroundPos) || selfSurround.contains(basePos))) {
+                score += 100000.0;
+            }
+
+            boolean hasRealBase = baseState.getBlock() == Blocks.OBSIDIAN || baseState.getBlock() == Blocks.BEDROCK;
+            
+            if (hasRealBase) {
+                score -= 20000.0;
+            } else if (!baseState.canBeReplaced()) {
+                score += baseState.getBlock().defaultDestroyTime() * 10.0;
+            }
+
+            if (!surroundState.canBeReplaced()) {
+                score -= 10000.0;
+            }
+
+            boolean isMiningPair = isMining(surroundPos) || isMining(basePos);
+            if (isMiningPair) {
+                score -= 50000.0;
+            }
+
+            score += mc.player.distanceToSqr(Vec3.atCenterOf(surroundPos));
+
+            if (score < bestScore) {
+                bestScore = score;
+                bestPair = new TerrainPair(dir, surroundPos, basePos, score);
+            }
+        }
+
+        activeTerrainPair = bestPair;
+        activeTerrainTarget = bestPair != null ? targetUUID : null;
+        return bestPair;
+    }
+
+    public boolean hasCrystalBaseForTarget(Player target) {
+        if (target == null || mc.level == null) return false;
+        BlockPos targetFeet = target.blockPosition();
+
+        for (Direction dir : Direction.Plane.HORIZONTAL) {
+            BlockPos surroundPos = targetFeet.relative(dir);
+            BlockPos base = surroundPos.below();
+            BlockState state = mc.level.getBlockState(base);
+            if (state.getBlock() == Blocks.OBSIDIAN || state.getBlock() == Blocks.BEDROCK) {
+                if (!isOutOfRange(surroundPos) && !isOutOfRange(base)) return true;
+            }
+        }
+        return false;
+    }
+
+    public List<BlockPos> getTerrainPositions(Player target) {
+        TerrainPair pair = getBestTerrainPair(target);
+        if (pair == null) return java.util.Collections.emptyList();
+        
+        BlockState baseState = mc.level.getBlockState(pair.basePos());
+        if (baseState.getBlock() == Blocks.OBSIDIAN || baseState.getBlock() == Blocks.BEDROCK) {
+            return java.util.Collections.emptyList();
+        }
+        return List.of(pair.basePos());
+    }
+
+    private void placePendingTerrain() {
+        if (!terrainPlace.getValue() || pendingTerrainPlacements.isEmpty()) return;
+        if (mc.player == null || mc.level == null) return;
+        if (!whileEating.getValue() && EntityUtils.isEating()) return;
+
+        int obsidianSlot = switchMode.getValue().equalsIgnoreCase("None") ? -1 : InventoryUtils.find(Items.OBSIDIAN, 0, switchMode.getValue().equalsIgnoreCase("AltSwap") || switchMode.getValue().equalsIgnoreCase("AltPickup") ? InventoryUtils.INVENTORY_END : InventoryUtils.HOTBAR_END);
+        if (obsidianSlot == -1) obsidianSlot = InventoryUtils.findHardestBlock(0, 8);
+        if (obsidianSlot == -1) return;
+
+        List<BlockPos> toRemove = new ArrayList<>();
+        for (BlockPos pos : new ArrayList<>(pendingTerrainPlacements)) {
+            if (isOutOfRange(pos)) {
+                toRemove.add(pos);
+                continue;
+            }
+
+            BlockState state = mc.level.getBlockState(pos);
+            if (state.getBlock() == Blocks.OBSIDIAN) {
+                toRemove.add(pos);
+                if (primary != null && primary.getPosition().equals(pos)) {
+                    primary.cancel();
+                    primary = null;
+                }
+                if (legacySecondary != null && legacySecondary.getPosition().equals(pos)) {
+                    legacySecondary.cancel();
+                    legacySecondary = null;
+                }
+                if (secondary != null && secondary.getPosition().equals(pos)) {
+                    secondary.release();
+                    secondary = null;
+                }
+                continue;
+            }
+
+            if (state.canBeReplaced() && WorldUtils.isPlaceable(pos)) {
+                Direction direction = WorldUtils.getDirection(pos, strict.getValue());
+                if (direction == null) direction = WorldUtils.getClosestDirection(pos, true);
+                if (direction != null) {
+                    int previousSlot = mc.player.getInventory().getSelectedSlot();
+                    InventoryUtils.switchSlot(switchMode.getValue(), obsidianSlot, previousSlot);
+                    boolean placed = WorldUtils.placeBlock(pos, direction, InteractionHand.MAIN_HAND,
+                            rotate.getValue().equalsIgnoreCase("Packet") || rotate.getValue().equalsIgnoreCase("Normal") || rotate.getValue().equalsIgnoreCase("Silent"),
+                            true,
+                            render.getValue().equalsIgnoreCase("Both") || render.getValue().equalsIgnoreCase("Fill"));
+                    InventoryUtils.switchBack(switchMode.getValue(), obsidianSlot, previousSlot);
+                    if (placed) {
+                        toRemove.add(pos);
+                        if (primary != null && primary.getPosition().equals(pos)) {
+                            primary.cancel();
+                            primary = null;
+                        }
+                        if (legacySecondary != null && legacySecondary.getPosition().equals(pos)) {
+                            legacySecondary.cancel();
+                            legacySecondary = null;
+                        }
+                        if (secondary != null && secondary.getPosition().equals(pos)) {
+                            secondary.release();
+                            secondary = null;
+                        }
+                    }
+                }
+            }
+        }
+        toRemove.forEach(pendingTerrainPlacements::remove);
+    }
+
     private boolean hasSecondarySlot() {
         return farReach.getValue() ? secondary != null : legacySecondary != null;
     }
 
     private boolean canStartNow() {
-        // Mirrors process()'s own interactPaused gate: without this, a NEW Action created
-        // while the real player is mid-eat (Auto retargeting a moving surround block, say)
-        // skips process()'s pause check entirely -- tryStart() is called once straight out of
-        // the Action constructor, unconditionally sending START_DESTROY_BLOCK + a swing packet
-        // for the fresh position regardless of interactPaused. Existing actions already idle
-        // correctly during a pause; only fresh ones were slipping through.
-        if (interactPaused) return false;
+        if (!whileEating.getValue() && (interactPaused || (mc.player != null && (mc.player.isUsingItem() || EntityUtils.isEating())))) return false;
         if (!farReach.getValue()) return true;
         return stopCooldown == 0 && canBegin();
     }
 
     private boolean canBegin() {
         long delay = System.currentTimeMillis() - lastStopMs;
-        if (delay >= 275) return true; // grim decays the balance instead
+        if (delay >= 275) return true;
         double cost = (300 - delay) * (farReach.getValue() ? 2 : 1);
         return delayBalance + cost <= 900;
     }
@@ -243,55 +389,21 @@ public class SpeedMineModule extends Module {
         markStop(false);
     }
 
-    // cooldown mirrors homovore's stopBreak(slot, cooldown) flag: only the STOP that actually
-    // completes a break arms the cooldown; the single hand-off STOP that Action.demote() sends
-    // (homovore's demote() -> stopBreak(slot, false)) must not.
     private void markStop(boolean cooldown) {
         lastStopMs = System.currentTimeMillis();
         if (cooldown) stopCooldown = STOP_COOLDOWN_TICKS;
     }
-    // Ported from Sydney-Legacy -- lets other modules cheaply detect "the block SpeedMine is
-    // actually mining right now changed" without polling getPrimary()/getPosition() and diffing
-    // it themselves every tick.
-    private BlockPos lastPrimaryPosition = null;
 
     public BlockPos getMiningPosition() {
         return primary != null && primary.isMining() ? primary.getPosition() : null;
     }
 
-    public boolean isPrimaryPositionChanged() {
-        BlockPos current = getMiningPosition();
-        if (current == null && lastPrimaryPosition == null) return false;
-        if (current == null || lastPrimaryPosition == null) {
-            lastPrimaryPosition = current;
-            return true;
-        }
-        if (!current.equals(lastPrimaryPosition)) {
-            lastPrimaryPosition = current;
-            return true;
-        }
-        return false;
-    }
-
-    /**
-     * When true, SpeedMine pauses mining to let the client eat/interact.
-     * Set by PbPlayHandler when the client sends an interact packet,
-     * cleared when the client sends RELEASE_USE_ITEM.
-     */
     @Getter private volatile boolean interactPaused = false;
+    public boolean isInteractPaused() { return interactPaused; }
     private volatile long interactPausedAt = 0;
     private boolean needsRestart = false;
 
-    // Shared with PbPlayHandler.syncSlotForInteract() -- see Action.tryStart()'s doc for why this
-    // needs to be a real lock and not just interactPaused's own volatile read/write.
     public final Object interactSyncLock = new Object();
-
-    // Only interactions that actually hold down "use" (eating, drinking, blocking,
-    // bow...) send RELEASE_USE_ITEM afterward -- a plain right-click on a chest,
-    // door, entity, etc. never does. If interactPaused was set for one of those,
-    // there's no packet coming to ever clear it, so mining would stay paused
-    // forever. Auto-expire the pause instead of waiting on a release that may
-    // never arrive.
     private static final long INTERACT_PAUSE_TIMEOUT_MS = 750L;
 
     public void setInteractPaused(boolean paused) {
@@ -299,20 +411,15 @@ public class SpeedMineModule extends Module {
         if (paused) {
             this.interactPausedAt = System.currentTimeMillis();
         } else {
-            // When unpausing, flag that mining needs to restart
-            // (re-send pickaxe + START_DESTROY to the server)
             this.needsRestart = true;
         }
     }
 
-    // Proxy-synced render state for client-side rendering
     public volatile BlockPos proxyPrimaryPos = null;
     public volatile float proxyPrimaryProgress = 0;
     public volatile BlockPos proxySecondaryPos = null;
     public volatile float proxySecondaryProgress = 0;
 
-    // Interpolation bookkeeping so proxy-synced progress (updated once per proxy
-    // tick over the network) doesn't render as a hard step every frame.
     private volatile float prevProxyPrimaryProgress = 0;
     private volatile long proxyPrimaryUpdateTime = 0;
     private volatile long proxyPrimaryUpdateInterval = 50;
@@ -320,22 +427,12 @@ public class SpeedMineModule extends Module {
     private volatile long proxySecondaryUpdateTime = 0;
     private volatile long proxySecondaryUpdateInterval = 50;
 
-    /**
-     * Called from the client-side S2C_MINING_STATE packet handler. Shifts the
-     * previous progress value forward so renderProxyState can interpolate
-     * between network updates instead of snapping.
-     */
     public void updateProxyMiningState(BlockPos primaryPos, float primaryProgress,
                                        BlockPos secondaryPos, float secondaryProgress) {
         long now = System.currentTimeMillis();
 
         boolean primaryPosChanged = primaryPos == null ? proxyPrimaryPos != null : !primaryPos.equals(proxyPrimaryPos);
         prevProxyPrimaryProgress = primaryPosChanged ? primaryProgress : proxyPrimaryProgress;
-        // Bounded above as well as below: proxyPrimaryUpdateTime starts at 0 (epoch), so the
-        // very first update here would otherwise compute "now - 0" -- a multi-decade interval --
-        // and interpolatedProgress's `t` would stay ~0 forever, looking exactly like "stuck, not
-        // interpolating". The same bug recurs any time updates stop for a while (module toggled
-        // off/on, network hiccup). Capping at the max interpolation window fixes both.
         proxyPrimaryUpdateInterval = Mth.clamp(now - proxyPrimaryUpdateTime, 1L, 500L);
         proxyPrimaryUpdateTime = now;
         proxyPrimaryPos = primaryPos;
@@ -354,6 +451,111 @@ public class SpeedMineModule extends Module {
         return prev + (current - prev) * t;
     }
 
+    private boolean handleSecondary(BlockPos position, int priority) {
+        if (!canHandle(position)) return false;
+        if ((primary != null && primary.getPosition().equals(position)) || (secondary != null && secondary.getPosition().equals(position)) || (legacySecondary != null && legacySecondary.getPosition().equals(position))) return true;
+        if (!doubleMine.getValue()) return false;
+
+        if (farReach.getValue()) {
+            if (secondary == null) secondary = new Secondary(position, priority, mc.level.getBlockState(position), 0.0f);
+        } else {
+            if (legacySecondary == null) legacySecondary = new Action(position, priority);
+        }
+        return true;
+    }
+
+    private boolean handle(BlockPos position, int priority) {
+        if (!canHandle(position)) return false;
+
+        if ((primary != null && primary.getPosition().equals(position)) || (secondary != null && secondary.getPosition().equals(position)) || (legacySecondary != null && legacySecondary.getPosition().equals(position))) return true;
+
+        boolean dual = doubleMine.getValue() && (doubleEngaged || priority > 0);
+
+        if (!farReach.getValue()) {
+            if (dual) {
+                if (legacySecondary != null) {
+                    primary = new Action(position, priority);
+                } else {
+                    if (primary != null) {
+                        if (!primary.isInstantMine()) legacySecondary = primary;
+                        primary = new Action(position, priority);
+                    } else {
+                        primary = new Action(position, priority);
+                    }
+                }
+                // v7: snapshot pairing state right as this primary is (re)born. hasSecondarySlot()
+                // stays accurate for THIS instant; primaryPaired then holds that truth even after
+                // legacySecondary later releases on its own (outside handle()) -- see field comment.
+                primaryPaired = hasSecondarySlot();
+            } else {
+                if (primary != null) primary.cancel();
+                primary = new Action(position, priority);
+                primaryPaired = false;
+            }
+            return true;
+        }
+
+        if (dual) {
+            Secondary demoted = secondary == null && primary != null && !primary.isInstantMine() ? primary.demote() : null;
+            if (demoted != null) secondary = demoted;
+            else if (primary != null) primary.cancel();
+            primary = new Action(position, priority);
+            primaryPaired = hasSecondarySlot();
+        } else {
+            if (primary != null) primary.cancel();
+            primary = new Action(position, priority);
+            primaryPaired = false;
+        }
+
+        return true;
+    }
+
+    /** Primary actively digging a real (solid) block. */
+    private boolean primaryDigging() {
+        return primary != null && !mc.level.getBlockState(primary.getPosition()).canBeReplaced();
+    }
+
+    /**
+     * Primary parked on an air pos that is STILL a live target slot -- rebreak camp, nami's
+     * BlockBreakingTask.instantRemine. Not idle: it is the point of Instant/Fast rebreak.
+     */
+    private boolean primaryCamping() {
+        if (primary == null || !primary.isInstantMine()) return false;
+        if (!mc.level.getBlockState(primary.getPosition()).canBeReplaced()) return false;
+        Target t = getTarget();
+        return t != null && isTargetSurroundPosition(primary.getPosition(), t.player());
+    }
+
+    // v7: `hasSecondarySlot()` alone reads false both "never paired" and "was paired, partner
+    // already broke" -- OR in primaryPaired so the second case still counts as full/blocked. Only
+    // "never paired" (fresh primary, no partner yet) is allowed to let the sweep keep looking.
+    private boolean slotsFull() {
+        return (primaryDigging() || primaryCamping()) && (!doubleEngaged || hasSecondarySlot() || primaryPaired);
+    }
+
+    /**
+     * 2026-08-20 FIX v6, root cause of BOTH new reports (ring walks 3->4->5 instead of settling;
+     * Speed < 0.7 jumping off the phase pair early).
+     *
+     * slotsFull() alone can never stop the walk, because its second term frees the sweep whenever
+     * the PASSIVE slot is empty while the target is phased -- and every sweep pick goes through
+     * handle(), which ALWAYS reassigns primary (nami onBlockStartBreak parity, v4). So each time a
+     * Secondary released (3 hold ticks, nami doublemineHoldTicks) the "next" ring block was promoted
+     * to PRIMARY and the camp was cancelled: 1 -> 2 -> 3 -> 4 -> 5. Speed < 0.7 only made it start
+     * sooner -- the break burst fires at progress >= getSpeed(), so a 0.6 threshold puts the block
+     * locally air (and the slot up for grabs) a third of the way early. Same bug, earlier clock.
+     *
+     * nami does not walk because its list is a stable PRIORITY order re-derived every tick, and
+     * phase tasks outrank surround tasks (AutoMineFeature `priority`: ...phase, phase, surroundFeet,
+     * surroundFace). Ours is "any candidate not currently mined", which slides down the ring.
+     * So: a camping primary may only be preempted by a HIGHER-priority (phase/inside) pick. Ring
+     * picks stand down entirely -- that is the "settle and instant-camp on one edge" the user wants,
+     * while `inside` still takes over the moment the enemy re-places a block they are phased into.
+     */
+    private boolean phaseSlotsFull() {
+        return primaryDigging() && (!doubleEngaged || hasSecondarySlot() || primaryPaired);
+    }
+
     @SubscribeEvent
     public void onPlayerUpdate(PlayerUpdateEvent event) {
         if (isDeferringToProxy()) return;
@@ -361,10 +563,8 @@ public class SpeedMineModule extends Module {
 
         if (stopCooldown > 0) stopCooldown--;
 
-        // Also drops the secondary if doubleMine got toggled off mid-flight -- the old
-        // `doubleMine && ...` gate just stopped ticking it, leaving the slot occupied forever.
-        // release() runs on every drop path (not just process()'s own internal ones) so toggling
-        // Double off mid-latch doesn't strand the real inventory selection on the latched tool.
+        if (!doubleMine.getValue() || !auto.getValue()) doubleEngaged = false;
+
         if (farReach.getValue()) {
             if (secondary != null && !doubleMine.getValue()) {
                 secondary.release();
@@ -372,38 +572,49 @@ public class SpeedMineModule extends Module {
             } else if (secondary != null && secondary.process()) {
                 secondary = null;
             }
-        } else if (doubleMine.getValue() && legacySecondary != null && legacySecondary.process()) {
-            // bản gốc verbatim: no toggle-off cleanup case -- doubleMine flipping off mid-flight
-            // just stops ticking it here, exactly like the original (known old quirk, not fixed
-            // in this path on purpose -- see legacySecondary's field doc).
+        } else if (legacySecondary != null && !doubleMine.getValue()) {
+            legacySecondary.cancel();
+            legacySecondary = null;
+        } else if (legacySecondary != null && legacySecondary.process()) {
             legacySecondary = null;
         }
-        if (primary != null && primary.process()) primary = null;
+        if (primary != null && primary.process()) { primary = null; primaryPaired = false; }
 
-        // Sync mining state to the client for rendering
         if (isProxyActive()) {
             syncMiningStateToClient();
         }
 
+        placePendingTerrain();
+
+        // Terrain base self-protect, unconditional and branch-agnostic (the flag-based net further
+        // down only runs inside the doubleMine branch, and only catches slots still carrying
+        // terrainBase). Runs right after placePendingTerrain() so a slot is dropped the same tick
+        // its block turns back into a real base -- before anything can restart on it.
+        //
+        // Why only !farReach ever showed this: its second slot (legacySecondary) is an ACTIVE
+        // Action with its own restart/rebreak state machine, so a leftover task there re-mines the
+        // block the moment it reads solid again. farReach's slot is a passive Secondary that cannot
+        // mine at all, which is exactly why turning FarReach on "fixed" it.
+        if (primary != null && isProtectedTerrainBase(primary.getPosition())) {
+            primary.cancel();
+            primary = null;
+            primaryPaired = false;
+        }
+        if (legacySecondary != null && isProtectedTerrainBase(legacySecondary.getPosition())) {
+            legacySecondary.cancel();
+            legacySecondary = null;
+        }
+
         if (!auto.getValue()) return;
+
+        Target target = getTarget();
+
         BlockPos secondaryPos = farReach.getValue() ? (secondary != null ? secondary.getPosition() : null) : (legacySecondary != null ? legacySecondary.getPosition() : null);
         int secondaryPriority = farReach.getValue() ? (secondary != null ? secondary.getPriority() : 0) : (legacySecondary != null ? legacySecondary.getPriority() : 0);
         if ((primary != null && primary.getPriority() > 0 && !WorldUtils.isReplaceable(primary.getPosition())) || (secondaryPos != null && secondaryPriority > 0 && !WorldUtils.isReplaceable(secondaryPos)))
             return;
 
-        Target target = getTarget();
-
         if (doubleMine.getValue()) {
-            // 2026-08-15 FIX (reported: "speedmine chưa mine xong thì địch đã crawl phase sang vị
-            // trí khác" -- auto not reacting fast enough). This gate freezes the ENTIRE
-            // inside/outside/bed re-target sweep below for 350ms after every block break/burst
-            // (mineTimer.reset() at both call sites) -- 7 ticks where a crawl-phasing enemy's new
-            // surround/hole position is never even looked at, let alone mined. hasSecondarySlot()
-            // right below already caps concurrent slots to one, and handle() itself no-ops a
-            // position already being mined -- nothing here actually needed 350ms of external
-            // spacing to stay correct, it was just throttled far more than combat reactivity can
-            // afford. One tick (the fastest this can possibly re-run anyway, PlayerUpdateEvent is
-            // itself per-tick) instead of seven.
             if (!mineTimer.hasTimeElapsed(50L)) return;
 
             if (antiCrawl.getValue() && mc.player.isVisuallyCrawling()) {
@@ -422,90 +633,276 @@ public class SpeedMineModule extends Module {
                 }
             }
 
-            // Deliberately does NOT skip the search just because primary is idling in Instant's
-            // rebreak-wait (primary.isInstantMine()) -- that gate existed in the 1.21.4 original too,
-            // but it isn't in homovore-public's model (hasFreePrimary() there is just "pos == null ||
-            // finished", never gated on the idle/rebreak wait) and it's what caused Instant to stop
-            // actively re-targeting the enemy's moving surround/phase positions while primed: this
-            // whole inside/outside sweep would just never run again until InstantTimeout expired.
-            // secondary/legacySecondary still blocks -- there's only ever room for the one extra slot.
-            if (hasSecondarySlot()) return;
+            if (target == null) doubleEngaged = false;
 
             if (target != null) {
-                Runnable inside = () -> {
-                    List<BlockPos> insidePositions = HoleUtils.getInsidePositions(target.player()).stream().filter(insidePosition -> !mc.level.getBlockState(insidePosition).canBeReplaced()).toList();;
-                    for (BlockPos position : insidePositions) {
-                        if (primary != null && hasSecondarySlot()) break;
-                        if (isInvalid(position) || isOutOfRange(position)) continue;
-                        handle(position, 0);
+                List<BlockPos> validBlocks = new ArrayList<>();
+                List<BlockPos> insidePositions = HoleUtils.getInsidePositions(target.player());
+                
+                validBlocks.addAll(insidePositions);
+                HashSet<BlockPos> feetPositions = HoleUtils.getFeetPositions(target.player(), true, false, true);
+                validBlocks.addAll(feetPositions);
+                
+                for (BlockPos pos : feetPositions) {
+                    validBlocks.add(pos.below());
+                    for (Direction dir : Direction.Plane.HORIZONTAL) {
+                        validBlocks.add(pos.relative(dir).below());
+                    }
+                }
+                
+                for (BlockPos pos : insidePositions) {
+                    for (Direction dir : Direction.Plane.HORIZONTAL) {
+                        validBlocks.add(pos.relative(dir));
+                        validBlocks.add(pos.relative(dir).below());
+                    }
+                    validBlocks.add(pos.above());
+                    validBlocks.add(pos.below());
+                }
+
+                TerrainPair bestPair = terrain.getValue() ? getBestTerrainPair(target.player()) : null;
+                if (bestPair != null) {
+                    validBlocks.add(bestPair.surroundPos());
+                    validBlocks.add(bestPair.basePos());
+                }
+
+                // 2026-08-20 FIX (reported: "terrain xây bệ đỡ xong tự phá obsidian luôn" -- matches
+                // the race this file's own Action#terrainBase doc already predicted). The ONLY thing
+                // that used to stop a terrainBase Action from re-mining its own freshly-placed base
+                // was placePendingTerrain()'s position-match cancel -- which only runs while
+                // TerrainPlace is on AND the pos is still in pendingTerrainPlacements, and only fires
+                // AFTER Action#process() already ran this tick. Any gap (TerrainPlace off, placement
+                // landing a tick late, position already removed from pendingTerrainPlacements) left
+                // a terrainBase Action free to see the block solid again (now real obsidian/bedrock)
+                // and just tryStart() on it like any other target. This is a second, independent
+                // safety net: ANY slot flagged terrainBase whose position has become a real base gets
+                // cancelled outright, unconditionally -- a base is never a legitimate mining target.
+                if (primary != null && primary.isTerrainBase() && isRealTerrainBase(primary.getPosition())) {
+                    primary.cancel();
+                    primary = null;
+                    primaryPaired = false;
+                }
+                if (legacySecondary != null && legacySecondary.isTerrainBase() && isRealTerrainBase(legacySecondary.getPosition())) {
+                    legacySecondary.cancel();
+                    legacySecondary = null;
+                }
+
+                doubleEngaged = eu.client.utils.minecraft.EntityUtils.isPhased(target.player());
+                if (!doubleEngaged) {
+                    if (secondary != null) { secondary.release(); secondary = null; }
+                    if (legacySecondary != null) { legacySecondary.cancel(); legacySecondary = null; }
+                }
+
+                boolean isPrimaryInsideAir = primary != null && HoleUtils.getInsidePositions(target.player()).contains(primary.getPosition()) && mc.level.getBlockState(primary.getPosition()).canBeReplaced();
+                if (primary != null && primary.getPriority() == 0) {
+                    BlockPos pos = primary.getPosition();
+                    if (!validBlocks.contains(pos) || isPrimaryInsideAir) {
+                        primary.cancel();
+                        primary = null;
+                        primaryPaired = false;
+                    }
+                }
+
+                if (farReach.getValue()) {
+                    boolean isSecInsideAir = secondary != null && HoleUtils.getInsidePositions(target.player()).contains(secondary.getPosition()) && mc.level.getBlockState(secondary.getPosition()).canBeReplaced();
+                    if (secondary != null && secondary.getPriority() == 0) {
+                        BlockPos pos = secondary.getPosition();
+                        if (!validBlocks.contains(pos) || isSecInsideAir) {
+                            secondary.release();
+                            secondary = null;
+                        }
+                    }
+                } else {
+                    boolean isLegSecInsideAir = legacySecondary != null && HoleUtils.getInsidePositions(target.player()).contains(legacySecondary.getPosition()) && mc.level.getBlockState(legacySecondary.getPosition()).canBeReplaced();
+                    if (legacySecondary != null && legacySecondary.getPriority() == 0) {
+                        BlockPos pos = legacySecondary.getPosition();
+                        if (!validBlocks.contains(pos) || isLegSecInsideAir) {
+                            legacySecondary.cancel();
+                            legacySecondary = null;
+                        }
+                    }
+                }
+
+                Runnable terrainTask = () -> {
+                    if (!SpeedMineModule.this.terrain.getValue()) return;
+                    if (bestPair == null) return;
+
+                    BlockPos basePos = bestPair.basePos();
+                    BlockPos surroundPos = bestPair.surroundPos();
+                    BlockState baseState = mc.level.getBlockState(basePos);
+                    BlockState surroundState = mc.level.getBlockState(surroundPos);
+                    boolean hasRealBase = baseState.getBlock() == Blocks.OBSIDIAN || baseState.getBlock() == Blocks.BEDROCK;
+
+                    if (!hasRealBase && !baseState.canBeReplaced()) {
+                        if (terrainPlace.getValue() && !pendingTerrainPlacements.contains(basePos)) {
+                            pendingTerrainPlacements.add(basePos);
+                        }
+                        if (!isMining(basePos)) {
+                            handle(basePos, 0);
+                            if (primary != null && primary.getPosition().equals(basePos)) primary.setTerrainBase(true);
+                        }
+                    } else if (hasRealBase && !surroundState.canBeReplaced()) {
+                        if (!isMining(surroundPos)) {
+                            handle(surroundPos, 0);
+                        }
                     }
                 };
+
                 Runnable outside = () -> {
-                    List<BlockPos> surroundPositions = HoleUtils.getFeetPositions(target.player(), true, false, true).stream().filter(pos -> !mc.level.getBlockState(pos).canBeReplaced()).toList();
-                    if (HoleUtils.isPlayerInHole(target.player()) || !holeCheck.getValue()) {
+                    // Camping primary = settled on one edge waiting for the rebreak. Ring picks are
+                    // same-priority, so they must NOT steal the slot -- this is the walk stopper.
+                    if (primaryCamping()) return;
+
+                    if (terrain.getValue() && bestPair != null) {
+                        BlockState pairBaseState = mc.level.getBlockState(bestPair.basePos());
+                        boolean pairHasRealBase = pairBaseState.getBlock() == Blocks.OBSIDIAN || pairBaseState.getBlock() == Blocks.BEDROCK;
+                        if (!pairHasRealBase) return;
+                        if (isMining(bestPair.basePos()) || isMining(bestPair.surroundPos())) {
+                            if (slotsFull()) return;
+                        }
+                    }
+
+                    if (logic.getValue().equals("NCP")) {
+                        List<BlockPos> surroundPositions = HoleUtils.getFeetPositions(target.player(), true, false, true).stream().filter(pos -> !mc.level.getBlockState(pos).canBeReplaced()).toList();
                         for (BlockPos position : surroundPositions) {
-                            if (primary != null && hasSecondarySlot()) break;
+                            if (slotsFull()) break;
                             if (isMining(position)) continue;
                             if (isInvalid(position) || isOutOfRange(position)) continue;
                             handle(position, 0);
                         }
+                        return;
+                    }
+
+                    Set<BlockPos> selfSurround = new HashSet<>();
+                    if (avoidSharing.getValue() && mc.player != null) {
+                        selfSurround.addAll(HoleUtils.getFeetPositions(mc.player, true, false, true));
+                        for (BlockPos p : HoleUtils.getInsidePositions(mc.player)) {
+                            for (Direction dir : Direction.Plane.HORIZONTAL) {
+                                selfSurround.add(p.relative(dir));
+                            }
+                        }
+                    }
+
+                    List<BlockPos> surroundPositions = HoleUtils.getFeetPositions(target.player(), true, false, true).stream()
+                            .filter(pos -> !mc.level.getBlockState(pos).canBeReplaced())
+                            .sorted(java.util.Comparator.comparingDouble((BlockPos pos) -> {
+                                double penalty = (avoidSharing.getValue() && selfSurround.contains(pos)) ? 100000.0 : 0.0;
+                                
+                                if (SpeedMineModule.this.terrain.getValue()) {
+                                    if (bestPair != null && pos.equals(bestPair.surroundPos())) {
+                                        penalty -= 100000.0;
+                                    } else {
+                                        BlockPos basePos = pos.below();
+                                        BlockState baseState = mc.level.getBlockState(basePos);
+                                        boolean hasBase = baseState.getBlock() == Blocks.OBSIDIAN || baseState.getBlock() == Blocks.BEDROCK;
+                                        boolean isMiningBase = isMining(basePos);
+                                        
+                                        if (isMiningBase) {
+                                            penalty -= 50000.0;
+                                        } else if (hasBase) {
+                                            penalty -= 20000.0;
+                                        } else {
+                                            penalty += 50000.0;
+                                        }
+                                    }
+                                }
+
+                                return penalty + mc.player.distanceToSqr(Vec3.atCenterOf(pos));
+                            }))
+                            .toList();
+
+                    for (BlockPos position : surroundPositions) {
+                        if (slotsFull()) break;
+
+                        if (!isMining(position)) {
+                            if (isInvalid(position) || isOutOfRange(position)) continue;
+                            handle(position, 0);
+                        }
+
+                        if (slotsFull()) break;
                     }
                 };
-                // Bed: the enemy phasing their HEAD into a 2-tall gap isn't covered by `inside`
-                // (that's feet-level airgaps only, HoleUtils.getInsidePositions' offsets are all
-                // Y < feet) or `outside` (feet-level ring). Break the actual head-level block
-                // they're standing inside, plus one of the 4 NSWE blocks beside it -- their own
-                // anti-crystal bed, if that's what's there.
-                Runnable bed = () -> {
-                    if (!SpeedMineModule.this.bed.getValue()) return;
 
-                    // blockPosition() is the player's FEET block -- a player is 2 blocks tall, so
-                    // the head block is one above that (offset 1), not two. offset(0,2,0) targeted
-                    // the block ABOVE the head instead of the head itself (reported: mined one
-                    // block too high, screenshot showed the wrong block breaking above the real
-                    // anti-crystal bed position).
-                    BlockPos head = target.player().blockPosition().above();
-                    List<BlockPos> headPositions = new ArrayList<>();
-                    if (!mc.level.getBlockState(head).canBeReplaced()) headPositions.add(head);
-                    for (Direction dir : Direction.Plane.HORIZONTAL) {
-                        BlockPos side = head.relative(dir);
-                        if (!mc.level.getBlockState(side).canBeReplaced()) headPositions.add(side);
-                    }
-
-                    for (BlockPos position : headPositions) {
-                        if (primary != null && hasSecondarySlot()) break;
-                        if (isMining(position)) continue;
+                Runnable inside = () -> {
+                    List<BlockPos> filteredInside = HoleUtils.getInsidePositions(target.player()).stream().filter(insidePosition -> !mc.level.getBlockState(insidePosition).canBeReplaced()).toList();
+                    for (BlockPos position : filteredInside) {
                         if (isInvalid(position) || isOutOfRange(position)) continue;
-                        handle(position, 0);
+                        if (!isMining(position)) {
+                            // phaseSlotsFull, not slotsFull: phase blocks outrank a camping primary
+                            // (nami priority order), so a re-placed block the enemy is phased into
+                            // still preempts the camp. Only a primary really digging blocks this.
+                            if (phaseSlotsFull()) break;
+                            handle(position, 0);
+                            if (phaseSlotsFull()) break;
+                        }
                     }
                 };
 
-                if (sequence.getValue().equals("Surround")) {
-                    outside.run();
-                    inside.run();
-                } else if (sequence.getValue().equals("Phase")) {
-                    inside.run();
-                    outside.run();
-                }
-                bed.run();
+                if (terrain.getValue()) terrainTask.run();
+
+                inside.run();
+                outside.run();
             }
         } else {
             BlockPos position = null;
+            boolean terrainBasePick = false;
 
             if (target == null) {
                 return;
             } else {
-                if (!WorldUtils.isReplaceable(target.player.blockPosition()) && !WorldUtils.getBlock(target.player().blockPosition()).equals(Blocks.COBWEB)) {
-                    position = target.player().blockPosition();
-                } else if (HoleUtils.isPlayerInHole(target.player()) || !holeCheck.getValue()) {
-                    position = target.position();
+                boolean isInsideAir = primary != null && HoleUtils.getInsidePositions(target.player()).contains(primary.getPosition()) && mc.level.getBlockState(primary.getPosition()).canBeReplaced();
+                if (primary != null && primary.getPriority() == 0 && !primary.isTerrainBase()
+                        && (!isTargetSurroundPosition(primary.getPosition(), target.player()) || isInsideAir)) {
+                    primary.cancel();
+                    primary = null;
+                    primaryPaired = false;
+                }
+
+                if (terrain.getValue()) {
+                    TerrainPair bestPair = getBestTerrainPair(target.player());
+                    if (bestPair != null) {
+                        BlockState baseState = mc.level.getBlockState(bestPair.basePos());
+                        BlockState surroundState = mc.level.getBlockState(bestPair.surroundPos());
+                        boolean hasRealBase = baseState.getBlock() == Blocks.OBSIDIAN || baseState.getBlock() == Blocks.BEDROCK;
+
+                        if (!hasRealBase && !baseState.canBeReplaced()) {
+                            position = bestPair.basePos();
+                            terrainBasePick = true;
+                            if (terrainPlace.getValue() && !pendingTerrainPlacements.contains(position)) {
+                                pendingTerrainPlacements.add(position);
+                            }
+                        } else if (!surroundState.canBeReplaced()) {
+                            position = bestPair.surroundPos();
+                        }
+                    }
+                }
+
+                if (position == null) {
+                    if (!WorldUtils.isReplaceable(target.player.blockPosition()) && !WorldUtils.getBlock(target.player().blockPosition()).equals(Blocks.COBWEB)) {
+                        position = target.player().blockPosition();
+                    } else {
+                        position = target.position();
+                    }
                 }
             }
+
             if (position == null) return;
             if (primary != null && position.equals(primary.getPosition()))
                 return;
 
+            // v6's settle rule, ported to single-mine (reported: "Double off thì đào lần lượt hết
+            // các block dưới cạnh surround thay vì một block"). Same shape as the doubleMine
+            // ring-walk: primary breaks its block, the per-tick `position` recompute drops that
+            // now-air pos and returns the NEXT one, and handle()'s non-dual branch cancel-replaces
+            // the camping primary -- one block per rebreak cycle, right around the ring.
+            // A camping primary is settled; nothing retargets it.
+            //
+            // Terrain sequencing is untouched: a base sits BELOW the ring, so it is never a
+            // camping position (isTargetSurroundPosition is false there), so base -> surround
+            // inside one pair still runs. Only the march to the NEXT side is stopped.
+            if (primaryCamping()) return;
+
             handle(position, 0);
+            if (terrainBasePick && primary != null && primary.getPosition().equals(position)) primary.setTerrainBase(true);
         }
     }
 
@@ -514,7 +911,6 @@ public class SpeedMineModule extends Module {
         if (mc.player == null || mc.level == null) return;
 
         if (isDeferringToProxy()) {
-            // Client side: render using proxy-synced state
             renderProxyState(event.getMatrices());
             return;
         }
@@ -539,25 +935,22 @@ public class SpeedMineModule extends Module {
         if (event.getPacket() instanceof ServerboundSetCarriedItemPacket && switchReset.getValue() && (switchMode.getValue().equalsIgnoreCase("AltSwap") || switchMode.getValue().equalsIgnoreCase("AltPickup"))) {
             handlingSwitchReset = true;
             try {
-                // Secondary deliberately untouched: it has no client-side mining state to reset.
-                // Its break lives entirely in the server's delayed-destroy slot, which a hotbar
-                // switch doesn't disturb, and it has no sender to restart in the first place.
-                //
-                // tryStart(), not start(): if the FastBreak balance/cooldown says no right now,
-                // process()'s !started branch retries next tick instead of forcing the packets out.
                 if (primary != null) {
                     primary.cancel();
                     primary.tryStart();
                 }
-                // bản gốc: doubleMine's dual-Action secondary DOES have real client-side mining
-                // state (unlike the demote()-based Secondary latch above) and needs the same
-                // switch-reset treatment.
                 if (!farReach.getValue() && legacySecondary != null) {
                     legacySecondary.cancel();
                     legacySecondary.tryStart();
                 }
             } finally {
                 handlingSwitchReset = false;
+            }
+        }
+        
+        if (event.getPacket() instanceof ServerboundPlayerActionPacket action) {
+            if (action.getAction() == ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK) {
+                if (action.getPos().getY() > GRIM_DECOY_Y_OFFSET) return;
             }
         }
     }
@@ -567,13 +960,51 @@ public class SpeedMineModule extends Module {
         if (isDeferringToProxy()) return;
         if (mc.player == null || mc.level == null) return;
 
-        if (handle(event.getPosition(), 1)) {
+        BlockPos position = event.getPosition();
+
+        if (doubleMine.getValue() && shift.getValue() && (mc.options.keyShift.isDown() || mc.player.isShiftKeyDown())) {
+            Vec3 look = mc.player.getLookAngle();
+            double absX = Math.abs(look.x);
+            double absY = Math.abs(look.y);
+            double absZ = Math.abs(look.z);
+
+            Direction direction;
+            if (absY > absX && absY > absZ) {
+                direction = look.y > 0 ? Direction.UP : Direction.DOWN;
+            } else if (absX > absZ) {
+                direction = look.x > 0 ? Direction.EAST : Direction.WEST;
+            } else {
+                direction = look.z > 0 ? Direction.SOUTH : Direction.NORTH;
+            }
+
+            BlockPos behind = position.relative(direction);
+
+            if (isValid(behind) && !isOutOfRange(behind) && !mc.level.getBlockState(behind).canBeReplaced()) {
+                handle(behind, 1);
+            }
+        }
+
+        if (handle(position, 1)) {
             event.setCancelled(true);
         }
     }
 
     @Override
+    public void onEnable() {
+        doubleEngaged = false;
+        primaryPaired = false;
+        pendingTerrainPlacements.clear();
+        activeTerrainPair = null;
+        activeTerrainTarget = null;
+    }
+
+    @Override
     public void onDisable() {
+        doubleEngaged = false;
+        primaryPaired = false;
+        pendingTerrainPlacements.clear();
+        activeTerrainPair = null;
+        activeTerrainTarget = null;
         if (isDeferringToProxy()) return;
         if (mc.player == null || mc.level == null) {
             primary = null;
@@ -582,15 +1013,6 @@ public class SpeedMineModule extends Module {
             return;
         }
 
-        // There was no onDisable at all before. Toggling the module off mid-mine just dropped
-        // the in-flight Actions on the floor -- and since start() intentionally leaves the REAL
-        // SERVER holding the pickaxe until process() switches back, killing the module before
-        // that point stranded the server on the pickaxe permanently. Everything that placed
-        // blocks afterwards (AutoCrystal especially) then silently placed nothing while the
-        // proxy kept predicting the item was used. Cancel properly so the slot gets restored.
-        // Secondary just gets dropped -- homovore's clearSecondary() sends nothing either, and
-        // there is no in-flight client state of ours to unwind, EXCEPT the late-break tool latch
-        // (see Secondary.hold()) which does need to hand the slot back on the way out.
         if (secondary != null) secondary.release();
         secondary = null;
         if (legacySecondary != null) legacySecondary.cancel();
@@ -615,61 +1037,20 @@ public class SpeedMineModule extends Module {
         return primaryProgress + secondaryProgress;
     }
 
-    private boolean handle(BlockPos position, int priority) {
+    private boolean canHandle(BlockPos position) {
         if (mc.gameMode.getPlayerMode() == GameType.CREATIVE || mc.gameMode.getPlayerMode() == GameType.SPECTATOR) return false;
         if (mc.level.getBlockState(position).getBlock().defaultDestroyTime() == -1) return false;
+        // Terrain's own freshly-built base is off-limits, at the one choke point EVERY selection
+        // path goes through (both sweeps, both tick branches, both slots).
+        if (isProtectedTerrainBase(position)) return false;
         boolean listed = whitelist.isWhitelistContains(mc.level.getBlockState(position).getBlock());
         boolean allowedByList = switch (whitelistMode.getValue()) {
             case "WhiteList" -> listed;
             case "BlackList" -> !listed;
-            default -> true; // All
+            default -> true;
         };
         if (!allowedByList) return false;
-        if (mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(range.getValue().doubleValue()))
-            return false;
-
-        if ((primary != null && primary.getPosition().equals(position)) || (secondary != null && secondary.getPosition().equals(position)) || (legacySecondary != null && legacySecondary.getPosition().equals(position))) return true;
-
-        if (!farReach.getValue()) {
-            // bản gốc 1.21.4 verbatim dual-Action swap -- no demote()/latch model, the outgoing
-            // primary just BECOMES legacySecondary (unless it's mid-Instant, in which case it's
-            // dropped with no cancel, matching the original exactly).
-            if (doubleMine.getValue()) {
-                if (legacySecondary != null) {
-                    primary = new Action(position, priority);
-                } else {
-                    if (primary != null) {
-                        if (!primary.isInstantMine()) legacySecondary = primary;
-                        primary = new Action(position, priority);
-                    } else {
-                        primary = new Action(position, priority);
-                    }
-                }
-            } else {
-                if (primary != null) primary.cancel();
-                primary = new Action(position, priority);
-            }
-            return true;
-        }
-
-        if (doubleMine.getValue()) {
-            // homovore's startMine(): demote the outgoing primary into the passive slot if
-            // there's room, otherwise abort it. The old code assigned `secondary = primary`,
-            // i.e. kept running the ACTIVE state machine on it under a different field name,
-            // and when the secondary slot was already taken it dropped the old primary on the
-            // floor with no cancel at all (stranding the real server on the mining slot).
-            if (primary != null) {
-                Secondary demoted = secondary == null && !primary.isInstantMine() ? primary.demote() : null;
-                if (demoted != null) secondary = demoted;
-                else primary.cancel();
-            }
-            primary = new Action(position, priority);
-        } else {
-            if (primary != null) primary.cancel();
-            primary = new Action(position, priority);
-        }
-
-        return true;
+        return !(mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(range.getValue().doubleValue()));
     }
 
     private boolean isInvalid(BlockPos position) {
@@ -690,6 +1071,27 @@ public class SpeedMineModule extends Module {
         return legacySecondary != null && legacySecondary.getPosition().equals(position);
     }
 
+    private boolean isTargetSurroundPosition(BlockPos position, Player target) {
+        if (position == null || target == null || mc.level == null) return false;
+
+        AABB box = target.getBoundingBox();
+        int yLegs = Mth.floor(target.getY());
+
+        for (int y = yLegs; y <= yLegs + 2; y++) {
+            for (int x = Mth.floor(box.minX); x < Mth.ceil(box.maxX); x++) {
+                for (int z = Mth.floor(box.minZ); z < Mth.ceil(box.maxZ); z++) {
+                    BlockPos base = new BlockPos(x, y, z);
+                    if (position.equals(base)) return true;
+                    if (y > yLegs + 1) continue;
+                    for (Direction dir : Direction.Plane.HORIZONTAL) {
+                        if (position.equals(base.relative(dir))) return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
     private boolean isOutOfRange(BlockPos position) {
         if (position == null) return true;
         return mc.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(position)) > Mth.square(range.getValue().doubleValue());
@@ -697,11 +1099,31 @@ public class SpeedMineModule extends Module {
 
     private Target getTarget() {
         Target optimalTarget = null;
-        for (Player player : mc.level.players()) {
+        eu.client.modules.impl.visuals.PopChamsModule popChams = EUClient.MODULE_MANAGER != null ? EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.visuals.PopChamsModule.class) : null;
+        eu.client.modules.impl.visuals.LogoutSpotModule logoutSpot = EUClient.MODULE_MANAGER != null ? EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.visuals.LogoutSpotModule.class) : null;
+
+        List<Player> allCandidates = new ArrayList<>(mc.level.players());
+        if (logoutSpot != null && logoutSpot.isToggled()) {
+            for (Player ghost : logoutSpot.getGhosts()) {
+                if (ghost != null && !allCandidates.contains(ghost)) {
+                    allCandidates.add(ghost);
+                }
+            }
+        }
+
+        for (Player player : allCandidates) {
             if (player == mc.player) continue;
-            if (!player.isAlive() || player.getHealth() <= 0.0f) continue;
+            if (popChams != null && popChams.isGhost(player)) continue;
+            if (logoutSpot == null || !logoutSpot.isGhost(player)) {
+                if (!player.isAlive() || player.getHealth() <= 0.0f) continue;
+            }
             if (mc.player.distanceToSqr(player) > Mth.square(range.getValue().doubleValue() + 2.0)) continue;
-            if (EUClient.FRIEND_MANAGER.contains(player.getName().getString())) continue;
+            if (logoutSpot != null && logoutSpot.isGhost(player)) {
+                eu.client.modules.impl.visuals.LogoutSpotModule.Spot spot = logoutSpot.getSpot((net.minecraft.client.player.RemotePlayer) player);
+                if (spot != null && EUClient.FRIEND_MANAGER.contains(spot.data.name)) continue;
+            } else {
+                if (EUClient.FRIEND_MANAGER.contains(player.getName().getString())) continue;
+            }
 
             List<Position> feetPositions = getPositions(player);
             BlockPos position = getTargetPosition(feetPositions);
@@ -727,16 +1149,15 @@ public class SpeedMineModule extends Module {
     private BlockPos getTargetPosition(List<Position> positions) {
         BlockPos optimalPosition = null;
         double optimalScore = 0.0;
-
         for (Position position : positions) {
-            if ((doubleMine.getValue() || cityOnly.getValue()) && !position.feetPosition()) continue;
+            if (doubleMine.getValue() && !position.feetPosition()) continue;
             if (!isValidPosition(position.position())) continue;
             if (HoleUtils.isPlayerInHole(mc.player) && HoleUtils.getFeetPositions(mc.player, true, false, true).contains(position.position())) continue;
 
             double score = 0.0;
 
             if (position.feetPosition()) {
-                score += 0.05;
+                score += 5.0;
 
                 if (mc.level.getBlockState(position.position()).getBlock() == Blocks.ENDER_CHEST) score += 0.95;
                 else if (WorldUtils.isCrystalPlaceable(position.position().offset(0, 1, 0))) score += 0.35;
@@ -769,13 +1190,6 @@ public class SpeedMineModule extends Module {
 
         if (!doubleMine.getValue()) positions.add(new Position(player.blockPosition().offset(0, 2, 0), false));
 
-        if (bed.getValue() && !doubleMine.getValue()) {
-            BlockPos head = player.blockPosition().offset(0, 2, 0);
-            for (Direction dir : Direction.Plane.HORIZONTAL) {
-                positions.add(new Position(head.relative(dir), false));
-            }
-        }
-
         return positions;
     }
 
@@ -786,51 +1200,23 @@ public class SpeedMineModule extends Module {
     }
 
     private boolean hasCityPosition(BlockPos position) {
-        Vec3i[] offsets = new Vec3i[]{new Vec3i(1, 0, 0), new Vec3i(-1, 0, 0), new Vec3i(0, 0, 1), new Vec3i(0, 0, -1)};
-
-        for (Vec3i vec3i : offsets) {
-            BlockPos offsetPosition = position.offset(vec3i);
+        for (Direction dir : Direction.Plane.HORIZONTAL) {
+            BlockPos offsetPosition = position.relative(dir);
             if (WorldUtils.isPlaceable(offsetPosition)) return true;
         }
-
         return false;
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // Proxy-sided packet helpers.
-    // When the proxy is forwarding for a client, SpeedMine's packets
-    // are sent DIRECTLY to the server connection, completely bypassing
-    // mc.getConnection().send(). This means:
-    //   - The proxy's local mc.player state is never touched
-    //   - mc.player.getInventory().getSelectedSlot() stays in sync with the client
-    //   - The client never sees slot switches, arm swings, or rotations
-    //   - The server sees the atomic switch→mine→switchback burst
-    // ═══════════════════════════════════════════════════════════════════
-
-    /**
-     * Returns true when this module is executing on the proxy server. Matches earthhack's
-     * ListenerUpdate/ListenerMotion guard (PingBypass.isConnected(), i.e. server && connected) --
-     * automatic, no ProxyMode setting to check.
-     */
     private boolean isProxyActive() {
         return eu.client.pingbypass.PingBypassFlags.proxyForwardingActive
                 && EUClient.PINGBYPASS_CONFIG != null && EUClient.PINGBYPASS_CONFIG.isServer()
                 && EUClient.PROXY_SERVER != null;
     }
 
-    /**
-     * Returns true on the CLIENT when it's connected to a PingBypass proxy -- the client should
-     * defer its own raw digging execution to the proxy (matches earthhack's ClientDiggingService,
-     * which cancels the client's own CPacketPlayerDigging sends under the same condition).
-     */
     private boolean isDeferringToProxy() {
         return eu.client.pingbypass.PingBypassFlags.isPingBypassActive();
     }
 
-    /**
-     * Sends the current mining state (positions + progress) to the connected
-     * client so it can render mining progress boxes.
-     */
     private void syncMiningStateToClient() {
         var packet = new net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket(
                 eu.client.pingbypass.protocol.PbCustomPayload.fromPacket(
@@ -844,9 +1230,6 @@ public class SpeedMineModule extends Module {
         }
     }
 
-    /**
-     * Renders mining progress on the client using proxy-synced state.
-     */
     private void renderProxyState(PoseStack matrices) {
         if (proxyPrimaryPos != null) {
             float progress = interpolatedProgress(prevProxyPrimaryProgress, proxyPrimaryProgress, proxyPrimaryUpdateTime, proxyPrimaryUpdateInterval);
@@ -880,11 +1263,6 @@ public class SpeedMineModule extends Module {
         if (render.getValue().equalsIgnoreCase("Outline") || render.getValue().equalsIgnoreCase("Both")) Renderer3D.renderBoxOutline(matrices, box, outline);
     }
 
-    /**
-     * Sends a packet directly to the real server connection when on the proxy,
-     * bypassing the proxy's local ClientPlayNetworkHandler. Falls back to
-     * normal send when running locally.
-     */
     private void serverSend(net.minecraft.network.protocol.Packet<?> packet) {
         if (isProxyActive()) {
             var serverConn = EUClient.PROXY_SERVER.getServerConnection();
@@ -896,10 +1274,7 @@ public class SpeedMineModule extends Module {
         mc.getConnection().send(packet);
     }
 
-    /**
-     * Sends a sequenced packet directly to the server connection when on the proxy.
-     */
-    private void serverSendSequenced(java.util.function.IntFunction<net.minecraft.network.protocol.Packet<?>> packetFactory) {
+    private <T extends net.minecraft.network.protocol.Packet<?>> void serverSendSequenced(java.util.function.IntFunction<T> packetFactory) {
         if (isProxyActive()) {
             try (var pending = ((eu.client.mixins.accessors.ClientWorldAccessor) mc.level)
                     .invokeGetPendingUpdateManager().startPredicting()) {
@@ -914,19 +1289,8 @@ public class SpeedMineModule extends Module {
         }
     }
 
-    // homovore-public's DECOY_Y_OFFSET (SpeedMineModule.java), verbatim -- see farReach's own doc.
     private static final int GRIM_DECOY_Y_OFFSET = 2000;
 
-    // homovore's sendAction() (SpeedMineModule.java) sends EVERY block-break packet this way --
-    // START/STOP/ABORT alike, not just the decoy -- always the raw 3-arg ServerboundPlayerActionPacket
-    // constructor (sequence hardcoded to 0 by that ctor), NEVER through NetworkUtils.sendSequencedPacket/
-    // BlockStatePredictionHandler's real incrementing sequence counter. Turns out that distinction is
-    // exactly what was still breaking FarReach/GrimDecoy after the first "make the decoy raw" fix:
-    // mixing a REAL incrementing sequence (from serverSendSequenced, used for the genuine start/stop)
-    // with the decoy's seq=0 makes the sequence numbers GrimAC/vanilla observes from this player go
-    // e.g. 5 -> 0 -> 6 -- backwards -- instead of homovore's uniform 0 -> 0 -> 0 throughout. Only
-    // used when FarReach is on; the normal (non-FarReach) path is untouched and keeps using the real
-    // sequenced sends, since there's no decoy there to desync against in the first place.
     private void sendRawPlayerAction(ServerboundPlayerActionPacket.Action action, BlockPos target, Direction face) {
         sendRawPlayerAction(action, target, face, false);
     }
@@ -936,27 +1300,6 @@ public class SpeedMineModule extends Module {
         serverSend(new ServerboundPlayerActionPacket(action, target, face));
     }
 
-    /**
-     * The passive doubleMine slot. See the state-ownership comment on the `secondary` field.
-     *
-     * Deliberately NOT an Action: it has no start(), no cancel(), no packet sender and no
-     * rotation of any kind. Action.demote() already sent the single STOP that handed this
-     * position to the server's own delayed-destroy path; from here we only observe.
-     *
-     * Matches homovore's CURRENT tickSecondary() (verified 2026-08-13 against the live GitHub
-     * source, not the stale local checkout -- gh cli / raw.githubusercontent.com going forward):
-     * progress is a pure LOCAL ESTIMATE computed off the fastest slot in the inventory (never the
-     * currently-selected one, same as the primary's silent-mine trick -- no need to physically
-     * hold anything for most of the break), and only ONE tick before that estimate predicts
-     * completion does it actually latch the real tool into hand so the SERVER's own background
-     * destroy-progress (ServerPlayerGameMode.continueDestroyBlock, which reads whatever is truly
-     * equipped) can catch up and finish the block for real. That transient, late latch is what the
-     * previous revision of this class was missing -- without it the server's own progress on this
-     * position barely moves while the primary is free to hold something else the whole time, so
-     * Double silently stopped finishing its second block. release() hands the slot back the moment
-     * the latch is no longer needed (done, timed out, or dropped) exactly like homovore's
-     * clearSecondary().
-     */
     @Getter
     public class Secondary {
         private final BlockPos position;
@@ -966,6 +1309,7 @@ public class SpeedMineModule extends Module {
         private float prevProgress;
         private int ticks;
         private boolean holding;
+        private int holdTicks;
 
         private Secondary(BlockPos position, int priority, BlockState state, float progress) {
             this.position = position;
@@ -975,37 +1319,25 @@ public class SpeedMineModule extends Module {
             this.prevProgress = progress;
         }
 
-        /** Kept for the module API other modules already call (AutoTotem, Blocker). */
-        public boolean isMining() {
-            return true;
-        }
+        public BlockPos getPosition() { return position; }
+        public int getPriority() { return priority; }
+        public boolean isMining() { return true; }
+        public float getSpeed() { return 1.0f; }
+        public float getProgress() { return Mth.clamp(progress, 0.0f, 1.0f); }
 
-        /** Always 1.0 -- the server needs full progress for a delayed destroy, not Threshold. */
-        public float getSpeed() {
-            return 1.0f;
-        }
-
-        /**
-         * Clamped for display/proxy-sync. The raw field is allowed to overshoot 1.0 -- that
-         * overshoot is exactly what the SECONDARY_TIMEOUT grace period measures -- but the
-         * progress bar and the S2C_MINING_STATE sync must not see more than a full bar.
-         */
-        public float getProgress() {
-            return Mth.clamp(progress, 0.0f, 1.0f);
-        }
-
-        /** @return true when this slot is done (broken, gone, or written off) and should be dropped. */
         public boolean process() {
             if (isOutOfRange(position)) {
                 release();
                 return true;
             }
 
+            boolean clientEating = mc.player != null && (mc.player.isUsingItem() || EntityUtils.isEating());
+            if (interactPaused && !clientEating && System.currentTimeMillis() - interactPausedAt >= INTERACT_PAUSE_TIMEOUT_MS) {
+                setInteractPaused(false);
+            }
+
             BlockState current = mc.level.getBlockState(position);
             if (current.canBeReplaced()) {
-                // The server really did finish it. Fire this project's own completion
-                // side-effects -- note this is AFTER the fact (the block is already gone),
-                // unlike the primary which posts the event as it sends the breaking STOP.
                 EUClient.EVENT_HANDLER.post(new DestroyBlockEvent(position));
                 mineTimer.reset();
                 release();
@@ -1026,9 +1358,13 @@ public class SpeedMineModule extends Module {
             prevProgress = progress;
             progress += delta;
 
-            // homovore's `secondaryTicks >= expected - 1` -- one tick before the estimate says
-            // this finishes, actually hold the real tool so the server can finish it for real.
-            if (!holding && progress + delta >= 1.0f) hold(bestSlot);
+            boolean canHold = !clientEating || switchMode.getValue().equalsIgnoreCase("None");
+            if (!holding && progress + delta >= 1.0f && canHold) hold(bestSlot);
+
+            if (holding && !farReach.getValue() && ++holdTicks >= 3) {
+                release();
+                return true;
+            }
 
             if (progress >= 1.0f + delta * SECONDARY_TIMEOUT) {
                 release();
@@ -1041,25 +1377,18 @@ public class SpeedMineModule extends Module {
             return false;
         }
 
-        // Only while Switch has somewhere to switch TO -- None means the user wants zero
-        // automatic slot changes, matching every other auto-switch path in this module.
         private void hold(int slot) {
             if (switchMode.getValue().equalsIgnoreCase("None")) return;
             int selected = mc.player.getInventory().getSelectedSlot();
             holding = true;
-            if (selected == slot) return; // already there -- nothing to send, still marks holding
+            if (selected == slot) return;
             secondaryOriginalSlot = selected;
             secondaryHoldSlot = slot;
             if (isProxyActive()) serverSend(new ServerboundSetCarriedItemPacket(slot));
             else mc.getConnection().send(new ServerboundSetCarriedItemPacket(slot));
-            // Same bug as fireBreakBurst's setSelectedSlot calls: mc.player IS the real
-            // connected client's own player entity, so this is directly visible in the hotbar --
-            // only Normal is meant to show the switch. This is DoubleMine+FarReach's actual
-            // late-break tool latch, so it fires on essentially every secondary completion.
             if (switchMode.getValue().equalsIgnoreCase("Normal")) mc.player.getInventory().setSelectedSlot(slot);
         }
 
-        /** Hands the latched slot back. Safe to call whether or not hold() ever actually switched. */
         private void release() {
             if (!holding) return;
             holding = false;
@@ -1068,11 +1397,6 @@ public class SpeedMineModule extends Module {
             secondaryHoldSlot = -1;
             secondaryOriginalSlot = -1;
             if (mc.player == null) return;
-            // The equality shortcut below only makes sense for Normal, where local selection is
-            // a faithful mirror of what the server actually holds. Silent/AltSwap/AltPickup
-            // deliberately never moved it in hold() -- checking it here would see local still
-            // sitting on `restore` (untouched) and wrongly skip the real server-side restore
-            // packet, leaving the SERVER stuck on the held tool indefinitely.
             if (switchMode.getValue().equalsIgnoreCase("Normal") && mc.player.getInventory().getSelectedSlot() == restore) return;
             if (isProxyActive()) serverSend(new ServerboundSetCarriedItemPacket(restore));
             else mc.getConnection().send(new ServerboundSetCarriedItemPacket(restore));
@@ -1117,39 +1441,26 @@ public class SpeedMineModule extends Module {
         private long stallTime;
 
         private boolean instantMine;
-        private int startSlot = -1; // slot we switched FROM at start
-
-        // Mirrors homovore's own started/canBegin() gate: a fresh Action doesn't necessarily call
-        // start() the instant it's created -- if canBegin() says doing so right now would push
-        // GrimAC's own FastBreak balance too high, tryStart() just doesn't fire yet, and process()
-        // retries it every tick (see the top of process()) until it's safe.
+        private int startSlot = -1;
         private boolean started;
+
+        @Setter private boolean terrainBase;
 
         public Action(BlockPos position, int priority) {
             this.position = position;
             this.state = mc.level.getBlockState(position);
             this.priority = priority;
-
-            // homovore's startMine(): sets the target, then `if (stopCooldown == 0 && canBegin())
-            // begin();` -- it does NOT unconditionally fire the packets. process() below retries
-            // every tick while !started, exactly like homovore's onTick !started branch.
             tryStart();
         }
 
-        /**
-         * homovore's demote(): hand this in-flight break over to the passive secondary slot.
-         *
-         * Sends EXACTLY ONE real STOP_DESTROY_BLOCK for the current position (cooldown=false,
-         * matching homovore's stopBreak(slot, false)) and nothing else, ever again. With
-         * progress still under the server's 0.7 threshold that STOP doesn't break the block --
-         * it parks it in ServerPlayerGameMode's delayed-destroy slot, which the server finishes
-         * by itself. clientRemove is deliberately skipped for this STOP (see fireBreakBurst):
-         * removing the block locally would make Secondary.process() instantly believe the break
-         * landed on the very next tick.
-         *
-         * @return the new passive slot, or null if there's nothing live to hand over (caller
-         *         then cancels this Action instead, like homovore's abortBreak() fallback).
-         */
+        public BlockPos getPosition() { return position; }
+        public float getProgress() { return progress; }
+        public boolean isMining() { return mining; }
+        public boolean isInstantMine() { return instantMine; }
+        public int getPriority() { return priority; }
+        public boolean isTerrainBase() { return terrainBase; }
+        public void setTerrainBase(boolean terrainBase) { this.terrainBase = terrainBase; }
+
         private Secondary demote() {
             if (!started) return null;
 
@@ -1161,26 +1472,9 @@ public class SpeedMineModule extends Module {
             if (slot == -1) slot = mc.player.getInventory().getSelectedSlot();
 
             fireBreakBurst(direction, slot, true);
-
-            // progress is already in the server's own units (accumulated getMineSpeed per tick),
-            // so it carries over directly as "what the server has accrued so far".
             return new Secondary(position, priority, current, progress);
         }
 
-        /**
-         * homovore's `if (stopCooldown == 0 && canBegin()) begin();`.
-         * <p>
-         * Synchronized on {@link #interactSyncLock}: canStartNow()'s interactPaused check alone
-         * isn't enough to stop a NEW block's slot-switch packet (legacyStart's pickaxe
-         * ServerboundSetCarriedItemPacket) from racing PbPlayHandler.syncSlotForInteract()'s own
-         * slot-switch + interactPaused=true, which runs on a different thread (the proxy's netty
-         * IO thread for the real client's connection, vs this tick thread). Without the lock, the
-         * two independent sends can interleave on the wire in either order -- occasionally landing
-         * the pickaxe switch AFTER the food switch (and even after the eat's UseItemPacket),
-         * silently failing the eat right as SpeedMine starts targeting a new block. Synchronizing
-         * both critical sections on the same lock makes the interactPaused read/write and the
-         * packet sends that depend on it atomic relative to each other.
-         */
         private void tryStart() {
             synchronized (interactSyncLock) {
                 if (!canStartNow()) return;
@@ -1194,31 +1488,16 @@ public class SpeedMineModule extends Module {
                 return true;
             }
 
-            // If the client is eating/interacting, pause mining — don't send
-            // any packets that would change the server's slot state. Auto-expire
-            // the pause if no RELEASE_USE_ITEM ever arrives (see interactPausedAt) --
-            // but only once the client isn't actually mid-use anymore. A real eat
-            // (golden apple etc) takes ~1.6s, well past the timeout; resuming on a
-            // fixed clock switches the held item back to the pickaxe WHILE the eat
-            // animation is still playing and cancels it outright.
-            if (interactPaused) {
-                boolean stillUsing = mc.player != null && mc.player.isUsingItem();
-                if (!stillUsing && System.currentTimeMillis() - interactPausedAt >= INTERACT_PAUSE_TIMEOUT_MS) {
-                    setInteractPaused(false);
-                } else {
-                    return false;
-                }
+            boolean clientEating = mc.player != null && (mc.player.isUsingItem() || EntityUtils.isEating());
+            if (interactPaused && !clientEating && System.currentTimeMillis() - interactPausedAt >= INTERACT_PAUSE_TIMEOUT_MS) {
+                setInteractPaused(false);
             }
 
-            // After unpausing (client finished eating), restart mining from
-            // scratch so the server recalculates with pickaxe speed.
             if (needsRestart && isProxyActive()) {
                 needsRestart = false;
                 started = false;
             }
 
-            // homovore onTick's !started branch: drop the target if it's gone, otherwise keep
-            // retrying the throttled start every tick until the FastBreak balance allows it.
             if (!started) {
                 if (mc.level.getBlockState(position).canBeReplaced()) return true;
                 tryStart();
@@ -1227,44 +1506,14 @@ public class SpeedMineModule extends Module {
 
             if (!farReach.getValue()) return legacyProcess();
 
-            // Instant's real mechanism, verified against vanilla server source (.mcref mojmap,
-            // ServerPlayerGameMode.handleBlockBreakAction, STOP_DESTROY_BLOCK branch) rather than
-            // guessed: the server only actually breaks a block on STOP_DESTROY_BLOCK if the packet's
-            // pos still matches its OWN this.destroyPos field (set by the last START_DESTROY_BLOCK
-            // it accepted) -- and it computes ticksSpentDestroying as gameTicks - destroyProgressStart,
-            // a field that is NEVER reset just because a break succeeded. So once the real START above
-            // has been sent once, sending a BARE STOP_DESTROY_BLOCK for that same position again --
-            // no new START needed -- reuses that stale, ever-growing tick count and satisfies the
-            // server's own destroyProgress>=0.7 threshold trivially, breaking the block in one packet
-            // regardless of real tool speed. This is homovore-public's "rebreak" (SpeedMineModule.java,
-            // onTick's `finished` branch calling bare stopBreak() once state is solid again, no START)
-            // -- same technique, and it needs no GrimAC/FarReach involvement, vanilla behaves this way
-            // natively. fireBreakBurst() below already sends STOP+swing+slotswitch with no START, so
-            // reaching the `if (mining)` branch further down while progress is already pinned at max
-            // (from the prior completion) does exactly this the instant the position solidifies again
-            // -- the ONLY piece needed here is to stay alive and idle through the air tick in between
-            // instead of tearing the Action down, which is what canBeReplaced() unconditionally did.
             if (mc.level.getBlockState(position).canBeReplaced()) {
+                if (rebreak.getValue().equalsIgnoreCase("Fast")) {
+                    this.progress = 0.0f;
+                    this.prevProgress = 0.0f;
+                }
                 if (instantMine) {
                     if (async.getValue()) {
-                        // Async: never idle-wait through the air tick, never give up on
-                        // InstantTimeout -- keep re-firing the rebreak burst continuously,
-                        // paced only by InstantDelay. this.state still holds the last known
-                        // solid block (only ever overwritten below when NOT air), so the slot
-                        // pick stays meaningful. Target acquisition is untouched -- Auto's own
-                        // scan (onPlayerUpdate/getTarget/handle) still runs every tick exactly
-                        // as before; this only decides what an already-tracked Action does
-                        // with its own position while it happens to read as air.
-                        // Gap: this used to fire unconditionally on its own timer -- unlike the
-                        // normal completion path (whileEating.getValue() || !isUsingItem()),
-                        // Async's rebreak-through-air never checked eating at all, so it kept
-                        // switching to the fast tool mid-eat regardless of interactPaused (whose
-                        // pause only applies BEFORE this method is even reached -- if the client's
-                        // UseItemPacket hadn't been processed on the Netty thread yet by this
-                        // exact tick, interactPaused hadn't engaged yet either, and Async would
-                        // fire right through that window). Reported as "gate for eating not
-                        // strong enough -- still takes a while before I can eat."
-                        if ((whileEating.getValue() || !mc.player.isUsingItem()) && instantTimer.hasTimeElapsed(instantDelay.getValue().longValue() * 50L)) {
+                        if ((whileEating.getValue() || !EntityUtils.isEating()) && instantTimer.hasTimeElapsed(instantDelay.getValue().longValue() * 50L)) {
                             Direction asyncDirection = WorldUtils.getClosestDirection(position, true);
                             int asyncSlot = switchMode.getValue().equalsIgnoreCase("None") ? -1 : InventoryUtils.findFastestItem(this.state, InventoryUtils.HOTBAR_START, switchMode.getValue().equalsIgnoreCase("AltSwap") || switchMode.getValue().equalsIgnoreCase("AltPickup") ? InventoryUtils.INVENTORY_END : InventoryUtils.HOTBAR_END);
                             if (asyncSlot == -1) asyncSlot = mc.player.getInventory().getSelectedSlot();
@@ -1281,12 +1530,8 @@ public class SpeedMineModule extends Module {
                 }
 
                 if (isProxyActive()) {
-                    // Switch server back to the client's actual slot
                     serverSend(new ServerboundSetCarriedItemPacket(mc.player.getInventory().getSelectedSlot()));
                 }
-                // No deferred SwitchAction to hand back here any more -- fireBreakBurst's
-                // switchBack call is unconditional and eager now (see its own note), so there is
-                // never a pending switch left dangling by the time a cancel path reaches here.
                 cancel();
                 return true;
             }
@@ -1307,10 +1552,6 @@ public class SpeedMineModule extends Module {
                 prevProgress = progress;
                 progress = Mth.clamp(progress + delta, 0.0f, getSpeed());
 
-                // bản gốc 1.21.4 verbatim, both sides (reverted to master 2026-08-14 -- MovementSync
-                // was invented within this session's branch, never merged, no equivalent in bản gốc).
-                // Proxy sends a full Pos+Rot packet built from mc.player's live coordinates. Local
-                // uses RotationManager.legacyRotate(), its verbatim port of bản gốc's own rotate().
                 if (rotate.getValue().equalsIgnoreCase("Normal") && progress + (delta * 2) >= getSpeed()) {
                     float[] rots = RotationUtils.getRotations(WorldUtils.getHitVector(position, direction));
                     if (isProxyActive()) {
@@ -1322,73 +1563,32 @@ public class SpeedMineModule extends Module {
                     }
                 }
 
-                // Completing swaps the fast tool into mc.player.getInventory().getSelectedSlot()
-                // -- read live, right here, whatever that currently is. WhileEating lets progress
-                // keep accumulating while the player is mid-use-item, but ANY switch mode except
-                // None sends a real ServerboundSetCarriedItemPacket -- Silent just doesn't also
-                // touch the client's own displayed hotbar. The SERVER stops tracking "using item"
-                // the instant its held item changes regardless of what the client shows, so a
-                // Silent completion mid-eat silently cancelled the eat server-side every time
-                // (this is what made Instant's rebreak loop -- same `mining` branch, block
-                // resolidifies, fires again -- block eating outright: this check used to only
-                // cover Normal/AltSwap/AltPickup and let Silent's switch straight through). Only
-                // None is exempt because it's the only mode that genuinely sends nothing. Let
-                // progress keep climbing (uncapped above) but hold off actually completing (and
-                // switching) until the item use finishes for every mode that switches.
                 boolean switchTouchesInventory = !switchMode.getValue().equalsIgnoreCase("None");
-                // See RotationManager.isRotationReached's own doc -- Normal + Silent (toggle via
-                // rotationReach), matches Nami's SpeedMineFeature.java:320 (`rotate.get() ==
-                // Rotate.NORMAL && !isCompleted()` return, the one confirmed real precedent for
-                // gating an action behind rotation completion). Extended to Silent too: its own
-                // packet is synchronous with fireBreakBurst's, but not atomically -- Sprint=Grim's
-                // own rotation packet can still land on the wire in between, off-thread.
-                boolean normalRotationReady = !rotationReach.getValue()
-                        || !(rotate.getValue().equalsIgnoreCase("Normal") || rotate.getValue().equalsIgnoreCase("Silent"))
-                        || EUClient.ROTATION_MANAGER.isRotationReached(RotationUtils.getRotations(WorldUtils.getHitVector(position, direction)));
-                if (progress >= getSpeed() && !state.canBeReplaced() && (whileEating.getValue() || !mc.player.isUsingItem())
-                        && !(switchTouchesInventory && mc.player.isUsingItem()) && normalRotationReady) {
+                boolean isEatingNow = mc.player != null && (mc.player.isUsingItem() || EntityUtils.isEating());
+                boolean pauseBreak = interactPaused || (!whileEating.getValue() && isEatingNow) || (switchTouchesInventory && isEatingNow);
+                if (progress >= getSpeed() && !state.canBeReplaced() && !pauseBreak) {
                     if (!instantMine || instantTimer.hasTimeElapsed(instantDelay.getValue().longValue() * 50L)) {
                         fireBreakBurst(direction, slot, false);
                         if (!instantMine) mineTimer.reset();
                     }
 
                     attempts++;
-                    // The backoff below is what stops a REJECTED completion (block doesn't
-                    // actually die -- FarReach's Threshold not honored by this server's Grim,
-                    // packet loss, whatever) from falling straight back into `if (mining)` next
-                    // tick with progress still pinned at max and re-firing fireBreakBurst()
-                    // every tick forever (confirmed live 2026-08-12: continuous
-                    // STOP_DESTROY_BLOCK on one frozen position, unbounded). It used to be
-                    // skipped for an Action that was serving as the module's secondary, which
-                    // is precisely the case that spammed. There is no such case anymore -- an
-                    // Action is never the secondary -- so this is now simply unconditional.
-                    // Instant is the one deliberate exception, and it is bounded by
-                    // InstantTimeout + the air-check above rather than by this flag.
-                    if (!instant.getValue()) {
-                        // Don't restart immediately — wait for the server to confirm
-                        // the break (block becomes air). The process() loop will detect
-                        // the block is replaceable and return true on the next tick.
+                    if (rebreak.getValue().equalsIgnoreCase("None") || terrainBase) {
                         this.mining = false;
                         this.stallTime = System.currentTimeMillis();
                     } else {
                         this.instantMine = true;
+                        if (rebreak.getValue().equalsIgnoreCase("Fast")) {
+                            this.progress = 0.0f;
+                            this.prevProgress = 0.0f;
+                        }
                         instantTimer.reset();
                     }
 
-                    // Never "drop me" here: the primary always stays until the air-check at the
-                    // top of process() confirms the break (or Instant's rebreak wait ends). The
-                    // old `return doubleMine && secondary` existed only to make the module drop
-                    // its secondary Action reference -- Secondary owns that lifecycle itself now.
                     return false;
                 }
             } else {
-                // Only restart if the block is still there and we haven't just sent STOP -- OR
-                // the block still hasn't broken 1s after we did (attempts > 0 forever blocked the
-                // retry here otherwise: once mining stalls out, attempts is never reset back to 0
-                // except by start() itself, so a block the server refuses to break -- packet loss,
-                // desync, anticheat rejection -- got stuck at full progress forever with no way
-                // to recover on its own).
-                if (!mc.level.getBlockState(position).canBeReplaced() && (attempts == 0 || System.currentTimeMillis() - stallTime >= 1000L)) {
+                if (!mc.level.getBlockState(position).canBeReplaced() && (attempts == 0 || System.currentTimeMillis() - stallTime >= 150L)) {
                     tryStart();
                 }
             }
@@ -1396,39 +1596,15 @@ public class SpeedMineModule extends Module {
             return false;
         }
 
-        /**
-         * bản gốc 1.21.4 verbatim (FarReach off): no rebreak-wait/Instant-timeout grace on the
-         * air-check, no stallTime backoff on the restart, and the completion return value tells
-         * the module whether to drop this Action's own reference (true only when it's playing
-         * the legacySecondary role) -- see handle()'s dual-Action swap and onPlayerUpdate's
-         * `legacySecondary.process()` call. Reuses the shared Action fields (progress/mining/
-         * instantMine/attempts/state) instead of a separate class since bản gốc's secondary was
-         * never anything more than "another Action instance".
-         */
         private boolean legacyProcess() {
-            boolean isSecondaryRole = legacySecondary != null && position.equals(legacySecondary.getPosition());
-            if (isSecondaryRole) instantMine = false;
-
             if (mc.level.getBlockState(position).canBeReplaced()) {
                 if (instantMine) {
-                    // Bug: this whole block was gated on async.getValue() before -- without
-                    // Async, instantMine dropped straight to the unconditional cancel() below on
-                    // the very first air tick (right after the FIRST successful break), instead
-                    // of idling like the current (farReach-on) model's own instantMine branch
-                    // does. Instant genuinely needs this baseline "wait, don't die" regardless of
-                    // Async -- Async only changes what happens DURING the wait (keep firing vs
-                    // idle), it was never what made Instant survive the air tick in the first
-                    // place. Never applies to a legacySecondary Action (instantMine is always
-                    // false for those, above).
                     if (async.getValue()) {
-                        // Same gap as the current model's Async branch -- see its comment. Never
-                        // checked eating on its own, only relied on interactPaused engaging
-                        // upstream in time.
-                        if ((whileEating.getValue() || !mc.player.isUsingItem()) && instantTimer.hasTimeElapsed(instantDelay.getValue().longValue() * 50L)) {
+                        if ((whileEating.getValue() || !EntityUtils.isEating()) && instantTimer.hasTimeElapsed(instantDelay.getValue().longValue() * 50L)) {
                             Direction asyncDirection = WorldUtils.getClosestDirection(position, true);
                             int asyncSlot = switchMode.getValue().equalsIgnoreCase("None") ? -1 : InventoryUtils.findFastestItem(this.state, InventoryUtils.HOTBAR_START, switchMode.getValue().equalsIgnoreCase("AltSwap") || switchMode.getValue().equalsIgnoreCase("AltPickup") ? InventoryUtils.INVENTORY_END : InventoryUtils.HOTBAR_END);
                             if (asyncSlot == -1) asyncSlot = mc.player.getInventory().getSelectedSlot();
-                            legacyFireBreakBurst(asyncDirection, asyncSlot, isSecondaryRole);
+                            legacyFireBreakBurst(asyncDirection, asyncSlot);
                             instantTimer.reset();
                             attempts++;
                         }
@@ -1443,9 +1619,6 @@ public class SpeedMineModule extends Module {
                 if (isProxyActive()) {
                     serverSend(new ServerboundSetCarriedItemPacket(mc.player.getInventory().getSelectedSlot()));
                 }
-                // No deferred SwitchAction to hand back here any more -- fireBreakBurst's
-                // switchBack call is unconditional and eager now (see its own note), so there is
-                // never a pending switch left dangling by the time a cancel path reaches here.
                 cancel();
                 return true;
             }
@@ -1477,34 +1650,28 @@ public class SpeedMineModule extends Module {
                     }
                 }
 
-                // switchTouchesInventory guard kept even in legacy mode -- it's the fix for the
-                // Silent-mode mid-eat cancel bug (see process()'s own comment), not a "feel"
-                // difference bản gốc's rebreak model ever had a stance on.
                 boolean switchTouchesInventory = !switchMode.getValue().equalsIgnoreCase("None");
-                // See the primary role's own identical check above.
-                boolean normalRotationReady = !rotationReach.getValue()
-                        || !(rotate.getValue().equalsIgnoreCase("Normal") || rotate.getValue().equalsIgnoreCase("Silent"))
-                        || EUClient.ROTATION_MANAGER.isRotationReached(RotationUtils.getRotations(WorldUtils.getHitVector(position, direction)));
-                if (progress >= getSpeed() && !state.canBeReplaced() && (whileEating.getValue() || !mc.player.isUsingItem())
-                        && !(switchTouchesInventory && mc.player.isUsingItem()) && normalRotationReady) {
-                    legacyFireBreakBurst(direction, slot, isSecondaryRole);
+                if (progress >= getSpeed() && !state.canBeReplaced() && (whileEating.getValue() || !EntityUtils.isEating())
+                        && !(switchTouchesInventory && EntityUtils.isEating())) {
+                    legacyFireBreakBurst(direction, slot);
 
                     attempts++;
-                    if (!isSecondaryRole) {
-                        if (!instant.getValue()) {
-                            this.mining = false;
-                        } else {
-                            this.instantMine = true;
-                            instantTimer.reset();
+                    if (rebreak.getValue().equalsIgnoreCase("None") || terrainBase) {
+                        this.mining = false;
+                        this.stallTime = System.currentTimeMillis();
+                    } else {
+                        this.instantMine = true;
+                        if (rebreak.getValue().equalsIgnoreCase("Fast")) {
+                            this.progress = 0.0f;
+                            this.prevProgress = 0.0f;
                         }
+                        instantTimer.reset();
                     }
 
-                    return doubleMine.getValue() && isSecondaryRole;
+                    return false;
                 }
             } else {
-                // bản gốc verbatim: no stallTime backoff -- once attempts != 0 this genuinely
-                // wedges until start()/cancel() resets it (known old limitation).
-                if (!mc.level.getBlockState(position).canBeReplaced() && attempts == 0) {
+                if (!mc.level.getBlockState(position).canBeReplaced() && (attempts == 0 || (rebreak.getValue().equalsIgnoreCase("None") && !mining && System.currentTimeMillis() - stallTime >= 150L))) {
                     start();
                 }
             }
@@ -1512,17 +1679,12 @@ public class SpeedMineModule extends Module {
             return false;
         }
 
-        // bản gốc verbatim inline burst (no demote() concept -- legacySecondary is a whole
-        // separate Action, not a hand-off). rotate/grim/clientRemove/switch-back semantics are
-        // the current project's -- only the FarReach decoy/threshold pieces are omitted.
-        private void legacyFireBreakBurst(Direction direction, int slot, boolean isSecondaryRole) {
+        private void legacyFireBreakBurst(Direction direction, int slot) {
             EUClient.EVENT_HANDLER.post(new DestroyBlockEvent(position));
 
             if (rotate.getValue().equalsIgnoreCase("Packet") || rotate.getValue().equalsIgnoreCase("Silent")) {
                 float[] rots = RotationUtils.getRotations(WorldUtils.getHitVector(position, direction));
                 if (isProxyActive()) {
-                    // Silent's proxy-side equivalent of packetRotate's manual PosRot below --
-                    // Rot-only, no position field. See RotationManager.silentRotate's own doc.
                     if (rotate.getValue().equalsIgnoreCase("Silent")) {
                         serverSend(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.Rot(
                                 rots[0], rots[1], mc.player.onGround(), mc.player.horizontalCollision));
@@ -1554,62 +1716,18 @@ public class SpeedMineModule extends Module {
                 if (grim.getValue()) mc.getConnection().send(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, position.above(500), direction));
                 mc.getConnection().send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
 
-                // Strict/DoubleMine-secondary used to defer this call itself via a private
-                // 100ms SwitchAction timer -- a second, independent "wait before restoring"
-                // mechanism running alongside InventoryUtils' own dwell (see its own doc), unaware
-                // of it and uncoordinated with any other module's concurrent hold. For that whole
-                // 100ms, InventoryUtils had no record this switch even wanted to restore, so it
-                // couldn't arbitrate against e.g. AutoCrystal's own hold opening in the same
-                // window -- exactly the class of bug behind the AutoCrystal+SpeedMine crystal ->
-                // pickaxe flicker, reported to still happen with plain single-block mining,
-                // Double on or off. InventoryUtils.switchBack already IS "wait for the server to
-                // tick you before switching back" now (that's the whole point of its dwell), so
-                // Strict's separate implementation of the same idea was pure duplication. Call it
-                // eagerly, same as every other mode -- the dwell inside handles the wait.
                 InventoryUtils.switchBack(switchMode.getValue(), slot, previousSlot);
             }
         }
 
-        // Extracted out of process()'s completion branch so Async's blind re-fire (see the
-        // air-check above) can send the exact same rotate/switch/STOP_DESTROY/grim/swing/
-        // clientRemove burst without duplicating it -- the two call sites used to drift out of
-        // sync being separate copies.
-        /**
-         * @param demote true when this is demote()'s single hand-off STOP rather than a real
-         *               completion. A demotion must NOT post DestroyBlockEvent (nothing broke
-         *               yet -- Secondary posts it once the server confirms), must NOT arm the
-         *               FarReach stop-cooldown (homovore's stopBreak(slot, false)), and must
-         *               NOT clientRemove the block (that would make Secondary.process() see air
-         *               on the very next tick and declare a break that never happened). It DOES
-         *               defer the local switchback like Strict does, which leaves the tool held
-         *               a moment longer -- free help for the server's delayed destroy.
-         */
         private void fireBreakBurst(Direction direction, int slot, boolean demote) {
             fireBreakBurst(direction, slot, demote, !demote);
         }
 
-        /**
-         * @param armCooldown whether this burst arms FarReach's shared, MODULE-LEVEL stopCooldown
-         *                    (see canStartNow()). Normally tracks !demote, but Async's continuous
-         *                    rebreak-through-air loop needs its own bursts to NEVER arm it: that
-         *                    cooldown gates tryStart() for every OTHER Action too (a moving Auto/
-         *                    Surround target switching to a new position), so Async re-arming it
-         *                    on every one of its own (deliberately rapid, no-wait) fires meant a
-         *                    NEW target's tryStart() kept getting throttled behind it -- reported
-         *                    as "mines ~7 blocks in a row then stalls a beat, repeatedly" (the
-         *                    stall being STOP_COOLDOWN_TICKS after whichever Async fire happened
-         *                    to land right before the target moved).
-         */
         private void fireBreakBurst(Direction direction, int slot, boolean demote, boolean armCooldown) {
             if (!demote) EUClient.EVENT_HANDLER.post(new DestroyBlockEvent(position));
 
             if (rotate.getValue().equalsIgnoreCase("Packet") || rotate.getValue().equalsIgnoreCase("Silent")) {
-                // bản gốc 1.21.4 verbatim: full Pos+Rot packet built from mc.player's live
-                // coordinates. Known trade-off -- see RotationManager.packetRotate's 2026-08-13
-                // comment: GrimAC runs a full movement-prediction cycle for ANY packet carrying
-                // a position, so this can rubberband on Grim servers exactly like it used to.
-                // Silent sidesteps that entirely: Rot-only, no position field at all -- see
-                // RotationManager.silentRotate's own doc.
                 float[] rots = RotationUtils.getRotations(WorldUtils.getHitVector(position, direction));
                 if (isProxyActive()) {
                     if (rotate.getValue().equalsIgnoreCase("Silent")) {
@@ -1628,49 +1746,15 @@ public class SpeedMineModule extends Module {
             int previousSlot = mc.player.getInventory().getSelectedSlot();
 
             if (isProxyActive()) {
-                // Use startSlot (captured in start(), before anything switched) as the real
-                // "previous" slot to restore -- previousSlot above was just read live, which by
-                // now is the pickaxe slot start() already switched to, not what the player
-                // actually had selected.
                 int realPreviousSlot = startSlot != -1 ? startSlot : previousSlot;
                 int mineSlot = switchMode.getValue().equalsIgnoreCase("None") ? -1 : slot;
 
-                // EUClient.EVENT_HANDLER.post(new DestroyBlockEvent(...)) above runs its listeners
-                // SYNCHRONOUSLY -- AutoCrystalModule.onDestroyBlock is one of them, and with
-                // Switch=Normal it selects the crystal slot and (by design, see InventoryUtils'
-                // comment on switchBack's Normal no-op) leaves it selected afterward. That happens
-                // BEFORE this code runs. Always re-assert the mining slot here regardless of what
-                // it "should" already be -- it costs one extra packet on the (rare) already-correct
-                // case, but is the only way to be right after another module reselected mid-event.
-                //
-                // mc.player.getInventory().setSelectedSlot() below is gated to Normal ONLY: mc.player
-                // IS the real connected client's own player entity here (not a separate ghost --
-                // "proxy" just means packets go straight to the real server connection), so this
-                // setSelectedSlot() call is directly visible in the player's own hotbar. Silent/
-                // AltSwap/AltPickup exist specifically so the player never sees the switch --
-                // calling this unconditionally for every non-None mode flipped the visible
-                // selection to the mining slot and back for one frame even under Silent, showing
-                // as the mining slot's item (and its enchant glint) briefly appearing duplicated
-                // over the real held item before snapping back.
                 if (mineSlot != -1) {
                     serverSend(new ServerboundSetCarriedItemPacket(mineSlot));
                     if (switchMode.getValue().equalsIgnoreCase("Normal")) mc.player.getInventory().setSelectedSlot(mineSlot);
                 }
 
-                // FarReach: homovore's sendAction() is used for the completing STOP too, not just
-                // the START/decoy -- uniform seq=0, and it's the STOP that arms stopCooldown.
-                // Deliberately NOT routed through the real BlockStatePredictionHandler sequence
-                // below (see stopDestroyBlock's own doc) -- FarReach's decoy needs a uniform
-                // seq=0 across every packet (see the class comment on GRIM_DECOY_Y_OFFSET), a
-                // real incrementing sequence here would break that. Its client-side removal
-                // stays unprotected/unrolled-back, same trade-off FarReach already accepted.
-                if (farReach.getValue()) {
-                    sendRawPlayerAction(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, position, direction, armCooldown);
-                    if (!demote) mc.level.removeBlock(position, false);
-                } else {
-                    stopDestroyBlock(position, direction, !demote);
-                    markStop();
-                }
+                stopDestroyBlock(position, direction, !demote, armCooldown);
                 if (grim.getValue()) serverSend(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, position.above(500), direction));
                 serverSend(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
 
@@ -1681,46 +1765,25 @@ public class SpeedMineModule extends Module {
             } else {
                 InventoryUtils.switchSlot(switchMode.getValue(), slot, previousSlot);
 
-                if (farReach.getValue()) {
-                    sendRawPlayerAction(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, position, direction, armCooldown);
-                    if (!demote) mc.level.removeBlock(position, false);
-                } else {
-                    stopDestroyBlock(position, direction, !demote);
-                    markStop();
-                }
+                stopDestroyBlock(position, direction, !demote, armCooldown);
                 if (grim.getValue()) mc.getConnection().send(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, position.above(500), direction));
                 mc.getConnection().send(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
 
-                // See the other fireBreakBurst call site's note -- Strict/demote's own separate
-                // defer is gone, InventoryUtils.switchBack's dwell already does the "hold it a
-                // moment longer" job for both cases now.
                 InventoryUtils.switchBack(switchMode.getValue(), slot, previousSlot);
             }
         }
 
-        /**
-         * Sends STOP_DESTROY_BLOCK with a REAL incrementing BlockStatePredictionHandler sequence
-         * and, if {@code remove} is true, removes the block client-side INSIDE THE SAME
-         * prediction window -- {@link NetworkUtils#sendSequencedPacket}/{@code serverSendSequenced}
-         * close their window the instant the packet is built and returned, before this method's
-         * own {@code mc.level.removeBlock()} used to ever run. {@code ClientLevel.setBlock} only
-         * calls {@code retainKnownServerState} (the thing that lets a later
-         * {@code ClientboundBlockChangedAckPacket} roll the block back) while
-         * {@code isPredicting()} is true, so the old two-call-site shape never registered the
-         * predicted removal at all -- if the server silently never confirmed the break (anticheat
-         * rejection, packet loss, hardness mismatch, or the player got stuck mid-mine), the client
-         * just believed the block was gone forever with no way to notice or recover (reported:
-         * "Speedmine đào block mà bị kẹt thì client side vẫn cứ giả sử block đó đã biến mất").
-         * One shared window fixes that -- same shape as vanilla's own
-         * {@code MultiPlayerGameMode.destroyBlock()}/{@code startPrediction()}, predicting the
-         * removal and sending the packet that concludes it in one session.
-         */
         private void stopDestroyBlock(BlockPos position, Direction direction, boolean remove) {
+            stopDestroyBlock(position, direction, remove, false);
+        }
+
+        private void stopDestroyBlock(BlockPos position, Direction direction, boolean remove, boolean cooldown) {
             try (net.minecraft.client.multiplayer.prediction.BlockStatePredictionHandler prediction =
                          ((eu.client.mixins.accessors.ClientWorldAccessor) mc.level).invokeGetPendingUpdateManager().startPredicting()) {
                 net.minecraft.network.protocol.Packet<?> packet = new ServerboundPlayerActionPacket(
                         ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, position, direction, prediction.currentSequence());
 
+                markStop(cooldown);
                 if (isProxyActive()) serverSend(packet);
                 else mc.getConnection().send(packet);
 
@@ -1729,25 +1792,13 @@ public class SpeedMineModule extends Module {
         }
 
         public void render(PoseStack matrices) {
-            // InstantRender only picks the COLOR used while idling on a broken block waiting to
-            // rebreak ("None" = no special override, keep whatever `color` mode already produced;
-            // "Custom" = instantColor below) -- it was wrongly doubling as "render nothing at all"
-            // here, so the default (None) hid the 100%-progress box the whole air-wait.
             if (mc.level.getBlockState(position).canBeReplaced() && !instantMine)
                 return;
 
             AABB box = new AABB(position);
-            // Air-wait (block already broken, sitting on instantMine waiting to resolidify):
-            // neither progress nor prevProgress get touched again until the mining branch resumes
-            // (the top-of-process() air-check returns before ever reaching it), but partialTick
-            // keeps climbing 0->1 every rendered frame regardless. Lerping between two frozen,
-            // slightly-unequal values (prevProgress from the tick before completion, progress
-            // pinned at max) with a moving partialTick produced a false 99%<->100% flicker every
-            // tick boundary even though nothing was actually changing. Use the final value
-            // directly while frozen -- nothing to interpolate toward.
             boolean airWaiting = mc.level.getBlockState(position).canBeReplaced() && instantMine;
             double progress = airWaiting ? this.progress / getSpeed()
-                    : Mth.lerp(mc.getDeltaTracker().getGameTimeDeltaPartialTick(false), prevProgress / getSpeed(), this.progress / getSpeed());
+                    : Mth.clamp(Mth.lerp(mc.getDeltaTracker().getGameTimeDeltaPartialTick(false), prevProgress / getSpeed(), this.progress / getSpeed()), 0.0f, 1.0f);
 
             if (animation.getValue().equalsIgnoreCase("Expand")) box = new AABB(position).deflate(0.5).inflate(Mth.clamp(progress / 2.0, 0.0, 0.5));
             if (animation.getValue().equalsIgnoreCase("Rise")) box = new AABB(position.getX(), position.getY(), position.getZ(), position.getX() + 1.0, position.getY() + progress, position.getZ() + 1.0);
@@ -1778,42 +1829,13 @@ public class SpeedMineModule extends Module {
                 return;
             }
 
-            // No doubleMine special case here anymore. This used to send STOP/START/STOP for
-            // the NEW position when doubleMine was on -- a garbled stand-in for homovore's
-            // demote(), which applies that STOP to the OLD position being handed over. On the
-            // new position that trailing STOP does real damage: the server has exactly ONE
-            // delayed-destroy slot (hasDelayedDestroy/delayedDestroyPos), and a STOP at ~0
-            // progress claims it for whatever position it names. So the fresh primary got
-            // parked in the slot the demoted secondary needs, and the secondary -- the block
-            // actually waiting on the server to finish it -- got nothing. Now demote() sends
-            // that one STOP for the right block and start() is plain homovore begin().
-            // homovore's begin() calls trackStarts(decoy ? 2 : 1) as its first action -- the decoy
-            // counts as its own start against the SAME balance the real one does, since GrimAC's
-            // FastBreak sees both as independent START_DIGGING packets. See canBegin()'s own doc.
             trackStarts(farReach.getValue() ? 2 : 1);
-
             Direction direction = WorldUtils.getClosestDirection(position, true);
 
             if (isProxyActive()) {
-                // Matches the local (non-proxy) branch below: no slot switch here at all.
-                // Holding the pickaxe on the real server for the ENTIRE mining duration (from
-                // start() through to STOP_DESTROY in process()) used to be deliberate here, to
-                // make the server compute progress off the pickaxe every tick -- but it meant
-                // any OTHER proxy-side module that reselects the slot mid-mine (AutoCrystal's
-                // Normal switch, triggered synchronously off DestroyBlockEvent) permanently wins
-                // the fight over the real server's held item, since nothing here expected the
-                // slot to move out from under it. That produced "server stuck on crystal/
-                // pickaxe forever, SpeedMine mining speed wrong, or crystals silently rejected
-                // while the proxy still predicted they were consumed" bugs. The vanilla trick
-                // this whole module is built on doesn't actually need the fast tool held while
-                // mining -- only briefly, right when STOP_DESTROY_BLOCK is sent, so the server's
-                // destroy-progress calculation at that exact tick uses it. Switching only for
-                // that instant (like local mode already does) removes the multi-tick window
-                // other modules could steal the slot during.
                 startSlot = mc.player.getInventory().getSelectedSlot();
 
                 if (farReach.getValue()) {
-                    // homovore's sendAction() throughout -- see sendRawPlayerAction's doc.
                     sendRawPlayerAction(ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, position, direction);
                     BlockPos decoyPos = grimDecoyPos();
                     sendRawPlayerAction(ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, decoyPos, WorldUtils.getClosestDirection(decoyPos, true));
@@ -1823,7 +1845,6 @@ public class SpeedMineModule extends Module {
 
                 serverSend(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
             } else {
-                // Local: no slot switch in start(), only at STOP_DESTROY moment
                 if (farReach.getValue()) {
                     sendRawPlayerAction(ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, position, direction);
                     BlockPos decoyPos = grimDecoyPos();
@@ -1843,14 +1864,6 @@ public class SpeedMineModule extends Module {
             this.started = true;
         }
 
-        /**
-         * bản gốc 1.21.4 verbatim: no FarReach throttle/decoy/trackStarts. On the proxy, switches
-         * to the fast tool immediately and KEEPS it held for the entire mining duration (the
-         * caller explicitly chose this over the current model's "switch only at STOP_DESTROY"
-         * fix -- known trade-off: another proxy-side module reselecting the slot mid-mine, e.g.
-         * AutoCrystal's Normal switch, can win the fight over the held item while a legacy
-         * Action is in flight).
-         */
         private void legacyStart() {
             Direction direction = WorldUtils.getClosestDirection(position, true);
 
@@ -1869,9 +1882,6 @@ public class SpeedMineModule extends Module {
                 }
 
                 serverSend(new ServerboundSwingPacket(InteractionHand.MAIN_HAND));
-                // Do NOT switch back -- bản gốc keeps the fast tool held on the real server for
-                // the whole mining duration. process()/legacyProcess() only switch back at the
-                // completing STOP (fireBreakBurst's needSwitch dance), same as bản gốc.
             } else {
                 if (doubleMine.getValue()) {
                     NetworkUtils.sendSequencedPacket(seq -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, position, direction, seq));
@@ -1897,8 +1907,6 @@ public class SpeedMineModule extends Module {
                 return;
             }
 
-            // Never ABORT a mine that was never started -- the throttle can hold an Action in the
-            // !started state, and homovore's clearMine() sends nothing in that case either.
             if (!doubleMine.getValue() && started) {
                 if (farReach.getValue()) {
                     sendRawPlayerAction(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, position, WorldUtils.getClosestDirection(position, true));
@@ -1912,19 +1920,6 @@ public class SpeedMineModule extends Module {
                 }
             }
 
-            // start() deliberately leaves the REAL SERVER holding the pickaxe ("Do NOT switch
-            // back here") and relies on process() to restore it after STOP_DESTROY. Any path
-            // that ends the action early therefore has to do that restore itself, or the server
-            // keeps thinking a pickaxe is in hand indefinitely -- at which point AutoCrystal's
-            // ServerboundUseItemOnPacket places nothing (server sees a pickaxe), while the
-            // proxy's local model still predicts the crystal was consumed: crystals vanish into
-            // nothing until clicking the hotbar slot forces a resync and the server hands the
-            // whole stack back.
-            //
-            // Restore to startSlot, NOT getSelectedSlot(): start() already mirrored the pickaxe
-            // slot into mc.player, so reading it live here would "restore" the pickaxe onto
-            // itself and leave the desync in place. Runs regardless of doubleMine -- the switch
-            // in start() isn't conditional on it either.
             if (isProxyActive() && startSlot != -1) {
                 serverSend(new ServerboundSetCarriedItemPacket(startSlot));
                 mc.player.getInventory().setSelectedSlot(startSlot);
@@ -1936,14 +1931,9 @@ public class SpeedMineModule extends Module {
             this.attempts = 0;
             this.mining = false;
             this.started = false;
-
             this.instantMine = false;
         }
 
-        /**
-         * bản gốc 1.21.4 verbatim: ABORT is only ever sent when doubleMine is OFF -- with
-         * doubleMine on, cancel() sends nothing at all (known old quirk, kept as-is).
-         */
         private void legacyCancel() {
             if (!doubleMine.getValue()) {
                 Direction direction = WorldUtils.getClosestDirection(position, true);
@@ -1956,17 +1946,6 @@ public class SpeedMineModule extends Module {
                 }
             }
 
-            // Hoisted OUT of the !doubleMine branch above. legacyStart()'s proxy branch parks the
-            // real server on the fast tool unconditionally ("Do NOT switch back -- bản gốc keeps the
-            // fast tool held for the whole mining duration") and it is NOT gated on doubleMine -- but
-            // this restore was, so with Double on, every early end (handle() swapping targets,
-            // onDisable, out-of-range, switchReset) left the real server holding the PICKAXE with
-            // nothing alive to hand it back. It is a raw serverSend, so InventoryUtils' SILENT_RESTORE
-            // /PENDING maps cannot see it either. AutoCrystal then places against a server that thinks
-            // a pickaxe is in hand: the place silently no-ops, the server re-asserts its own view of
-            // the slot with a ContainerSetSlot writing the pickaxe into the crystal slot, and that is
-            // the reported "crystal slot flickers into the pickaxe". Restore unconditionally, matching
-            // the switch that was equally unconditional.
             if (isProxyActive()) serverSend(new ServerboundSetCarriedItemPacket(mc.player.getInventory().getSelectedSlot()));
 
             this.progress = 0.0f;
@@ -1982,17 +1961,10 @@ public class SpeedMineModule extends Module {
             return legacySecondary != null && position.equals(legacySecondary.getPosition()) ? 1.0f : speed.getValue().floatValue();
         }
 
-        // See farReach's own doc / GRIM_DECOY_Y_OFFSET -- 2000 blocks below the real target, out of
-        // the world, so the real server silently no-ops the (fake) START_DESTROY_BLOCK sent there.
         private BlockPos grimDecoyPos() {
             return position.below(GRIM_DECOY_Y_OFFSET);
         }
 
-        // For AutoCrystalModule's MineIgnore: approximates ticks left before this target breaks,
-        // using the SAME per-tick delta formula process() itself uses (WorldUtils.getMineSpeed off
-        // the currently-selected slot / the world's timer multiplier). Not exact -- delta can shift
-        // tick to tick if switchMode picks a different item, or if the timer multiplier changes --
-        // but close enough for a coarse "N ticks left" trigger threshold, and cheap (no scan).
         public int getTicksRemaining() {
             if (!mining) return Integer.MAX_VALUE;
 
@@ -2002,7 +1974,6 @@ public class SpeedMineModule extends Module {
             return Math.max(0, Math.round((getSpeed() - progress) / delta));
         }
     }
-
 
     private record Target(Player player, java.util.List<Position> feetPositions, BlockPos position) { }
     private record Position(BlockPos position, boolean feetPosition) { }

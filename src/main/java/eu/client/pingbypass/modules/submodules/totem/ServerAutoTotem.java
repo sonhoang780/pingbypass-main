@@ -34,13 +34,12 @@ public class ServerAutoTotem extends PbModule implements IMinecraft {
     public NumberSetting fallDistance = new NumberSetting("FallDistance", "The fall distance at which the module will prioritize a totem.", 20.0f, 0.0f, 80.0f);
     public BooleanSetting useGapple = new BooleanSetting("UseGapple", "Switches to a golden apple in your offhand when holding right click and holding a sword.", true);
     public BooleanSetting lethalOverride = new BooleanSetting("LethalOverride", "Overrides any necessity for a totem when right-click gappling.", false);
-    public BooleanSetting tickAbort = new BooleanSetting("TickAbort", "Enable the interval between switching item which is determine by player ping", true);
+    public BooleanSetting alternative = new BooleanSetting("Alternative", "Uses single-packet SWAP action (button 40) instead of 3-click PICKUP into offhand.", true);
     public BooleanSetting smartMine = new BooleanSetting("SmartMine", "Switches to a crystal whenever you start mining and a totem when you aren't mining.", false);
     public BooleanSetting antiMace = new BooleanSetting("AntiMace", "Switches to a totem if a player near you is trying to smash attack you with a mace.", false);
     public NumberSetting maceRange = new NumberSetting("MaceRange", "The distance at which an enemy has to be in with a mace in order to swap to a totem.", 12.0f, 0.0f, 24.0f);
 
     private int totemCount = 0;
-    private int ticks = 0;
 
     public ServerAutoTotem() {
         super("AutoTotem");
@@ -59,13 +58,13 @@ public class ServerAutoTotem extends PbModule implements IMinecraft {
     @Override
     public List<Setting> getSettings() {
         return List.of(item, health, elytraCheck, fallDistance, useGapple, lethalOverride,
-                tickAbort, smartMine, antiMace, maceRange);
+                alternative, smartMine, antiMace, maceRange);
     }
 
-    @SubscribeEvent
+    @SubscribeEvent(priority = Integer.MAX_VALUE)
     public void onPlayerPop(PlayerPopEvent event) {
         if (event.getPlayer() == mc.player && !EUClient.MODULE_MANAGER.getModule(SuicideModule.class).isToggled()) {
-            ticks = 0;
+            tick();
         }
     }
 
@@ -73,11 +72,6 @@ public class ServerAutoTotem extends PbModule implements IMinecraft {
     public void tick() {
         if (mc.player == null || mc.level == null) return;
         totemCount = mc.player.getInventory().countItem(Items.TOTEM_OF_UNDYING);
-
-        if (ticks > 0 && tickAbort.getValue()) {
-            ticks--;
-            return;
-        }
 
         if (!(mc.screen instanceof InventoryScreen) && mc.screen instanceof AbstractContainerScreen<?>)
             return;
@@ -105,8 +99,11 @@ public class ServerAutoTotem extends PbModule implements IMinecraft {
 
         if (slot == -1) return;
 
-        InventoryUtils.swap("Pickup", slot, 45);
-        ticks = 2 + EUClient.SERVER_MANAGER.getPingDelay();
+        if (alternative.getValue()) {
+            InventoryUtils.swap("Swap", slot, 40);
+        } else {
+            InventoryUtils.swap("Pickup", slot, 45);
+        }
     }
 
     private Item getItem() {

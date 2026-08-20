@@ -146,4 +146,14 @@ public class ClientConnectionMixin {
         EUClient.EVENT_HANDLER.post(new ClientDisconnectEvent());
     }
 
+    @Inject(method = "exceptionCaught", at = @At("HEAD"), cancellable = true)
+    private void exceptionCaught$HEAD(ChannelHandlerContext context, Throwable throwable, CallbackInfo ci) {
+        var noPacketKick = EUClient.MODULE_MANAGER != null ? EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.miscellaneous.NoPacketKickModule.class) : null;
+        if (noPacketKick != null && noPacketKick.isToggled()) {
+            if (noPacketKick.shouldSuppress(throwable)) {
+                noPacketKick.onExceptionCaught(throwable);
+                ci.cancel();
+            }
+        }
+    }
 }

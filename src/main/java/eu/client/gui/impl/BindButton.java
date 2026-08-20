@@ -1,9 +1,12 @@
 package eu.client.gui.impl;
 
 import eu.client.EUClient;
+import eu.client.gui.ClickGuiScreen;
 import eu.client.gui.api.Button;
 import eu.client.gui.api.Frame;
 import eu.client.settings.impl.BindSetting;
+import eu.client.utils.animations.Animation;
+import eu.client.utils.animations.Easing;
 import eu.client.utils.graphics.Renderer2D;
 import eu.client.utils.input.KeyboardUtils;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -15,10 +18,9 @@ import java.awt.*;
 public class BindButton extends Button {
     private final BindSetting setting;
     private boolean listening = false;
+    private final Animation hoverAnim = new Animation(150, Easing.Method.EASE_OUT_CUBIC);
+    private final Animation listenAnim = new Animation(150, Easing.Method.EASE_OUT_CUBIC);
 
-    // ClickGuiScreen claims Esc for its own close-request before any button ever sees a
-    // keyPressed call -- while a BindButton is listening, Esc has to cancel the bind capture
-    // instead, so ClickGuiScreen checks this before deciding whether to close.
     private static int listenersActive = 0;
 
     public static boolean isAnyListening() {
@@ -32,25 +34,33 @@ public class BindButton extends Button {
 
     @Override
     public void render(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta) {
+        boolean hovered = isHovering(mouseX, mouseY);
+        float hFactor = hoverAnim.get(hovered ? 1f : 0f);
+        float lFactor = listenAnim.get(listening ? 1f : 0f);
+
         // Setting background
         Renderer2D.renderQuad(context, getX() + getPadding() + 1, getY(), getX() + getWidth() - getPadding() - 1, getY() + getHeight() - 1, new Color(0, 0, 0, 40));
 
-        // The tag itself shows the mode (Hold/ReverseHold) in place of "Bind" once set -- not as
-        // a suffix next to the key -- so the label always reads as "what this bind currently
-        // does" rather than "Bind: F (Hold)".
+        if (hFactor > 0.001f || lFactor > 0.001f) {
+            int alpha = Math.min(255, (int) (20 * hFactor + 50 * lFactor));
+            Color highlight = listening ? ClickGuiScreen.getButtonColor(getY(), alpha) : new Color(255, 255, 255, alpha);
+            Renderer2D.renderQuad(context, getX() + getPadding() + 1, getY(), getX() + getWidth() - getPadding() - 1, getY() + getHeight() - 1, highlight);
+        }
+
         String tag = setting.getMode().equals("Bind") ? setting.getTag() : setting.getMode();
-        EUClient.FONT_MANAGER.drawTextWithShadow(context, tag, getX() + getTextPadding() + 3, getY() + 2, Color.WHITE);
+        float textX = getX() + getTextPadding() + 3 + (hFactor * 1.5f);
+        EUClient.FONT_MANAGER.drawTextWithShadow(context, tag, (int) textX, getY() + 2, Color.WHITE);
 
         String bind = listening ? "..." : KeyboardUtils.getKeyName(setting.getValue());
-        EUClient.FONT_MANAGER.drawTextWithShadow(context, ChatFormatting.GRAY + bind, getX() + getWidth() - getTextPadding() - 1 - EUClient.FONT_MANAGER.getWidth(bind), getY() + 2, Color.WHITE);
+        Color bindColor = listening ? Color.YELLOW : Color.WHITE;
+        int bindX = getX() + getWidth() - getTextPadding() - 1 - EUClient.FONT_MANAGER.getWidth(bind) - (int) (lFactor * 2f);
+        EUClient.FONT_MANAGER.drawTextWithShadow(context, (listening ? ChatFormatting.YELLOW : ChatFormatting.GRAY) + bind, bindX, getY() + 2, bindColor);
     }
 
     @Override
     public void mouseClicked(double mouseX, double mouseY, int button) {
         if (!isHovering(mouseX, mouseY)) return;
 
-        // While listening, any mouse button (including the one that started listening, if the
-        // user meant to bind to that button itself) assigns it as the bind.
         if (listening) {
             if (button >= 0 && button <= 4) {
                 setting.setValue(-button - 1);
@@ -60,32 +70,49 @@ public class BindButton extends Button {
         }
 
         if (button == 0) {
-            // Left click: start listening for a new key/button. Press Esc while listening to
-            // clear the bind back to None instead.
-            listening = true;
-            listenersActive++;
+            startListening();
             playClickSound();
         } else if (button == 1) {
-            // Right click: cycle Bind -> Hold -> ReverseHold -> Bind.
-            setting.cycleMode();
+            cycleMode();
             playClickSound();
         }
     }
 
     @Override
     public void keyPressed(int keyCode, int scanCode, int modifiers) {
-        if(listening) {
-            if (keyCode == GLFW.GLFW_KEY_ESCAPE || keyCode == GLFW.GLFW_KEY_DELETE) {
-                setting.setValue(0);
-            } else {
-                setting.setValue(keyCode);
-            }
+        if (!listening) return;
+
+        if (keyCode == GLFW.GLFW_KEY_DELETE || keyCode == GLFW.GLFW_KEY_BACKSPACE || keyCode == GLFW.GLFW_KEY_ESCAPE) {
+            setting.setValue(0);
             stopListening();
+            return;
         }
+
+        setting.setValue(keyCode);
+        stopListening();
+    }
+
+    public void keyPressed(int key) {
+        keyPressed(key, 0, 0);
+    }
+
+    private void startListening() {
+        listening = true;
+        listenersActive++;
     }
 
     private void stopListening() {
-        listening = false;
-        listenersActive--;
+        if (listening) {
+            listening = false;
+            listenersActive = Math.max(0, listenersActive - 1);
+        }
+    }
+
+    private void cycleMode() {
+        switch (setting.getMode()) {
+            case "Bind" -> setting.setMode("Hold");
+            case "Hold" -> setting.setMode("ReverseHold");
+            case "ReverseHold" -> setting.setMode("Bind");
+        }
     }
 }

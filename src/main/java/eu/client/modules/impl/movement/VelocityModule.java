@@ -40,6 +40,9 @@ public class VelocityModule extends Module {
     public BooleanSetting onlyOnGround = new BooleanSetting("OnlyOnGround", "Only reduces knockback while phased AND on the ground.", new ModeSetting.Visibility(mode, "Walls"), false);
     public BooleanSetting explosions = new BooleanSetting("Explosions", "Modifies knockback received from explosions.", true);
     public BooleanSetting pause = new BooleanSetting("Pause", "Pauses the velocity for a certain duration whenever you get rubberbanded.", new ModeSetting.Visibility(mode, "Cancel", "Grim"), true);
+    public BooleanSetting onlyPhased = new BooleanSetting("OnlyPhased", "Only reduces knockback while phased (Grim mode).", new ModeSetting.Visibility(mode, "Grim"), false);
+    public BooleanSetting onlyWhenHeadCovered = new BooleanSetting("OnlyCoveredHead", "Only reduces knockback when a block is above your head (Grim mode).", new ModeSetting.Visibility(mode, "Grim"), false);
+    public BooleanSetting conceal = new BooleanSetting("Conceal", "Ignores fake 0-0-0 velocity packets sent after a setback.", false);
 
     public CategorySetting antiPushCategory = new CategorySetting("AntiPush", "Prevents certain things from pushing you.");
     public BooleanSetting antiPush = new BooleanSetting("AntiPush", "Entities", "Prevents other entities from pushing you.", new CategorySetting.Visibility(antiPushCategory), true);
@@ -48,26 +51,63 @@ public class VelocityModule extends Module {
     public BooleanSetting antiFishingRod = new BooleanSetting("AntiFishingRod", "FishingRods", "Prevents fishing rods from pushing you.", new CategorySetting.Visibility(antiPushCategory), false);
 
     private boolean cancel;
+    private boolean pendingConcealment = false;
+    private boolean pendingVelocity = false;
+
+    @Override
+    public void onEnable() {
+        pendingVelocity = false;
+        pendingConcealment = false;
+    }
+
+    @Override
+    public void onDisable() {
+        if (!pendingVelocity) return;
+        if (mode.getValue().equalsIgnoreCase("Grim")) {
+            sendRotationFix();
+        }
+        pendingVelocity = false;
+        pendingConcealment = false;
+    }
 
     @SubscribeEvent
     public void onTick(TickEvent event) {
         if (mc.player == null) return;
-        if (!cancel) return;
-
-        if (mode.getValue().equalsIgnoreCase("Grim") && (!pause.getValue() || EUClient.SERVER_MANAGER.getSetbackTimer().hasTimeElapsed(100L))) {
-            mc.getConnection().send(new ServerboundMovePlayerPacket.PosRot(mc.player.getX(), mc.player.getY(), mc.player.getZ(), EUClient.ROTATION_MANAGER.getServerYaw(), EUClient.ROTATION_MANAGER.getServerPitch(), mc.player.onGround(), mc.player.horizontalCollision));
-            mc.getConnection().send(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, mc.player.isVisuallyCrawling() ? mc.player.blockPosition() : mc.player.blockPosition().above(), Direction.DOWN));
+        
+        if (pendingVelocity && mode.getValue().equalsIgnoreCase("Grim")) {
+            sendRotationFix();
         }
+        pendingVelocity = false;
+        pendingConcealment = false;
 
         cancel = false;
+    }
+
+    private void sendRotationFix() {
+        float yaw = EUClient.ROTATION_MANAGER.getServerYaw();
+        float pitch = EUClient.ROTATION_MANAGER.getServerPitch();
+
+        float f = (float)((Math.random() * 2.0 - 1.0) * 0.001f);
+        float f2 = Mth.clamp(pitch + f, -90.0F, 90.0F);
+
+        mc.getConnection().send(new ServerboundMovePlayerPacket.PosRot(mc.player.getX(), mc.player.getY(), mc.player.getZ(), yaw, f2, mc.player.onGround(), mc.player.horizontalCollision));
     }
 
     @SubscribeEvent
     public void onPacketReceive(PacketReceiveEvent event) {
         if (mc.player == null) return;
 
+        if (event.getPacket() instanceof net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket && conceal.getValue()) {
+            pendingConcealment = true;
+        }
+
         if (event.getPacket() instanceof ClientboundSetEntityMotionPacket packet) {
             if (packet.id() != mc.player.getId()) return;
+
+            if (pendingConcealment && packet.movement().x == 0 && packet.movement().y == 0 && packet.movement().z == 0) {
+                pendingConcealment = false;
+                return;
+            }
 
             switch (mode.getValue()) {
                 case "Normal" -> scaleVelocity(event, packet);
@@ -83,8 +123,15 @@ public class VelocityModule extends Module {
                 case "Grim" -> {
                     if (pause.getValue() && !EUClient.SERVER_MANAGER.getSetbackTimer().hasTimeElapsed(100L)) return;
 
-                    event.setCancelled(true);
-                    cancel = true;
+                    if (onlyPhased.getValue() && !isPhased(mc.player)) return;
+                    if (onlyWhenHeadCovered.getValue()) {
+                        BlockPos target = mc.player.blockPosition().above(2);
+                        if (mc.player.isVisuallyCrawling()) target = mc.player.blockPosition().above(1);
+                        if (mc.level.getBlockState(target).isAir()) return;
+                    }
+
+                    scaleVelocity(event, packet);
+                    pendingVelocity = true;
                 }
             }
         }
@@ -103,8 +150,15 @@ public class VelocityModule extends Module {
                 case "Grim" -> {
                     if (pause.getValue() && !EUClient.SERVER_MANAGER.getSetbackTimer().hasTimeElapsed(100L)) return;
 
-                    event.setCancelled(true);
-                    cancel = true;
+                    if (onlyPhased.getValue() && !isPhased(mc.player)) return;
+                    if (onlyWhenHeadCovered.getValue()) {
+                        BlockPos target = mc.player.blockPosition().above(2);
+                        if (mc.player.isVisuallyCrawling()) target = mc.player.blockPosition().above(1);
+                        if (mc.level.getBlockState(target).isAir()) return;
+                    }
+
+                    scaleExplosion(packet);
+                    pendingVelocity = true;
                 }
             }
 

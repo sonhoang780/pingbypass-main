@@ -38,4 +38,31 @@ public class NoRenderModule extends Module {
     public BooleanSetting background = new BooleanSetting("Background", "Disables the dark background dimming behind inventory/other screens.", false);
     public ModeSetting tileEntities = new ModeSetting("TileEntities", "Disables the rendering of tile entities, such as chests, when meeting requirements.", "Never", new String[]{"Never", "Distance", "Always"});
     public NumberSetting tileDistance = new NumberSetting("TileDistance", "The distance at which tile entities will stop rendering.", new ModeSetting.Visibility(tileEntities, "Distance"), 10.0f, 0.0f, 100.0f);
+
+    // Items: cap how many dropped-item entities are drawn per frame. Limit only shows while Items
+    // is on. Limit = 0 hides all items; higher values render up to that many before culling the
+    // rest for the frame (see EntityRendererMixin.submit + LevelRendererMixin.renderEntities).
+    public BooleanSetting items = new BooleanSetting("Items", "Limits how many dropped items are rendered in view.", false);
+    public NumberSetting limit = new NumberSetting("Limit", "Max number of items to render per frame.", new BooleanSetting.Visibility(items, true), 100, 0, 100);
+    public BooleanSetting displays = new BooleanSetting("Displays", "Disables the rendering of Display entities (BlockDisplay, ItemDisplay, TextDisplay).", false);
+
+    // Per-frame counter of item entities already drawn this frame. Reset at the start of each
+    // entity render pass; incremented as each item passes shouldRenderItem().
+    private int renderedItems = 0;
+
+    /** Called once at the start of every entity render pass to reset the per-frame counter. */
+    public void resetItemCounter() {
+        renderedItems = 0;
+    }
+
+    /**
+     * Returns false if this item should be culled this frame (Items on and we've already drawn
+     * the allowed number). Returns true and counts the item otherwise.
+     */
+    public boolean shouldRenderItem() {
+        if (!items.getValue()) return true;
+        if (renderedItems >= limit.getValue().intValue()) return false;
+        renderedItems++;
+        return true;
+    }
 }

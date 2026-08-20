@@ -136,14 +136,7 @@ public class RekitModule extends Module {
     private int displacedHotbarSlot = -1;
     private int displacedEnderSlot = -1;
 
-    // A kit slot going correct -> incorrect can only be the player manually taking the item out
-    // (our own logic only ever adds/replaces, never removes). Give that slot a grace window where
-    // the fill loop leaves it alone instead of instantly re-yanking a replacement back into the
-    // exact slot the player just cleared -- goes to a different empty slot instead if the kit
-    // still needs topping up during the window.
-    private final Map<Integer, Boolean> kitSlotWasCorrect = new HashMap<>();
-    private final Map<Integer, Long> kitSlotClearedAtMs = new HashMap<>();
-    private static final long KIT_SLOT_CLEAR_GRACE_MS = 3000L;
+
 
     private boolean autoPlaceActive = false;
     private boolean autoPlaceBindWasDown = false;
@@ -280,8 +273,6 @@ public class RekitModule extends Module {
         displacedEnderSlot = -1;
         autoPlaceActive = false;
         autoPlaceBindWasDown = false;
-        kitSlotWasCorrect.clear();
-        kitSlotClearedAtMs.clear();
     }
 
     @SubscribeEvent
@@ -788,14 +779,6 @@ public class RekitModule extends Module {
         return new BlockHitResult(Vec3.atCenterOf(placePos).add(0, -0.5, 0), Direction.UP, target, false);
     }
 
-    private int findEmptyUnassignedHandlerSlot(AbstractContainerMenu handler, int containerSize) {
-        for (int i = 0; i < 36; i++) {
-            int slot = getPlayerHandlerSlot(containerSize, i);
-            if (handler.getSlot(slot).getItem().isEmpty()) return slot;
-        }
-        return -1;
-    }
-
     private boolean isKitComplete() {
         if (activeKit.isEmpty()) return true;
         for (Map.Entry<Integer, KitItem> entry : activeKit.entrySet()) {
@@ -835,17 +818,12 @@ public class RekitModule extends Module {
             ItemStack playerStack = handler.getSlot(playerSlot).getItem();
 
             boolean correctNow = isCorrectItem(playerStack, kit);
-            if (Boolean.TRUE.equals(kitSlotWasCorrect.get(i)) && !correctNow) kitSlotClearedAtMs.put(i, System.currentTimeMillis());
-            kitSlotWasCorrect.put(i, correctNow);
 
             if (!correctNow) {
                 if (isShulkerBox(playerStack)) continue;
-                boolean inGrace = System.currentTimeMillis() - kitSlotClearedAtMs.getOrDefault(i, 0L) < KIT_SLOT_CLEAR_GRACE_MS;
                 int containerSlot = findBestItemInContainer(handler, containerSize, kit);
                 if (containerSlot != -1) {
-                    int emptySlot = inGrace ? findEmptyUnassignedHandlerSlot(handler, containerSize) : -1;
-                    if (emptySlot != -1 && emptySlot != playerSlot) atomicSwap(handler.containerId, containerSlot, emptySlot);
-                    else atomicSwap(handler.containerId, containerSlot, playerSlot);
+                    atomicSwap(handler.containerId, containerSlot, playerSlot);
                     return true;
                 }
             } else if (playerStack.getCount() < playerStack.getMaxStackSize()) {

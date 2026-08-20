@@ -27,28 +27,12 @@ public class Frame {
     public boolean open = true, dragging = false;
     private final ArrayList<Button> buttons = new ArrayList<>();
 
-    // SmoothScroll: content (everything below the header) slides on scrollOffset instead of the
-    // whole frame (header included) being dragged around by mouseScrolled -- that's what let a
-    // category's own header scroll off past the top of the screen with nothing stopping it.
-    // scrollVelocity gives it inertia (impulse per scroll tick, damped every frame instead of an
-    // instant jump); once scrollOffset is clamped outside [minScroll, maxScroll] a spring force
-    // pulls it back, and impulses landing while already out of bounds get damped (rubber-band
-    // resistance) so overscroll stretches instead of flying off -- "kéo hết cỡ, lộ nền category,
-    // nhả ra thì nảy lại". Bounds are computed off *last* frame's totalHeight (one-frame lag,
-    // imperceptible) since this frame's isn't known until after buttons are laid out.
-    private float scrollOffset = 0f, scrollVelocity = 0f;
-    private static final float SCROLL_FRICTION = 0.85f;
-    private static final float SCROLL_SPRING = 0.06f;
-    private static final float SCROLL_OVERSCROLL_RESISTANCE = 0.30f;
-    private static final float SCROLL_MAX_STRETCH = 18f;
+    // Shoreline-V2 smooth spring scroll physics & Smoother
+    private final eu.client.utils.animations.Smoother scrollSmoother = new eu.client.utils.animations.Smoother();
+    private float scrollOffset = 0f, currentScroll = 0f;
 
-    // Category open/close (right-click the header) had zero animation -- content just vanished/
-    // appeared instantly on the `open` flip. Same slide-reveal pattern as CategorySetting/
-    // ModuleButton: scissor-clip the content area to fullContentHeight * openAmount instead of
-    // gating the whole layout+render block on the raw boolean. Seeded to (1,1) since `open`
-    // defaults to true -- else the first read plays a phantom open animation (same class of bug
-    // fixed earlier for BooleanSetting.openAnim).
-    private final eu.client.utils.animations.Animation openAnim = new eu.client.utils.animations.Animation(1f, 1f, 200, eu.client.utils.animations.Easing.Method.EASE_OUT_QUAD);
+    // Category open/close with Shoreline-V2 EASE_OUT_CUBIC
+    private final eu.client.utils.animations.Animation openAnim = new eu.client.utils.animations.Animation(1f, 1f, 220, eu.client.utils.animations.Easing.Method.EASE_OUT_CUBIC);
 
     public Frame(Module.Category category, int x, int y, int width, int height) {
         this.category = category;
@@ -183,29 +167,34 @@ public class Frame {
                     // scissor clip, still keyed off openAmount) animates.
                     int revealHeight = Math.round(fullHeight * openAmount);
                     row.setRevealHeight(revealHeight);
-                    // Opening: commit to the full target height immediately (the fix above).
-                    // Closing: keep following the animated (shrinking) revealHeight -- committing to
-                    // 0 immediately here would snap every row below upward while this module's
-                    // content is still visibly rendered mid-close (revealHeight > 0), overlapping it.
-                    // Closing was never the reported problem (nothing becomes harder to reach by
-                    // collapsing), so it keeps the original smooth-shrink behavior.
-                    totalHeight += row.isOpen() ? Math.round(fullHeight) : revealHeight;
+                    totalHeight += revealHeight;
                 }
             }
         }
 
-        // Bounds off THIS frame's now-accurate totalHeight, step the spring physics, then shift
-        // every already-laid-out button (and its settings rows) down by the result.
+        // Shoreline-V2 smooth spring scroll physics
         int screenHeight = Minecraft.getInstance().getWindow().getGuiScaledHeight();
+        float windowHeight = screenHeight - y - 10;
+        float contentHeight = totalHeight - height;
         float maxScroll = 0f;
-        float minScroll = -Math.max(0, totalHeight - (screenHeight - y - 4));
+        float minScroll = -Math.max(0, contentHeight - windowHeight);
 
-        scrollOffset += scrollVelocity;
-        scrollVelocity *= SCROLL_FRICTION;
-        if (scrollOffset > maxScroll) scrollVelocity += (maxScroll - scrollOffset) * SCROLL_SPRING;
-        else if (scrollOffset < minScroll) scrollVelocity += (minScroll - scrollOffset) * SCROLL_SPRING;
-        scrollOffset = Math.clamp(scrollOffset, minScroll - SCROLL_MAX_STRETCH, maxScroll + SCROLL_MAX_STRETCH);
-        if (Math.abs(scrollVelocity) < 0.01f && scrollOffset >= minScroll && scrollOffset <= maxScroll) scrollVelocity = 0f;
+        double partialTicks = Math.max(0.016, (double) delta);
+        scrollOffset += (float) scrollSmoother.smooth(currentScroll, 0.45, partialTicks);
+        currentScroll = 0f;
+
+        // Shoreline spring overscroll bounce
+        float overscroll = 0f;
+        if (scrollOffset > maxScroll) {
+            overscroll = scrollOffset - maxScroll;
+        } else if (scrollOffset < minScroll) {
+            overscroll = scrollOffset - minScroll;
+        }
+        scrollOffset -= overscroll * 0.22f;
+
+        if (Math.abs(overscroll) < 0.05f && (scrollOffset >= minScroll && scrollOffset <= maxScroll)) {
+            scrollSmoother.clear();
+        }
 
         int shift = Math.round(scrollOffset);
         if (shift != 0) {
@@ -300,13 +289,8 @@ public class Frame {
                 }
             }
             if (!whitelistHandling && verticalAmount != 0) {
-                float impulse = EUClient.MODULE_MANAGER.getModule(ClickGuiModule.class).scrollSpeed.getValue().floatValue();
-                // Rubber-band resistance: an impulse landing while already past the clamp range
-                // (mid-overscroll) only stretches it further at a fraction of normal strength,
-                // instead of flying off unbounded.
-                boolean outOfBounds = scrollOffset > 0f || scrollOffset < -Math.max(0, totalHeight - (Minecraft.getInstance().getWindow().getGuiScaledHeight() - y - 4));
-                float resistance = outOfBounds ? SCROLL_OVERSCROLL_RESISTANCE : 1f;
-                scrollVelocity += (verticalAmount < 0 ? -impulse : impulse) * resistance;
+                float scrollSpeed = EUClient.MODULE_MANAGER.getModule(ClickGuiModule.class).scrollSpeed.getValue().floatValue();
+                currentScroll += (float) (verticalAmount * scrollSpeed * 2.5f);
             }
         }
     }

@@ -39,11 +39,12 @@ public class PopChamsModule extends Module {
     public ColorSetting outlineColor = new ColorSetting("OutlineColor", "The color used for the outline rendering.", new ModeSetting.Visibility(mode, "Outline", "Both"), ColorUtils.getDefaultOutlineColor());
 
     private static final EquipmentSlot[] COPIED_SLOTS = {
-            EquipmentSlot.MAINHAND, EquipmentSlot.OFFHAND,
             EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET
     };
 
-    private final Map<RemotePlayer, Long> ghosts = new HashMap<>();
+    // ConcurrentHashMap, not HashMap: isGhost() is read from AutoCrystal's async calculation thread
+    // (getPlayers() -> popChams.isGhost()) while onTick/onPlayerPop write it on the main thread.
+    private final Map<RemotePlayer, Long> ghosts = new java.util.concurrent.ConcurrentHashMap<>();
     // Own negative-ID range, well clear of FakePlayerCommand's (-13337 and counting down) so a
     // pop-ghost and a manually spawned fake player can never collide on the same client-side ID.
     private int nextId = -90000;
@@ -66,13 +67,50 @@ public class PopChamsModule extends Module {
         mc.execute(() -> {
             if (mc.level == null) return;
 
-            GameProfile profile = new GameProfile(UUID.randomUUID(), player.getName().getString());
+            GameProfile profile = new GameProfile(UUID.randomUUID(), "");
             RemotePlayer ghost = new RemotePlayer(mc.level, profile);
             ghost.setId(nextId--);
-            ghost.copyPosition(player);
+
+            // Synchronize positions & old positions
+            ghost.setPos(player.getX(), player.getY(), player.getZ());
+            ghost.xo = player.getX();
+            ghost.yo = player.getY();
+            ghost.zo = player.getZ();
+            ghost.xOld = player.getX();
+            ghost.yOld = player.getY();
+            ghost.zOld = player.getZ();
+
+            // Synchronize pitch, yaw, head rot, and body rot
+            ghost.setYRot(player.getYRot());
+            ghost.setXRot(player.getXRot());
+            ghost.yRotO = player.getYRot();
+            ghost.xRotO = player.getXRot();
+
             ghost.setYHeadRot(player.getYHeadRot());
+            ghost.yHeadRotO = player.getYHeadRot();
+            ghost.yBodyRot = player.yBodyRot;
+            ghost.yBodyRotO = player.yBodyRot;
+
+            // Synchronize poses & animation states
             ghost.setPose(player.getPose());
+            ghost.setShiftKeyDown(player.isShiftKeyDown());
+            ghost.setSwimming(player.isSwimming());
+            ghost.setSprinting(player.isSprinting());
             ghost.refreshDimensions();
+
+            // Synchronize limb walk animation
+            ghost.walkAnimation.setSpeed(player.walkAnimation.speed());
+            ((eu.client.mixins.accessors.LimbAnimatorAccessor) ghost.walkAnimation).setPos(player.walkAnimation.position());
+
+            // Synchronize arm swinging
+            ghost.swinging = player.swinging;
+            ghost.swingTime = player.swingTime;
+            ghost.swingingArm = player.swingingArm;
+            ghost.attackAnim = player.attackAnim;
+            ghost.oAttackAnim = player.oAttackAnim;
+
+            ghost.setItemSlot(EquipmentSlot.MAINHAND, net.minecraft.world.item.ItemStack.EMPTY);
+            ghost.setItemSlot(EquipmentSlot.OFFHAND, net.minecraft.world.item.ItemStack.EMPTY);
             for (EquipmentSlot slot : COPIED_SLOTS) {
                 ghost.setItemSlot(slot, player.getItemBySlot(slot).copy());
             }

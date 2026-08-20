@@ -13,7 +13,7 @@ public class CategorySetting extends Setting {
     // Same slide-reveal pattern as ModuleButton's settings panel / ModeButton's dropdown: the
     // member settings' visibility (and Frame's height contribution for them) now follows this
     // animated amount instead of snapping instantly on the raw `open` boolean.
-    private final Animation openAnim = new Animation(180, Easing.Method.EASE_OUT_QUAD);
+    private final Animation openAnim = new Animation(200, Easing.Method.EASE_OUT_CUBIC);
 
     public CategorySetting(String name, String description) {
         super(name, name, description, new Setting.Visibility());

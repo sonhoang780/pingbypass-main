@@ -104,12 +104,15 @@ public class ColorButton extends Button {
 
             offset += this.getParent().getHeight() + 1;
 
-            // sync button
-            if(setting.isSync()) Renderer2D.renderQuad(context, getX() + getPadding() + 1, getY() + offset, getX() + getWidth() - getPadding() - 1, getY() + offset + getParent().getHeight(), ClickGuiScreen.getButtonColor(getY(), 100));
-            EUClient.FONT_MANAGER.drawTextWithShadow(context, "Sync", getX() + (getWidth()/2) - EUClient.FONT_MANAGER.getWidth("Sync")/2, getY() + offset + 2, Color.WHITE);
-            hoveringSync = isHoveringComponent(mouseX, mouseY, getX() + getPadding() + 1, getY() + offset, getX() + getWidth() - getPadding() - 1, getY() + offset + getParent().getHeight());
-
-            offset += this.getParent().getHeight() + 1;
+            if (hasSync()) {
+                // sync button
+                if(setting.isSync()) Renderer2D.renderQuad(context, getX() + getPadding() + 1, getY() + offset, getX() + getWidth() - getPadding() - 1, getY() + offset + getParent().getHeight(), ClickGuiScreen.getButtonColor(getY(), 100));
+                EUClient.FONT_MANAGER.drawTextWithShadow(context, "Sync", getX() + (getWidth()/2) - EUClient.FONT_MANAGER.getWidth("Sync")/2, getY() + offset + 2, Color.WHITE);
+                hoveringSync = isHoveringComponent(mouseX, mouseY, getX() + getPadding() + 1, getY() + offset, getX() + getWidth() - getPadding() - 1, getY() + offset + getParent().getHeight());
+                offset += this.getParent().getHeight() + 1;
+            } else {
+                hoveringSync = false;
+            }
 
             if(setting.isRainbow()) Renderer2D.renderQuad(context, getX() + getPadding() + 1, getY() + offset, getX() + getWidth() - getPadding() - 1, getY() + offset + getParent().getHeight(), ClickGuiScreen.getButtonColor(getY(), 100));
             EUClient.FONT_MANAGER.drawTextWithShadow(context, "Rainbow", getX() + (getWidth()/2) - EUClient.FONT_MANAGER.getWidth("Rainbow")/2, getY() + offset + 2, Color.WHITE);
@@ -117,6 +120,14 @@ public class ColorButton extends Button {
 
             offset += this.getParent().getHeight() + 1;
         }
+    }
+
+    private boolean hasSync() {
+        ColorModule colorModule = EUClient.MODULE_MANAGER.getModule(ColorModule.class);
+        eu.client.modules.impl.core.ClickGuiModule clickGuiModule = EUClient.MODULE_MANAGER.getModule(eu.client.modules.impl.core.ClickGuiModule.class);
+        if (colorModule != null && setting == colorModule.color) return false;
+        if (clickGuiModule != null && setting == clickGuiModule.color) return false;
+        return true;
     }
 
     @Override
@@ -140,7 +151,7 @@ public class ColorButton extends Button {
                 hsb = Color.RGBtoHSB(setting.getColor().getRed(), setting.getColor().getGreen(), setting.getColor().getBlue(), null);
                 playClickSound();
             }
-            if(setting != EUClient.MODULE_MANAGER.getModule(ColorModule.class).color && hoveringSync) {
+            if(hasSync() && hoveringSync) {
                 setting.setSync(!setting.isSync());
                 playClickSound();
             }
@@ -160,7 +171,7 @@ public class ColorButton extends Button {
 
     @Override
     public int getHeight() {
-        return open ? 151 : getParent().getHeight();
+        return open ? (hasSync() ? 151 : 137) : getParent().getHeight();
     }
 
     @Override

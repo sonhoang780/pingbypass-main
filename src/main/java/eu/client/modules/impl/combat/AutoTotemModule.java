@@ -8,6 +8,7 @@ import eu.client.events.impl.TickEvent;
 import eu.client.modules.Module;
 import eu.client.modules.RegisterModule;
 import eu.client.modules.impl.player.SpeedMineModule;
+import eu.client.modules.impl.player.MultiTaskModule;
 import eu.client.settings.impl.BooleanSetting;
 import eu.client.settings.impl.ModeSetting;
 import eu.client.settings.impl.NumberSetting;
@@ -29,93 +30,98 @@ public class AutoTotemModule extends Module {
     public NumberSetting fallDistance = new NumberSetting("FallDistance", "The fall distance at which the module will prioritize a totem.", 20.0f, 0.0f, 80.0f);
     public BooleanSetting useGapple = new BooleanSetting("UseGapple", "Switches to a golden apple in your offhand when holding right click and holding a sword.", true);
     public BooleanSetting lethalOverride = new BooleanSetting("LethalOverride", "Overrides any necessity for a totem when right-click gappling.", new BooleanSetting.Visibility(useGapple, true), false);
-    public BooleanSetting tickAbort = new BooleanSetting("TickAbort", "Enable the interval between switching item which is determine by player ping", true);
+
+    public BooleanSetting noTotemGap = new BooleanSetting("NoTotemGap", "Swap your gap into offhand when no totems left", false);
+    public BooleanSetting alternative = new BooleanSetting("Alternative", "Uses single-packet SWAP action (button 40) instead of 3-click PICKUP into offhand.", true);
+
     public BooleanSetting smartMine = new BooleanSetting("SmartMine", "Switches to a crystal whenever you start mining and a totem when you aren't mining.", new ModeSetting.Visibility(item, "Crystal"), false);
     public BooleanSetting antiMace = new BooleanSetting("AntiMace", "Switches to a totem if a player near you is trying to smash attack you with a mace.", false);
     public NumberSetting maceRange = new NumberSetting("MaceRange", "The distance at which an enemy has to be in with a mace in order to swap to a totem.", new BooleanSetting.Visibility(antiMace, true), 12.0f, 0.0f, 24.0f);
 
-    private int totemCount = 0;
-    private int ticks = 0;
+    // Debug: logs death cause + totem state at death, totem pops, and every reason a totem swap
+    // is skipped/failed (deduped so it doesn't spam each tick).
+    public BooleanSetting debug = new BooleanSetting("Debug", "Logs why you died and why the totem swap failed at that moment.", false);
 
-    @SubscribeEvent
+    private int totemCount = 0;
+
+    // Debug state
+    private boolean wasAlive = true;
+    private String lastReason = "";
+
+    @SubscribeEvent(priority = Integer.MAX_VALUE)
     public void onPlayerPop(PlayerPopEvent event) {
         if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
         if (event.getPlayer() == mc.player && !EUClient.MODULE_MANAGER.getModule(SuicideModule.class).isToggled()) {
-            // Don't zero the cooldown outright: a totem pop is server-initiated (the server
-            // consumes it and sends its own slot-content correction back). Firing a fresh swap
-            // before that confirmation lands races the server's own packet and corrupts the
-            // container's carried-item state -- shows up as the offhand slot flickering forever
-            // and the whole inventory becoming unusable. Only ever shorten an already-longer wait
-            // down to the same round-trip floor onPlayerUpdate uses after every swap, never skip it.
-            ticks = Math.min(ticks, 2 + EUClient.SERVER_MANAGER.getPingDelay());
+            if (debug.getValue()) {
+                log("TOTEM POPPED (survived). health+absorb=" + (mc.player.getHealth() + mc.player.getAbsorptionAmount())
+                        + ", totemsLeft=" + totemCount + ", offhandNow=" + itemName(mc.player.getOffhandItem().getItem()));
+            }
+            updateTotem();
         }
     }
 
-    @SubscribeEvent
+    @SubscribeEvent(priority = Integer.MAX_VALUE)
     public void onPlayerUpdate(PlayerUpdateEvent event) {
-        if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
-        if (ticks > 0 && tickAbort.getValue()) {
-            ticks--;
+        updateTotem();
+    }
+
+    private void updateTotem() {
+        if (mc.player == null || mc.level == null) return;
+        if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) { reason("skip: PingBypass active"); return; }
+
+        if (!(mc.screen instanceof InventoryScreen) && mc.screen instanceof AbstractContainerScreen<?>) {
+            reason("skip: an external container GUI is open");
             return;
         }
 
-        if (!(mc.screen instanceof InventoryScreen) && mc.screen instanceof AbstractContainerScreen<?>)
+        if (!mc.player.containerMenu.getCarried().isEmpty()) {
+            reason("skip: cursor is holding an item (mid-move)");
             return;
+        }
 
-        // The player's own inventory screen is deliberately still allowed above (so AutoTotem
-        // keeps working while you're just looking at your inventory) -- but a click storm was
-        // reported at 20Hz (once per tick, no gap) whenever it fires. mc.player.containerMenu's
-        // cursor (getCarried()) is non-empty exactly while the PLAYER has mid-clicked a slot
-        // themselves (picked something up, hasn't placed it yet) -- injecting our own synthetic
-        // PICKUP click on 35/45 into that same menu while a manual click is mid-flight collides
-        // with it: our click's "pick up 45 (offhand)" step picks up whatever's ALREADY on the
-        // cursor from the player's own click instead of the offhand item, so the 3-click swap
-        // never actually lands the target item -- getOffhandItem() below keeps reading wrong,
-        // and onPlayerUpdate retries every tick forever with nothing to show for it. Skip while
-        // the player's own click is in flight; retry once their cursor is empty again.
-        if (!mc.player.containerMenu.getCarried().isEmpty()) return;
-
-        Item item = getItem();
-        if (item == null) return;
+        Item targetItem = getItem();
+        if (targetItem == null) { reason("skip: getItem() returned null (no valid target item)"); return; }
 
         int slot;
 
-        if (item == Items.TOTEM_OF_UNDYING && EUClient.MODULE_MANAGER.getModule(SuicideModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(SuicideModule.class).offhandOverride.getValue()) {
-            if (mc.player.getOffhandItem().isEmpty()) return;
-
+        if (targetItem == Items.TOTEM_OF_UNDYING && EUClient.MODULE_MANAGER.getModule(SuicideModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(SuicideModule.class).offhandOverride.getValue()) {
+            if (mc.player.getOffhandItem().isEmpty()) { reason("skip: Suicide offhandOverride, offhand already empty"); return; }
             slot = InventoryUtils.findEmptySlot(InventoryUtils.HOTBAR_START, InventoryUtils.INVENTORY_END);
+            if (slot == -1) reason("Suicide override: no empty slot to move offhand item into");
         } else {
-            if (mc.player.getOffhandItem().getItem() == item) return;
+            if (mc.player.getOffhandItem().getItem() == targetItem) { reason("ok: offhand already holds target (" + itemName(targetItem) + ")"); return; }
 
-            slot = InventoryUtils.findInventory(item);
-            if (slot == -1) slot = InventoryUtils.find(item);
+            slot = InventoryUtils.findInventory(targetItem);
+            if (slot == -1) slot = InventoryUtils.find(targetItem);
 
             if (slot == -1) {
-                if (item == Items.TOTEM_OF_UNDYING) slot = InventoryUtils.findEmptySlot(InventoryUtils.HOTBAR_START, InventoryUtils.INVENTORY_END);
-                else return;
+                if (targetItem == Items.TOTEM_OF_UNDYING && hasItem(Items.TOTEM_OF_UNDYING)) {
+                    slot = InventoryUtils.findEmptySlot(InventoryUtils.HOTBAR_START, InventoryUtils.INVENTORY_END);
+                    if (slot == -1) reason("FAIL: have a totem but no empty slot to stage the swap");
+                } else {
+                    reason("FAIL: target " + itemName(targetItem) + " NOT FOUND in inventory (none left)");
+                    return;
+                }
             }
         }
 
-        if (slot == -1) return;
+        if (slot == -1) { reason("FAIL: no usable slot resolved (see previous reason)"); return; }
 
-        // 2026-08-15 (reported, root-caused against NamiDevelopment/nami-public's own
-        // AutoTotemFeature): popping a totem while free-falling and eating made the swap retry
-        // every tick and never land -- only releasing right-click let it through. Root cause was
-        // "Pickup" mode's 3-click pickup/place/place-back sequence: mid-use, one of those clicks
-        // could land on a container state that had shifted between the calls, leaving the
-        // sequence stuck forever. Nami's own AutoTotem never hits this at all because its default
-        // swap (swapSlot / fastSwap="Alternative") is a single atomic SWAP-type click -- both
-        // slots exchange in ONE click, nothing to interleave with. "Swap" mode already exists in
-        // InventoryUtils for this exact reason; using it here instead of "Pickup" removes the
-        // failure mode outright rather than working around it. releaseUsingItem() kept as a cheap
-        // extra guarantee -- harmless if the swap no longer needs it.
-        if (mc.player.isUsingItem()) mc.gameMode.releaseUsingItem(mc.player);
+        // MultiTask (AutoTotem option): don't interrupt the player's own eating just to swap.
+        MultiTaskModule multiTask = EUClient.MODULE_MANAGER.getModule(MultiTaskModule.class);
+        boolean keepEating = multiTask != null && multiTask.isToggled() && multiTask.autoTotem.getValue();
+        if (!keepEating && mc.player.isUsingItem()) mc.gameMode.releaseUsingItem(mc.player);
 
-        // "Swap" mode's targetSlot is vanilla's SWAP button param, not a raw container slot id --
-        // must be exactly 40 (the offhand constant AbstractContainerMenu.clicked() checks for),
-        // NOT 45 (offhand's own slot id, what "Pickup" mode used instead).
-        InventoryUtils.swap("Swap", slot, 40);
-        ticks = 2 + EUClient.SERVER_MANAGER.getPingDelay();
+        if (alternative.getValue()) {
+            InventoryUtils.swap("Swap", slot, 40);
+        } else {
+            InventoryUtils.swap("Pickup", slot, 45);
+        }
+
+        if (debug.getValue()) {
+            log("SWAP -> offhand: " + itemName(targetItem) + " (from slot " + slot + ") [mode=" + (alternative.getValue() ? "Swap" : "Pickup") + "]");
+        }
+        lastReason = ""; // allow the next distinct reason to print
     }
 
     @SubscribeEvent
@@ -123,36 +129,85 @@ public class AutoTotemModule extends Module {
         if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) return;
         if (mc.player == null || mc.level == null) return;
         totemCount = mc.player.getInventory().countItem(Items.TOTEM_OF_UNDYING);
+
+        // Death detection: log the moment the player transitions from alive -> dead.
+        boolean alive = mc.player.getHealth() > 0.0f && !mc.player.isDeadOrDying();
+        if (debug.getValue() && wasAlive && !alive) logDeath();
+        wasAlive = alive;
+    }
+
+    private void logDeath() {
+        String cause;
+        try {
+            cause = mc.player.getCombatTracker().getDeathMessage().getString();
+        } catch (Throwable t) {
+            cause = "(unknown)";
+        }
+        var offhand = mc.player.getOffhandItem();
+        boolean hadTotemOffhand = offhand.getItem() == Items.TOTEM_OF_UNDYING;
+
+        log("================ DEATH ================");
+        log("Cause: " + cause);
+        log("Offhand at death: " + (offhand.isEmpty() ? "EMPTY" : itemName(offhand.getItem())) + (hadTotemOffhand ? " (totem WAS present!)" : ""));
+        log("Totems in inventory at death: " + totemCount);
+        log("Health+Absorb at death: " + (mc.player.getHealth() + mc.player.getAbsorptionAmount()));
+        log("needsTotem()=" + needsTotem());
+        log("Item mode=" + item.getValue() + ", target now=" + itemName(getItem()));
+        log("Last swap reason: " + (lastReason.isEmpty() ? "(none)" : lastReason));
+
+        // Concrete diagnosis
+        if (hadTotemOffhand) {
+            log("=> A totem WAS in offhand but you still died (one-shot exceeding totem heal, or totem pop not registered before death).");
+        } else if (totemCount == 0) {
+            log("=> No totems left in inventory -- nothing to place.");
+        } else {
+            log("=> Totems available but offhand didn't have one -- see 'Last swap reason' above for why the swap didn't happen.");
+        }
+        log("=======================================");
     }
 
     private Item getItem() {
-        if (useGapple.getValue() && mc.options.keyUse.isDown() && (lethalOverride.getValue() || !needsTotem()) && (mc.player.getMainHandItem().is(ItemTags.SWORDS) || mc.player.getMainHandItem().getItem() instanceof AxeItem) && hasItem(Items.ENCHANTED_GOLDEN_APPLE))
-            return Items.ENCHANTED_GOLDEN_APPLE;
+        boolean hasTotem = hasItem(Items.TOTEM_OF_UNDYING);
+        boolean hasGapple = hasItem(Items.ENCHANTED_GOLDEN_APPLE);
+        boolean holdingWeapon = mc.player.getMainHandItem().is(ItemTags.SWORDS) || mc.player.getMainHandItem().getItem() instanceof AxeItem;
 
-        if (hasItem(Items.TOTEM_OF_UNDYING)) {
-            if (needsTotem()) return Items.TOTEM_OF_UNDYING;
+        if (useGapple.getValue() && mc.options.keyUse.isDown() && holdingWeapon && hasGapple) {
+            if (lethalOverride.getValue() || !needsTotem() || !hasTotem) {
+                return Items.ENCHANTED_GOLDEN_APPLE;
+            }
+        }
 
-            if (item.getValue().equalsIgnoreCase("Crystal") && smartMine.getValue()) {
-                SpeedMineModule module = EUClient.MODULE_MANAGER.getModule(SpeedMineModule.class);
-                if ((module.getPrimary() == null || !module.getPrimary().isMining()) && (module.getSecondary() == null || !module.getSecondary().isMining())) {
-                    return Items.TOTEM_OF_UNDYING;
-                }
+        if (needsTotem()) {
+            if (hasTotem) {
+                return Items.TOTEM_OF_UNDYING;
+            } else if (noTotemGap.getValue() && hasGapple) {
+                return Items.ENCHANTED_GOLDEN_APPLE;
+            }
+        }
+
+        if (hasTotem && item.getValue().equalsIgnoreCase("Crystal") && smartMine.getValue()) {
+            SpeedMineModule module = EUClient.MODULE_MANAGER.getModule(SpeedMineModule.class);
+            if ((module.getPrimary() == null || !module.getPrimary().isMining()) && (module.getSecondary() == null || !module.getSecondary().isMining())) {
+                return Items.TOTEM_OF_UNDYING;
             }
         }
 
         switch (item.getValue()) {
             case "Crystal" -> {
-                if (!hasItem(Items.END_CRYSTAL)) return Items.TOTEM_OF_UNDYING;
-                return Items.END_CRYSTAL;
+                if (hasItem(Items.END_CRYSTAL)) return Items.END_CRYSTAL;
             }
             case "Gapple" -> {
-                if (!hasItem(Items.ENCHANTED_GOLDEN_APPLE)) return Items.TOTEM_OF_UNDYING;
-                return Items.ENCHANTED_GOLDEN_APPLE;
+                if (hasGapple) return Items.ENCHANTED_GOLDEN_APPLE;
             }
             default -> {
-                return Items.TOTEM_OF_UNDYING;
+                if (hasTotem) return Items.TOTEM_OF_UNDYING;
             }
         }
+
+        if (hasTotem) return Items.TOTEM_OF_UNDYING;
+        if (noTotemGap.getValue() && hasGapple) return Items.ENCHANTED_GOLDEN_APPLE;
+
+        return mc.player.getOffhandItem().getItem();
     }
 
     private boolean needsTotem() {
@@ -167,6 +222,23 @@ public class AutoTotemModule extends Module {
 
     private boolean hasItem(Item item) {
         return InventoryUtils.find(item) != -1 || mc.player.getOffhandItem().getItem() == item;
+    }
+
+    // ---- Debug helpers ----
+    private void reason(String msg) {
+        if (!debug.getValue()) return;
+        if (msg.equals(lastReason)) return; // dedupe consecutive identical reasons
+        lastReason = msg;
+        EUClient.CHAT_MANAGER.tagged(msg, getName());
+    }
+
+    private void log(String msg) {
+        EUClient.CHAT_MANAGER.tagged(msg, getName());
+    }
+
+    private String itemName(Item item) {
+        if (item == null || item == Items.AIR) return "none";
+        return net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(item).getPath();
     }
 
     @Override
