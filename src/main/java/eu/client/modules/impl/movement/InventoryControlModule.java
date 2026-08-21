@@ -46,7 +46,7 @@ public class InventoryControlModule extends Module {
     public void onTick(TickEvent event) {
         if (mc.player == null) return;
 
-        if (movement.getValue() && mc.screen != null && !(mc.screen instanceof ChatScreen || mc.screen instanceof BookEditScreen || mc.screen instanceof SignEditScreen || mc.screen instanceof JigsawBlockEditScreen || mc.screen instanceof StructureBlockEditScreen || mc.screen instanceof AnvilScreen || (mc.screen instanceof CreativeModeInventoryScreen && CreativeInventoryScreenAccessor.getSelectedTab().getType() == CreativeModeTab.Type.SEARCH))) {
+        if (movement.getValue() && mc.gui.screen() != null && !(mc.gui.screen() instanceof ChatScreen || mc.gui.screen() instanceof BookEditScreen || mc.gui.screen() instanceof SignEditScreen || mc.gui.screen() instanceof JigsawBlockEditScreen || mc.gui.screen() instanceof StructureBlockEditScreen || mc.gui.screen() instanceof AnvilScreen || (mc.gui.screen() instanceof CreativeModeInventoryScreen && CreativeInventoryScreenAccessor.getSelectedTab().getType() == CreativeModeTab.Type.SEARCH))) {
             for (KeyMapping binding : new KeyMapping[]{mc.options.keyUp, mc.options.keyDown, mc.options.keyRight, mc.options.keyLeft, mc.options.keySprint, mc.options.keyShift, mc.options.keyJump}) {
                 binding.setDown(InputConstants.isKeyDown(mc.getWindow(), InputConstants.getKey(binding.saveString()).getValue()));
             }

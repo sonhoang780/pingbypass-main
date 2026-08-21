@@ -142,15 +142,18 @@ public class RenderManager implements IMinecraft {
         PoseStack matrices = event.getMatrices();
         AutoCrystalModule module = EUClient.MODULE_MANAGER.getModule(AutoCrystalModule.class);
 
-        Vec3 vec3d = new Vec3(crystalTarget.getPosition().getCenter().x - mc.getEntityRenderDispatcher().camera.position().x, crystalTarget.getPosition().getCenter().y - mc.getEntityRenderDispatcher().camera.position().y, crystalTarget.getPosition().getCenter().z - mc.getEntityRenderDispatcher().camera.position().z);
-        if(module.animationMode.getValue().equals("Slide")) vec3d = new Vec3(renderPosition.x + 0.5 - mc.getEntityRenderDispatcher().camera.position().x, renderPosition.y + 0.5 - mc.getEntityRenderDispatcher().camera.position().y, renderPosition.z + 0.5 - mc.getEntityRenderDispatcher().camera.position().z);
+        // PORT (26.2): BlockPos.getCenter() removed -- real replacement is Vec3.atCenterOf(Vec3i)
+        // (BlockPos extends Vec3i), confirmed via real Vec3.java/BlockPos.java sources.
+        Vec3 crystalCenter = Vec3.atCenterOf(crystalTarget.getPosition());
+        Vec3 vec3d = new Vec3(crystalCenter.x - mc.gameRenderer.mainCamera().position().x, crystalCenter.y - mc.gameRenderer.mainCamera().position().y, crystalCenter.z - mc.gameRenderer.mainCamera().position().z);
+        if(module.animationMode.getValue().equals("Slide")) vec3d = new Vec3(renderPosition.x + 0.5 - mc.gameRenderer.mainCamera().position().x, renderPosition.y + 0.5 - mc.gameRenderer.mainCamera().position().y, renderPosition.z + 0.5 - mc.gameRenderer.mainCamera().position().z);
 
         if (module.icon.getValue()) {
             float scaling = module.iconScale.getValue().floatValue() / 100.0f;
 
             matrices.pushPose();
             matrices.translate(vec3d.x, vec3d.y, vec3d.z);
-            matrices.mulPose(mc.getEntityRenderDispatcher().camera.rotation());
+            matrices.mulPose(mc.gameRenderer.mainCamera().rotation());
             matrices.scale(scaling, -scaling, scaling);
 
             Renderer2D.renderCircle(matrices, 0, 0, 12.f, new Color(0, 0, 0, 100));
@@ -163,7 +166,7 @@ public class RenderManager implements IMinecraft {
                 matrices.scale(0.45f, 0.45f, 0.45f);
 
                 String text = module.getCalculationDamage();
-                EUClient.FONT_MANAGER.drawTextWithShadow(matrices, text, -EUClient.FONT_MANAGER.getWidth(text) / 2 - 1, 7, mc.renderBuffers().bufferSource(), Color.WHITE);
+                EUClient.FONT_MANAGER.drawTextWithShadow(matrices, text, -EUClient.FONT_MANAGER.getWidth(text) / 2 - 1, 7, Color.WHITE);
 
                 matrices.popPose();
             } else {
@@ -175,11 +178,11 @@ public class RenderManager implements IMinecraft {
             if (module.renderDamage.getValue()) {
                 matrices.pushPose();
                 matrices.translate(vec3d.x, vec3d.y, vec3d.z);
-                matrices.mulPose(mc.getEntityRenderDispatcher().camera.rotation());
+                matrices.mulPose(mc.gameRenderer.mainCamera().rotation());
                 matrices.scale(0.025f, -0.025f, 0.025f);
 
                 String text = module.getCalculationDamage();
-                EUClient.FONT_MANAGER.drawTextWithShadow(matrices, text, -EUClient.FONT_MANAGER.getWidth(text) / 2, -EUClient.FONT_MANAGER.getHeight() / 2, mc.renderBuffers().bufferSource(), Color.WHITE);
+                EUClient.FONT_MANAGER.drawTextWithShadow(matrices, text, -EUClient.FONT_MANAGER.getWidth(text) / 2, -EUClient.FONT_MANAGER.getHeight() / 2, Color.WHITE);
 
                 matrices.popPose();
             }

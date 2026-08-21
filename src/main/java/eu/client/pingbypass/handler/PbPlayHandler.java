@@ -426,7 +426,12 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
     @Override public void handleChatSessionUpdate(net.minecraft.network.protocol.game.ServerboundChatSessionUpdatePacket p) { forward(p); }
     @Override public void handleCustomCommandSuggestions(ServerboundCommandSuggestionPacket p) { forward(p); }
     @Override public void handleSeenAdvancements(net.minecraft.network.protocol.game.ServerboundSeenAdvancementsPacket p) { forward(p); }
-    @Override public void handleSpectateEntity(net.minecraft.network.protocol.game.ServerboundSpectateEntityPacket p) { forward(p); }
+    // PORT (26.2): ServerboundSpectateEntityPacket genuinely removed, but the FEATURE moved, not
+    // gone -- real successor is ServerboundSpectatorActionPacket(OptionalInt spectateEntityId) via
+    // handleSpectatorAction(...), confirmed against real 26.2 source. Corrects this session's
+    // earlier wrong guess (deleting the override outright, losing the forward(p)) once the
+    // interface method actually surfaced as a real compile error.
+    @Override public void handleSpectatorAction(net.minecraft.network.protocol.game.ServerboundSpectatorActionPacket p) { forward(p); }
     @Override public void handleResourcePackResponse(net.minecraft.network.protocol.common.ServerboundResourcePackPacket p) { forward(p); }
     @Override public void handleCookieResponse(ServerboundCookieResponsePacket p) { forward(p); }
     // Was a no-op ("proxy already confirmed") -- inverted from earthhack's real PbNetHandler,
@@ -560,10 +565,10 @@ public class PbPlayHandler implements ServerGamePacketListener, TickablePacketLi
                         Minecraft mc = Minecraft.getInstance();
                         if (mc.player == null) return;
                         if (pkt.isOpen()) {
-                            mc.setScreen(new net.minecraft.client.gui.screens.inventory.InventoryScreen(mc.player));
-                        } else if (mc.screen instanceof net.minecraft.client.gui.screens.inventory.InventoryScreen inv
+                            mc.gui.setScreen(new net.minecraft.client.gui.screens.inventory.InventoryScreen(mc.player));
+                        } else if (mc.gui.screen() instanceof net.minecraft.client.gui.screens.inventory.InventoryScreen inv
                                 && inv.getMenu() == mc.player.inventoryMenu) {
-                            mc.setScreen(null);
+                            mc.gui.setScreen(null);
                         }
                     });
                 }

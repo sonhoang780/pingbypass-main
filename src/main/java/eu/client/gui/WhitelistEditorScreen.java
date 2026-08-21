@@ -168,7 +168,7 @@ public class WhitelistEditorScreen extends Screen {
 
         float progress = slideAnim.get(closing ? 0f : 1f);
         if (closing && progress <= 0.001f) {
-            Minecraft.getInstance().setScreen(parent);
+            Minecraft.getInstance().gui.setScreen(parent);
             return;
         }
 

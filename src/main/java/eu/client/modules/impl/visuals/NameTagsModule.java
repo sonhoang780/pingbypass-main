@@ -18,7 +18,6 @@ import eu.client.utils.graphics.Renderer2D;
 import eu.client.utils.graphics.Renderer3D;
 import eu.client.utils.minecraft.EntityUtils;
 import eu.client.utils.text.CustomFormatting;
-import net.minecraft.client.renderer.MultiBufferSource;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.world.item.enchantment.ItemEnchantments;
 import net.minecraft.world.item.enchantment.Enchantment;
@@ -62,7 +61,9 @@ public class NameTagsModule extends Module {
         if (mc.level == null || mc.player == null) return;
 
         PoseStack matrices = event.getMatrices();
-        MultiBufferSource.BufferSource vertexConsumers = mc.renderBuffers().bufferSource();
+        // PORT (26.2): MultiBufferSource removed -- each Renderer3D.renderItem/FONT_MANAGER
+        // drawTextWithShadow call below now draws immediately (own BufferBuilder per call), no
+        // shared buffer-source/endBatch() flush needed anymore. See their own PORT comments.
 
         for (Player player : mc.level.players().stream().sorted(Comparator.comparing(p -> -mc.player.distanceTo(p))).toList()) {
             boolean freecam = EUClient.MODULE_MANAGER.getModule(FreecamModule.class).isToggled();
@@ -77,14 +78,14 @@ public class NameTagsModule extends Module {
             double y = Mth.lerp(event.getTickDelta(), player.yo, player.getY()) + (player.isShiftKeyDown() ? 1.9f : 2.1f);
             double z = Mth.lerp(event.getTickDelta(), player.zo, player.getZ());
 
-            Vec3 vec3d = new Vec3(x - mc.getEntityRenderDispatcher().camera.position().x, y - mc.getEntityRenderDispatcher().camera.position().y, z - mc.getEntityRenderDispatcher().camera.position().z);
-            float distance = (float) Math.sqrt(mc.getEntityRenderDispatcher().camera.position().distanceToSqr(x, y, z));
+            Vec3 vec3d = new Vec3(x - mc.gameRenderer.mainCamera().position().x, y - mc.gameRenderer.mainCamera().position().y, z - mc.gameRenderer.mainCamera().position().z);
+            float distance = (float) Math.sqrt(mc.gameRenderer.mainCamera().position().distanceToSqr(x, y, z));
             float scaling = 0.0018f + (scale.getValue().intValue() / 10000.0f) * distance;
             if (distance <= 8.0) scaling = 0.0245f;
 
             matrices.pushPose();
             matrices.translate(vec3d.x, vec3d.y, vec3d.z);
-            matrices.mulPose(mc.getEntityRenderDispatcher().camera.rotation());
+            matrices.mulPose(mc.gameRenderer.mainCamera().rotation());
             matrices.scale(scaling, -scaling, scaling);
 
             String text = player.getName().getString();
@@ -107,7 +108,7 @@ public class NameTagsModule extends Module {
 
             // 2. Chữ tên người chơi
             Color nameColor = EUClient.MODULE_MANAGER.getModule(FakePlayerModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(FakePlayerModule.class).getPlayer() == player ? new Color(225, 0, 70) : player.isShiftKeyDown() ? new Color(255, 170, 0) : EUClient.FRIEND_MANAGER.contains(player.getName().getString()) ? EUClient.FRIEND_MANAGER.getDefaultFriendColor() : Color.WHITE;
-            EUClient.FONT_MANAGER.drawTextWithShadow(matrices, text, -width / 2, -fontHeight, vertexConsumers, nameColor);
+            EUClient.FONT_MANAGER.drawTextWithShadow(matrices, text, -width / 2, -fontHeight, nameColor);
 
             float highestY = -fontHeight - 2;
 
@@ -150,12 +151,9 @@ public class NameTagsModule extends Module {
                         matrices.pushPose();
                         matrices.translate(stackX + 8, itemRowY + 8, -0.5f);
                         matrices.scale(16, -16, 0.0001f);
-                        Renderer3D.renderItem(matrices, stack, player, vertexConsumers);
+                        Renderer3D.renderItem(matrices, stack, player);
                         matrices.popPose();
                     }
-
-                    // Flush ngay lập tức layer 3D của các item để text luôn nổi lên trên
-                    vertexConsumers.endBatch();
 
                     // BƯỚC B: Vẽ toàn bộ Text đè lên trên Item (Z = 1.0f)
                     for (int i = 0; i < 6; i++) {
@@ -174,7 +172,7 @@ public class NameTagsModule extends Module {
                             matrices.pushPose();
                             matrices.translate(stackX + 8 - (durWidth / 2f), itemRowY - 5.5f, 1.0f);
                             matrices.scale(0.5f, 0.5f, 1);
-                            EUClient.FONT_MANAGER.drawTextWithShadow(matrices, durText, 0, 0, vertexConsumers, new Color(red, green, 0));
+                            EUClient.FONT_MANAGER.drawTextWithShadow(matrices, durText, 0, 0, new Color(red, green, 0));
                             matrices.popPose();
                         }
 
@@ -183,7 +181,7 @@ public class NameTagsModule extends Module {
                             matrices.pushPose();
                             matrices.translate(stackX + 1, itemRowY + 1, 1.0f);
                             matrices.scale(0.5f, 0.5f, 1);
-                            EUClient.FONT_MANAGER.drawTextWithShadow(matrices, "God", 0, 0, vertexConsumers, new Color(255, 125, 255));
+                            EUClient.FONT_MANAGER.drawTextWithShadow(matrices, "God", 0, 0, new Color(255, 125, 255));
                             matrices.popPose();
                         }
 
@@ -194,7 +192,7 @@ public class NameTagsModule extends Module {
                             matrices.pushPose();
                             matrices.translate(stackX + 16 - countWidth, itemRowY + 12.0f, 1.0f);
                             matrices.scale(0.5f, 0.5f, 1);
-                            EUClient.FONT_MANAGER.drawTextWithShadow(matrices, count, 0, 0, vertexConsumers, Color.WHITE);
+                            EUClient.FONT_MANAGER.drawTextWithShadow(matrices, count, 0, 0, Color.WHITE);
                             matrices.popPose();
                         }
 
@@ -216,16 +214,13 @@ public class NameTagsModule extends Module {
                                 matrices.pushPose();
                                 matrices.translate(stackX + 1, enchY, 1.0f);
                                 matrices.scale(0.5f, 0.5f, 1);
-                                EUClient.FONT_MANAGER.drawTextWithShadow(matrices, str, 0, 0, vertexConsumers, Color.WHITE);
+                                EUClient.FONT_MANAGER.drawTextWithShadow(matrices, str, 0, 0, Color.WHITE);
                                 matrices.popPose();
 
                                 enchIndex++;
                             }
                         }
                     }
-
-                    // Flush text của item
-                    vertexConsumers.endBatch();
 
                     // Cập nhật đỉnh cao nhất cho ItemName
                     if (durability.getValue()) {
@@ -243,7 +238,7 @@ public class NameTagsModule extends Module {
                 matrices.pushPose();
                 matrices.translate(-itemTextWidth / 2f, nameY, 1.0f);
                 matrices.scale(0.5f, 0.5f, 1);
-                EUClient.FONT_MANAGER.drawTextWithShadow(matrices, itemText, 0, 0, vertexConsumers, Color.WHITE);
+                EUClient.FONT_MANAGER.drawTextWithShadow(matrices, itemText, 0, 0, Color.WHITE);
                 matrices.popPose();
             }
 
@@ -253,7 +248,6 @@ public class NameTagsModule extends Module {
             Renderer3D.draw(Renderer3D.QUADS, Renderer3D.DEBUG_LINES, false);
             Renderer3D.QUADS.clear();
             Renderer3D.DEBUG_LINES.clear();
-            vertexConsumers.endBatch();
         }
     }
 

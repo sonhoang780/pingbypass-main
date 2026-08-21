@@ -9,11 +9,11 @@ import eu.client.modules.RegisterModule;
 public class HUDEditorModule extends Module {
     @Override
     public void onEnable() {
-        mc.setScreen(new HUDEditorScreen());
+        mc.gui.setScreen(new HUDEditorScreen());
     }
 
     @Override
     public void onDisable() {
-        if (mc.screen instanceof HUDEditorScreen) mc.setScreen(null);
+        if (mc.gui.screen() instanceof HUDEditorScreen) mc.gui.setScreen(null);
     }
 }

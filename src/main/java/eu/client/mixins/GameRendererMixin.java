@@ -28,36 +28,23 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import net.minecraft.client.gui.render.pip.PictureInPictureRenderer;
-import net.minecraft.client.renderer.MultiBufferSource;
 import org.spongepowered.asm.mixin.injection.ModifyArgs;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.invoke.arg.Args;
 import java.util.ArrayList;
 import java.util.List;
 
+// PORT (26.2): the two @Inject(method = "renderLevel", at = INVOKE target = "...LevelRenderer;
+// renderLevel(...)") below were both stale on two counts -- LevelRenderer.renderLevel renamed to
+// render (see WorldRendererMixin's own PORT comment for the same finding), AND its real 8-param
+// signature has NO trailing ChunkSectionsToRender param (confirmed via the real call site in
+// GameRenderer.renderLevel(): `this.minecraft.levelRenderer.render(this.resourcePool,
+// deltaTracker, renderOutline, cameraState, modelViewMatrix, terrainFog,
+// cameraState.fogData.color, !shouldCreateBossFog)`, 8 args). Found via a targeted audit after
+// ItemInHandRenderer.renderHandsWithItems's own rename crashed at runtime (MixinApplyError, not
+// caught by compileJava since method-name/descriptor strings aren't type-checked).
 @Mixin(GameRenderer.class)
 public abstract class GameRendererMixin {
-
-    @ModifyArgs(method = "<init>", at = @At(value = "INVOKE",
-        target = "Lnet/minecraft/client/gui/render/GuiRenderer;<init>(Lnet/minecraft/client/renderer/state/gui/GuiRenderState;Lnet/minecraft/client/renderer/MultiBufferSource$BufferSource;Lnet/minecraft/client/renderer/SubmitNodeCollector;Lnet/minecraft/client/renderer/feature/FeatureRenderDispatcher;Ljava/util/List;)V"))
-    private static void musichud$registerSkiaPip(Args args) {
-        MultiBufferSource.BufferSource bufferSource = args.get(1);
-        List<PictureInPictureRenderer<?>> original = args.get(4);
-        List<PictureInPictureRenderer<?>> modified = new ArrayList<>(original);
-        modified.add(new eu.client.utils.graphics.skia.MusicHudPipRenderer(bufferSource));
-        args.set(4, modified);
-    }
-
-    @Inject(method = "processBlurEffect", at = @At("HEAD"), cancellable = true)
-    private void musichud$renderLiquidGlass(CallbackInfo ci) {
-        if (eu.client.utils.graphics.skia.LiquidGlassHud.INSTANCE.isActive()) {
-            ci.cancel();
-            eu.client.utils.graphics.skia.LiquidGlassHud.INSTANCE.render();
-        } else if (eu.client.utils.graphics.skia.SkijaBackdropBlur.INSTANCE.isActive()) {
-            ci.cancel();
-            eu.client.utils.graphics.skia.SkijaBackdropBlur.INSTANCE.render();
-        }
-    }
 
     @Inject(method = "renderLevel", at = @At("HEAD"))
     private void renderWorld$HEAD(DeltaTracker tickCounter, CallbackInfo info) {
@@ -113,7 +100,7 @@ public abstract class GameRendererMixin {
     // bob stack here no longer cancels anything -- it *injects* an uncancelled bob transform,
     // which is exactly why BlockHighlight/AutoCrystal/etc. boxes visibly bobbed while walking.
     // Modules get a fresh, bob-free PoseStack instead of the old (bobbed) local capture.
-    @Inject(method = "renderLevel", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/LevelRenderer;renderLevel(Lcom/mojang/blaze3d/resource/GraphicsResourceAllocator;Lnet/minecraft/client/DeltaTracker;ZLnet/minecraft/client/renderer/state/level/CameraRenderState;Lorg/joml/Matrix4fc;Lcom/mojang/blaze3d/buffers/GpuBufferSlice;Lorg/joml/Vector4f;ZLnet/minecraft/client/renderer/chunk/ChunkSectionsToRender;)V", shift = At.Shift.AFTER))
+    @Inject(method = "renderLevel", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/LevelRenderer;render(Lcom/mojang/blaze3d/resource/GraphicsResourceAllocator;Lnet/minecraft/client/DeltaTracker;ZLnet/minecraft/client/renderer/state/level/CameraRenderState;Lorg/joml/Matrix4fc;Lcom/mojang/blaze3d/buffers/GpuBufferSlice;Lorg/joml/Vector4f;Z)V", shift = At.Shift.AFTER))
     private void renderWorld$swap(DeltaTracker tickCounter, CallbackInfo info, @Local(ordinal = 0) Matrix4fc modelViewMatrix) {
         float tickDelta = tickCounter.getGameTimeDeltaPartialTick(false);
 
@@ -139,15 +126,12 @@ public abstract class GameRendererMixin {
         Renderer3D.draw(Renderer3D.SHINE_QUADS, Renderer3D.SHINE_DEBUG_LINES, true);
         EspShader.draw(Renderer3D.SHADER_QUADS, Renderer3D.SHADER_DEBUG_LINES);
 
-        // Modules that draw world-space text via the vanilla font (mc.font.drawInBatch) queue
-        // into the shared MultiBufferSource instead of drawing immediately -- unlike our own
-        // immediate-mode RenderType draws above, that queued geometry doesn't actually hit the
-        // GPU until something calls endBatch(). Nothing does until the HUD/hand pass reassigns
-        // the projection matrix, so by the time it flushes the 3D world projection is gone and
-        // the text renders wildly mispositioned/skewed (worse than the CustomFont path, which
-        // draws immediately here and is therefore unaffected). Force the flush now, while the
-        // correct 3D projection from this renderLevel call is still bound.
-        net.minecraft.client.Minecraft.getInstance().renderBuffers().bufferSource().endBatch();
+        // PORT (26.2): this flush existed only for the OLD mc.font.drawInBatch/MultiBufferSource
+        // queued-text pattern (see FontManager's own PORT comment) -- MultiBufferSource is removed
+        // entirely and every draw call in this codebase (FontManager/Renderer3D/etc) now draws
+        // immediately via its own BufferBuilder, nothing queues into a shared buffer-source to
+        // flush anymore. RenderBuffers itself has no bufferSource()/endBatch() method left either
+        // (confirmed via javap on the real jar) -- the whole mechanism this call served is gone.
 
         RenderSystem.getModelViewStack().popMatrix();
     }
@@ -168,13 +152,13 @@ public abstract class GameRendererMixin {
         }
     }
 
-    @Inject(method = "renderLevel", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/LevelRenderer;renderLevel(Lcom/mojang/blaze3d/resource/GraphicsResourceAllocator;Lnet/minecraft/client/DeltaTracker;ZLnet/minecraft/client/renderer/state/level/CameraRenderState;Lorg/joml/Matrix4fc;Lcom/mojang/blaze3d/buffers/GpuBufferSlice;Lorg/joml/Vector4f;ZLnet/minecraft/client/renderer/chunk/ChunkSectionsToRender;)V", shift = At.Shift.AFTER))
+    @Inject(method = "renderLevel", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/LevelRenderer;render(Lcom/mojang/blaze3d/resource/GraphicsResourceAllocator;Lnet/minecraft/client/DeltaTracker;ZLnet/minecraft/client/renderer/state/level/CameraRenderState;Lorg/joml/Matrix4fc;Lcom/mojang/blaze3d/buffers/GpuBufferSlice;Lorg/joml/Vector4f;Z)V", shift = At.Shift.AFTER))
     private void renderWorld(DeltaTracker tickCounter, CallbackInfo info, @Local(ordinal = 0) Matrix4fc modelViewMatrix, @Local(ordinal = 0) Matrix4f projectionMatrix) {
         PoseStack matrix = new PoseStack();
         matrix.last().pose().mul(modelViewMatrix);
 
         Renderer2D.LAST_PROJECTION_MATRIX.set(projectionMatrix);
-        Renderer2D.LAST_MODEL_MATRIX.set(RenderSystem.getModelViewMatrix());
+        Renderer2D.LAST_MODEL_MATRIX.set(RenderSystem.getModelViewMatrixCopy());
         Renderer2D.LAST_WORLD_MATRIX.set(matrix.last().pose());
     }
 }

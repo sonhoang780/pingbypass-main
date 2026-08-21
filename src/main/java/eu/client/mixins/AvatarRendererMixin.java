@@ -36,7 +36,11 @@ public class AvatarRendererMixin {
             require = 0
     )
     private void euclient$handOutline(SubmitNodeCollector collector, ModelPart part, PoseStack pose, RenderType type, int light, int overlay, TextureAtlasSprite sprite) {
-        collector.submitModelPart(part, pose, type, light, overlay, sprite, false, false, -1, null, euclient$outlineColor());
+        // PORT (26.2): the full submitModelPart overload dropped 2 params (real 26.1.2 signature had
+        // 2 extra booleans between sprite and tintedColor that no longer exist) -- confirmed via real
+        // OrderedSubmitNodeCollector.java source, full overload is now (part, pose, type, light,
+        // overlay, sprite, tintedColor, crumblingOverlay, outlineColor), 9 args not 11.
+        collector.submitModelPart(part, pose, type, light, overlay, sprite, -1, null, euclient$outlineColor());
     }
 
     private static int euclient$outlineColor() {

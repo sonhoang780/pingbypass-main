@@ -18,6 +18,6 @@ public class MultiPlayerGameModeMixin {
     // a PeekScreen is open so nothing is ever sent or moved.
     @Inject(method = "handleContainerInput", at = @At("HEAD"), cancellable = true)
     private void euclient$blockPeekClicks(int containerId, int slotId, int button, ContainerInput type, Player player, CallbackInfo ci) {
-        if (Minecraft.getInstance().screen instanceof PeekScreen) ci.cancel();
+        if (Minecraft.getInstance().gui.screen() instanceof PeekScreen) ci.cancel();
     }
 }

@@ -22,6 +22,7 @@ import eu.client.utils.minecraft.PositionUtils;
 import eu.client.utils.minecraft.WorldUtils;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.boss.enderdragon.EndCrystal;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.entity.player.Player;
@@ -336,7 +337,7 @@ public class SurroundModule extends Module {
         // just always runs. Reacting off the spawn packet itself beats homovore's tick-polled
         // approach anyway: fires the instant the crystal exists server-side instead of waiting for
         // this tick's placement attempt (or next tick) to stumble onto it.
-        if (crystalDestruction.getValue() && event.getPacket() instanceof ClientboundAddEntityPacket packet && packet.getType().equals(EntityType.END_CRYSTAL)) {
+        if (crystalDestruction.getValue() && event.getPacket() instanceof ClientboundAddEntityPacket packet && packet.getType().equals(EntityTypes.END_CRYSTAL)) {
             // Only for the bounding-box/position math -- a freshly `new`'d client-local entity gets
             // its id from Entity's own local static counter, NOT the server's real id (that's
             // packet.getId(), used below for the actual attack). Sending an attack against

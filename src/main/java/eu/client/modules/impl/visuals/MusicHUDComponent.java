@@ -11,8 +11,8 @@ import eu.client.managers.HudElementRegistry;
 import eu.client.modules.impl.miscellaneous.PlayMusicModule;
 
 import eu.client.utils.color.ColorUtils;
-import eu.client.utils.graphics.skia.MusicHudPipRenderer;
-import eu.client.utils.graphics.skia.MusicHudPipState;
+// PORT (26.2): MusicHudPipRenderer/MusicHudPipState imports dropped -- MusicHUD render path
+// disabled, see onRenderOverlay's comment.
 import eu.client.utils.graphics.skia.SkiaFontHelper;
 import io.github.humbleui.skija.*;
 import io.github.humbleui.types.RRect;
@@ -125,143 +125,17 @@ public class MusicHUDComponent implements eu.client.utils.IMinecraft {
 
     @SubscribeEvent
     public void onRenderOverlay(RenderOverlayEvent event) {
-        if ((!eu.client.modules.impl.core.HUDModule.INSTANCE.musicHud.getValue()) || mc.player == null) return;
-
-        ensureFonts();
-        GuiGraphicsExtractor context = event.getContext();
-
-        double x = eu.client.modules.impl.core.HUDModule.INSTANCE.musicHudPosition.getX();
-        double y = eu.client.modules.impl.core.HUDModule.INSTANCE.musicHudPosition.getY();
-
-        AudioTrack track = PlayMusicModule.getCurrentTrack();
-        boolean notPlaying = (track == null);
-
-        double fullWidth = THUMB_W + 10 + 130.0;
-        if (track != null) {
-            String rawTitle = track.getInfo().title != null ? track.getInfo().title : "Unknown Title";
-            String rawAuthor = track.getInfo().author != null ? track.getInfo().author : "Unknown Artist";
-            float tw = SkiaFontHelper.measureTextWidth(skiaFontTitle, rawTitle);
-            float aw = SkiaFontHelper.measureTextWidth(skiaFontAuthor, rawAuthor);
-            double needed = Math.max(tw, aw) + THUMB_W + 28.0;
-            fullWidth = Math.max(fullWidth, needed);
-        }
-
-        double targetW = eu.client.modules.impl.core.HUDModule.INSTANCE.musicHudCompactMode.getValue() ? (THUMB_W + 10 + 130.0) : fullWidth;
-        animW += (targetW - animW) * 0.12;
-
-        double hudW = Math.max(animW, THUMB_W + 20);
-        double hudH = HUD_HEIGHT;
-
-        boolean useUltra = eu.client.modules.impl.core.HUDModule.INSTANCE.musicHudUltraDisk.getValue() && eu.client.modules.impl.core.HUDModule.INSTANCE.musicHudDisk.getValue() && !notPlaying;
-        int currentThumbW = useUltra ? eu.client.modules.impl.core.HUDModule.INSTANCE.musicHudDiskSize.getValue().intValue() : THUMB_W;
-        int currentThumbH = useUltra ? eu.client.modules.impl.core.HUDModule.INSTANCE.musicHudDiskSize.getValue().intValue() : THUMB_H;
-        int thumbX = (int) x + (useUltra ? 0 : 8);
-        int thumbY = (int) y + (useUltra ? 0 : (HUD_HEIGHT - currentThumbH) / 2);
-
-        long now = System.currentTimeMillis();
-        float deltaSec = lastRenderTime > 0 ? (now - lastRenderTime) / 1000f : 0.016f;
-        lastRenderTime = now;
-
-        if (track != null && !PlayMusicModule.isPlayerPaused()) {
-            smoothDiskRotation += 120.0f * deltaSec;
-            if (smoothDiskRotation >= 360.0f) smoothDiskRotation -= 360.0f;
-        }
-
-        if (track != null && !track.getIdentifier().equals(currentTrackId)) {
-            currentTrackId = track.getIdentifier();
-            displayTitle = track.getInfo().title != null ? track.getInfo().title : "Unknown Title";
-            displayAuthor = track.getInfo().author != null ? track.getInfo().author : "Unknown Artist";
-            fetchThumbnail(currentTrackId);
-        }
-
-        Color accent = eu.client.modules.impl.core.HUDModule.INSTANCE.musicHudColor.getColor();
-
-        double contentX = x + THUMB_W + 14;
-        double contentW = Math.max(10, hudW - THUMB_W - 20);
-
-        String titleText = clipText(skiaFontTitle, displayTitle, (float) contentW - 5);
-        String authorText = clipText(skiaFontAuthor, displayAuthor, (float) contentW - 5);
-
-        String timeText = "";
-        double timeX = x + hudW - 10, timeY = y + 20;
-        double prog = 0.0;
-        if (track != null) {
-            long pos = track.getPosition();
-            long dur = track.getDuration();
-            if (dur > 0) prog = (double) pos / dur;
-            timeText = formatTime(pos) + " / " + formatTime(dur);
-        }
-
-        double btnY = y + HUD_HEIGHT - 24;
-        int iconSz = 12;
-        double btnPrevX = contentX + 2;
-        double btnPlayX = contentX + 20;
-        double btnNextX = contentX + 38;
-
-        double pBarX = contentX + 56;
-        double pBarW = Math.max(10, contentW - 60);
-        double pBarTop = y + HUD_HEIGHT - 19;
-        double filledW = Math.max(2, pBarW * Math.clamp(prog, 0.0, 1.0));
-
-        Identifier playPauseIcon = (track != null && !PlayMusicModule.isPlayerPaused()) ? PAUSE_ICON : PLAY_ICON;
-
-        handleMouseInteraction(x, y, hudW, hudH, btnPrevX, btnPlayX, btnNextX, btnY, iconSz, pBarX, pBarTop, pBarW, track);
-
-        float radius = 8.0f;
-        boolean isLiquidGlass = "LiquidGlass".equalsIgnoreCase(eu.client.modules.impl.core.HUDModule.INSTANCE.musicHudBgMode.getValue());
-        boolean isBlur = "Blur".equalsIgnoreCase(eu.client.modules.impl.core.HUDModule.INSTANCE.musicHudBgMode.getValue());
-        boolean enableGlow = true;
-        boolean gpuBlur = false;
-
-        float scale = (float) mc.getWindow().getGuiScale();
-        try {
-            context.blurBeforeThisStratum();
-        } catch (IllegalStateException ignored) {}
-
-        if (isLiquidGlass) {
-            int fbH = mc.getMainRenderTarget().height;
-            eu.client.utils.graphics.skia.LiquidGlassHud.INSTANCE.setWidget((float) x, (float) y, (float) hudW, (float) hudH, radius, scale, fbH);
-            eu.client.utils.graphics.skia.LiquidGlassHud.INSTANCE.setBlurOutside(false);
-            gpuBlur = true;
-        } else if (isBlur) {
-            float blurVal = eu.client.modules.impl.core.HUDModule.INSTANCE.musicHudBlurIntensity.getValue().floatValue();
-            gpuBlur = blurVal > 0.5f;
-            if (gpuBlur) {
-                eu.client.utils.graphics.skia.SkijaBackdropBlur.INSTANCE.setWidget((float) x, (float) y, (float) hudW, (float) hudH, radius, scale, blurVal, 0.35f);
-                eu.client.utils.graphics.skia.SkijaBackdropBlur.INSTANCE.setBlurOutside(false);
-            }
-        }
-
-        paintState = new PaintState(
-                x, y, hudW, hudH,
-                thumbX, thumbY, currentThumbW, currentThumbH,
-                notPlaying, eu.client.modules.impl.core.HUDModule.INSTANCE.musicHudDisk.getValue(), useUltra, radius,
-                activeThumbId, smoothDiskRotation,
-                contentX, contentX, y, contentW,
-                titleText, authorText, timeText,
-                timeX, timeY,
-                btnPrevX, btnPlayX, btnNextX, btnY, iconSz,
-                hoverPrev, hoverPlay, hoverNext,
-                contentX, y + HUD_HEIGHT - 10, pBarX, pBarTop, pBarW, filledW,
-                hoverProgress, accent, playPauseIcon,
-                isLiquidGlass, gpuBlur, enableGlow
-        );
-
-        double extentW = useUltra ? currentThumbW : hudW;
-        double extentH = useUltra ? currentThumbH : hudH;
-
-        float margin = 40f;
-        int x0 = (int) Math.floor(x - margin), y0 = (int) Math.floor(y - margin);
-        int x1 = (int) Math.ceil(x + extentW + margin), y1 = (int) Math.ceil(y + extentH + margin);
-
-        context.guiRenderState.addPicturesInPictureState(new MusicHudPipState(this::paintSkia, x0, y0, x1, y1));
-        HudElementRegistry.reportBounds("MusicHUD", 0, 0, (float) extentW, (float) extentH);
+        // PORT (26.2): MusicHUD disabled -- Skia render path (LiquidGlassHud/SkijaBackdropBlur/
+        // MusicHudPipRenderer) depends on MultiBufferSource/TextureFormat, both removed in 26.2.
+        // Re-enable once category #1 (MultiBufferSource replacement) is resolved for real, per
+        // docs/superpowers/specs/2026-08-20-port-26.2-vulkan-audit.md.
+        return;
     }
 
     private void handleMouseInteraction(double x, double y, double hudW, double hudH,
                                         double btnPrevX, double btnPlayX, double btnNextX, double btnY, int iconSz,
                                         double pBarX, double pBarTop, double pBarW, AudioTrack track) {
-        if (mc.screen == null) return;
+        if (mc.gui.screen() == null) return;
         double scale = mc.getWindow().getGuiScale();
         double mx = mc.mouseHandler.xpos() / scale;
         double my = mc.mouseHandler.ypos() / scale;
@@ -423,54 +297,7 @@ public class MusicHUDComponent implements eu.client.utils.IMinecraft {
 
     private void paintThumbnail(Canvas canvas, boolean useDisk, Identifier activeThumbId,
                                 int tx, int ty, int tw, int th, float diskRotationDeg) {
-        MusicHudPipRenderer r = MusicHudPipRenderer.ACTIVE;
-        if (activeThumbId != null && r != null) {
-            Image thumbImg = r.borrowTexture(activeThumbId);
-            if (thumbImg == null) return;
-            Rect srcFull = Rect.makeXYWH(0, 0, thumbImg.getWidth(), thumbImg.getHeight());
-
-            if (useDisk) {
-                float centerX = tx + tw / 2.0f, centerY = ty + th / 2.0f;
-                Image vinylImg = r.borrowTexture(VINYL_TEX);
-
-                canvas.save();
-                canvas.translate(centerX, centerY);
-                canvas.rotate(diskRotationDeg);
-                canvas.translate(-centerX, -centerY);
-                try (Paint imgPaint = new Paint()) {
-                    imgPaint.setAntiAlias(true);
-                    if (vinylImg != null) {
-                        Rect vSrc = Rect.makeXYWH(0, 0, vinylImg.getWidth(), vinylImg.getHeight());
-                        canvas.drawImageRect(vinylImg, vSrc, Rect.makeXYWH(tx, ty, tw, th), SamplingMode.LINEAR, imgPaint, true);
-                    }
-                    float coreScale = 0.45f;
-                    int coreW = (int) (tw * coreScale), coreH = (int) (th * coreScale);
-                    Rect coreDst = Rect.makeXYWH(tx + (tw - coreW) / 2f, ty + (th - coreH) / 2f, coreW, coreH);
-                    canvas.drawImageRect(thumbImg, srcFull, coreDst, SamplingMode.LINEAR, imgPaint, true);
-                }
-                canvas.restore();
-            } else {
-                try (Paint imgPaint = new Paint()) {
-                    imgPaint.setAntiAlias(true);
-                    canvas.drawImageRect(thumbImg, srcFull, Rect.makeXYWH(tx, ty, tw, th), SamplingMode.LINEAR, imgPaint, true);
-                }
-            }
-        } else {
-            try (Paint bg = new Paint()) {
-                bg.setColor(new Color(30, 30, 35, 200).getRGB());
-                bg.setAntiAlias(true);
-                canvas.drawRRect(RRect.makeXYWH(tx, ty, tw, th, 6f), bg);
-            }
-            if (skiaFontBody != null) {
-                String note = "♪";
-                float nw = SkiaFontHelper.measureTextWidth(skiaFontBody, note);
-                try (Paint notePaint = new Paint()) {
-                    notePaint.setColor(new Color(150, 150, 150, 200).getRGB());
-                    notePaint.setAntiAlias(true);
-                    canvas.drawString(note, tx + (tw - nw) / 2f, ty + (th + 8) / 2f, skiaFontBody, notePaint);
-                }
-            }
-        }
+        // PORT (26.2): dead code, onRenderOverlay never calls paintSkia anymore -- see its comment.
     }
 
     private void paintBars(Canvas canvas, double contentX, double y, double contentW, Color accentColor) {
@@ -576,14 +403,7 @@ public class MusicHUDComponent implements eu.client.utils.IMinecraft {
     }
 
     private void paintIcon(Canvas canvas, Identifier id, double x, double y, int size) {
-        MusicHudPipRenderer r = MusicHudPipRenderer.ACTIVE;
-        Image img = r != null ? r.borrowTexture(id) : null;
-        if (img == null) return;
-        try (Paint paint = new Paint()) {
-            paint.setAntiAlias(true);
-            canvas.drawImageRect(img, Rect.makeXYWH(0, 0, img.getWidth(), img.getHeight()),
-                    Rect.makeXYWH((float) x, (float) y, size, size), SamplingMode.LINEAR, paint, true);
-        }
+        // PORT (26.2): dead code, onRenderOverlay never calls paintSkia anymore -- see its comment.
     }
 
     private String clipText(Font font, String text, float maxWidth) {

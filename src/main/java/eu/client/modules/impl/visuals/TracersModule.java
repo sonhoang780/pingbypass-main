@@ -35,7 +35,7 @@ public class TracersModule extends Module {
         mc.options.bobView().set(false);
 
         Vec3 pos = EntityUtils.getRenderPos(mc.player, event.getTickDelta());
-        Camera camera = mc.gameRenderer.getMainCamera();
+        Camera camera = mc.gameRenderer.mainCamera();
         Vec3 cameraPos = new Vec3(0.0, 0.0, 1.0).xRot(-(float) Math.toRadians(camera.xRot())).yRot(-(float) Math.toRadians(camera.yRot())).add(pos.x, mc.player.getEyeHeight(mc.player.getPose()) + pos.y, pos.z);
 
         for(Player player : mc.level.players()) {

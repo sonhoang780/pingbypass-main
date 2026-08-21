@@ -11,9 +11,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(LevelRenderer.class)
 public class LevelRendererMixin {
     // Reset NoRender's per-frame item counter once at the very start of each frame's level render.
-    // renderLevel runs exactly once per frame; without this the counter accumulates across frames
+    // render runs exactly once per frame; without this the counter accumulates across frames
     // and quickly exceeds the limit, culling every item permanently.
-    @Inject(method = "renderLevel", at = @At("HEAD"))
+    // PORT (26.2): LevelRenderer.renderLevel -> render (renamed + signature changed, confirmed via
+    // real source) -- found via a targeted audit after ItemInHandRenderer.renderHandsWithItems's
+    // own rename crashed at runtime, not caught by compileJava (method-name strings aren't
+    // type-checked).
+    @Inject(method = "render", at = @At("HEAD"))
     private void euclient$resetItemCounter(CallbackInfo info) {
         NoRenderModule noRender = EUClient.MODULE_MANAGER.getModule(NoRenderModule.class);
         if (noRender != null) noRender.resetItemCounter();

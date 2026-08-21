@@ -20,7 +20,7 @@ public class KeyboardMixin {
     @Inject(method = "keyPress", at = @At("HEAD"))
     private void keyPress(long handle, int action, KeyEvent event, CallbackInfo info) {
         EUClient.EVENT_HANDLER.post(new UnfilteredKeyInputEvent(event.key(), event.scancode(), action, event.modifiers()));
-        if (handle == minecraft.getWindow().handle() && action == 1 && minecraft.screen == null) {
+        if (handle == minecraft.getWindow().handle() && action == 1 && minecraft.gui.screen() == null) {
             EUClient.EVENT_HANDLER.post(new KeyInputEvent(event.key(), event.modifiers()));
         }
     }

@@ -29,7 +29,7 @@ public class ArrowControlsModule extends Module {
     @SubscribeEvent
     public void onRenderWorld(RenderWorldEvent event) {
         if (mc.player == null || mc.level == null) return;
-        if (mc.screen != null && (!inventory.getValue() || (mc.screen instanceof ChatScreen || mc.screen instanceof BookEditScreen || mc.screen instanceof SignEditScreen || mc.screen instanceof JigsawBlockEditScreen || mc.screen instanceof StructureBlockEditScreen || mc.screen instanceof AnvilScreen || (mc.screen instanceof CreativeModeInventoryScreen && CreativeInventoryScreenAccessor.getSelectedTab().getType() == CreativeModeTab.Type.SEARCH))))
+        if (mc.gui.screen() != null && (!inventory.getValue() || (mc.gui.screen() instanceof ChatScreen || mc.gui.screen() instanceof BookEditScreen || mc.gui.screen() instanceof SignEditScreen || mc.gui.screen() instanceof JigsawBlockEditScreen || mc.gui.screen() instanceof StructureBlockEditScreen || mc.gui.screen() instanceof AnvilScreen || (mc.gui.screen() instanceof CreativeModeInventoryScreen && CreativeInventoryScreenAccessor.getSelectedTab().getType() == CreativeModeTab.Type.SEARCH))))
             return;
 
         float yaw = 0.0f;

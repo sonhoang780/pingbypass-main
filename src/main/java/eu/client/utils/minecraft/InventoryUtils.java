@@ -521,6 +521,6 @@ public class InventoryUtils implements IMinecraft {
     }
 
     public static boolean inInventoryScreen() {
-        return mc.screen instanceof InventoryScreen || mc.screen instanceof CreativeModeInventoryScreen || mc.screen instanceof ContainerScreen || mc.screen instanceof ShulkerBoxScreen;
+        return mc.gui.screen() instanceof InventoryScreen || mc.gui.screen() instanceof CreativeModeInventoryScreen || mc.gui.screen() instanceof ContainerScreen || mc.gui.screen() instanceof ShulkerBoxScreen;
     }
 }

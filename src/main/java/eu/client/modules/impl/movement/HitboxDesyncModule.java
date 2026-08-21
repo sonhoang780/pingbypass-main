@@ -35,7 +35,7 @@ public class HitboxDesyncModule extends Module {
             return;
         }
 
-        Vec3 vec3d = mc.player.blockPosition().getCenter();
+        Vec3 vec3d = Vec3.atCenterOf(mc.player.blockPosition());
         double offset = minimal.getValue() ? 0.001 : 0.002;
         double timeout = specific.getValue() ? 500 : 1500;
 

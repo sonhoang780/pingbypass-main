@@ -258,6 +258,6 @@ public class ScaffoldModule extends Module {
     }
 
     private boolean isWithinRange(BlockPos pos) {
-        return mc.player.distanceToSqr(pos.getCenter()) <= range.getValue().doubleValue() * range.getValue().doubleValue();
+        return mc.player.distanceToSqr(net.minecraft.world.phys.Vec3.atCenterOf(pos)) <= range.getValue().doubleValue() * range.getValue().doubleValue();
     }
 }

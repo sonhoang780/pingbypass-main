@@ -69,7 +69,7 @@ public class AutoTotemModule extends Module {
         if (mc.player == null || mc.level == null) return;
         if (eu.client.pingbypass.PingBypassFlags.isPingBypassActive()) { reason("skip: PingBypass active"); return; }
 
-        if (!(mc.screen instanceof InventoryScreen) && mc.screen instanceof AbstractContainerScreen<?>) {
+        if (!(mc.gui.screen() instanceof InventoryScreen) && mc.gui.screen() instanceof AbstractContainerScreen<?>) {
             reason("skip: an external container GUI is open");
             return;
         }

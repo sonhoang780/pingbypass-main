@@ -17,6 +17,7 @@ import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
 import net.minecraft.network.protocol.game.ServerboundAttackPacket;
 import net.minecraft.network.protocol.game.ServerboundSwingPacket;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.boss.enderdragon.EndCrystal;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.InteractionHand;
@@ -193,7 +194,7 @@ public class SelfTrapModule extends Module {
     @SubscribeEvent
     public void onPacketReceive(PacketReceiveEvent event) {
         if (!crystalDestruction.getValue() || mc.player == null || mc.level == null) return;
-        if (!(event.getPacket() instanceof ClientboundAddEntityPacket packet) || !packet.getType().equals(EntityType.END_CRYSTAL))
+        if (!(event.getPacket() instanceof ClientboundAddEntityPacket packet) || !packet.getType().equals(EntityTypes.END_CRYSTAL))
             return;
 
         EndCrystal crystal = new EndCrystal(mc.level, packet.getX(), packet.getY(), packet.getZ());

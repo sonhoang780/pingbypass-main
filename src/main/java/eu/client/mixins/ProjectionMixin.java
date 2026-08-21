@@ -36,8 +36,15 @@ public class ProjectionMixin {
 
     @ModifyArgs(method = "getMatrix", at = @At(value = "INVOKE", target = "Lorg/joml/Matrix4f;setPerspective(FFFFZ)Lorg/joml/Matrix4f;"))
     private void getMatrix$aspectRatio(Args args) {
-        if (EUClient.MODULE_MANAGER.getModule(AspectRatioModule.class).isToggled()) {
-            args.set(1, EUClient.MODULE_MANAGER.getModule(AspectRatioModule.class).ratio.getValue().floatValue());
+        // PORT (26.2): real crash caught via runtime test (gradlew.bat runClient) -- GuiRenderer's
+        // new retained-mode pipeline calls CubeMap.render() -> Projection.getMatrix() for the main
+        // menu panorama background BEFORE EUClient.MODULE_MANAGER finishes initializing (title
+        // screen renders during the client's own boot sequence, earlier than this mixin's callers
+        // ever fired pre-26.2). Guard against MODULE_MANAGER/the module itself being null.
+        if (EUClient.MODULE_MANAGER == null) return;
+        AspectRatioModule module = EUClient.MODULE_MANAGER.getModule(AspectRatioModule.class);
+        if (module != null && module.isToggled()) {
+            args.set(1, module.ratio.getValue().floatValue());
         }
     }
 }

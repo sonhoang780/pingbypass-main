@@ -1,11 +1,11 @@
 package eu.client.utils.graphics;
 
+import com.mojang.blaze3d.PrimitiveTopology;
+import com.mojang.blaze3d.vertex.ByteBufferBuilder;
 import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.MeshData;
 import com.mojang.blaze3d.vertex.PoseStack;
-import com.mojang.blaze3d.vertex.Tesselator;
-import com.mojang.blaze3d.vertex.VertexFormat;
 import eu.client.utils.IMinecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.renderer.RenderPipelines;
@@ -18,7 +18,6 @@ import org.joml.Matrix3x2f;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 import org.joml.Vector4f;
-import org.lwjgl.opengl.GL11;
 
 import java.awt.*;
 import java.util.HashMap;
@@ -34,7 +33,7 @@ import java.util.Map;
  *       batches every element through a single QUADS index buffer, so all GUI geometry is quads.</li>
  *   <li><b>World / HUD</b> ({@link #renderCircle}, {@link #renderTexture}, {@link #renderArrow},
  *       {@link #renderArrowOutline}) — take a real 3D {@link PoseStack} and draw immediately with
- *       {@link RenderType#draw(MeshData)}, which reads the active model-view/projection set up by
+ *       {@link Renderer3D#draw(RenderType, MeshData)}, which reads the active model-view/projection set up by
  *       the world-render mixin.</li>
  * </ul>
  */
@@ -114,41 +113,50 @@ public class Renderer2D implements IMinecraft {
     // but is unusable for anything that has to land in a scratch RenderTarget THIS instant (e.g.
     // CozyGlowCapture's blur-capture window) since the override that redirects output would
     // already be cleared by the time a retained draw actually flushes.
+    // PORT (26.2): Tesselator removed -- own a ByteBufferBuilder sized exactly for the fixed vertex
+    // count each of these emits (no auto-growing singleton to lean on anymore). See Renderer3D.draw's
+    // comment for the vanilla-confirmed reasoning (WeatherEffectRenderer does the same per-call).
     public static void renderImmediateQuad(PoseStack matrices, float left, float top, float right, float bottom, Color color) {
         Matrix4f matrix = matrices.last().pose();
         int c = color.getRGB();
-        BufferBuilder buffer = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
-        buffer.addVertex(matrix, left, top, 0.0f).setColor(c);
-        buffer.addVertex(matrix, left, bottom, 0.0f).setColor(c);
-        buffer.addVertex(matrix, right, bottom, 0.0f).setColor(c);
-        buffer.addVertex(matrix, right, top, 0.0f).setColor(c);
-        MeshData mesh = buffer.build();
-        if (mesh != null) RenderTypes.debugQuads().draw(mesh);
+        try (ByteBufferBuilder byteBufferBuilder = ByteBufferBuilder.exactlySized(4 * DefaultVertexFormat.POSITION_COLOR.getVertexSize())) {
+            BufferBuilder buffer = new BufferBuilder(byteBufferBuilder, PrimitiveTopology.QUADS, DefaultVertexFormat.POSITION_COLOR);
+            buffer.addVertex(matrix, left, top, 0.0f).setColor(c);
+            buffer.addVertex(matrix, left, bottom, 0.0f).setColor(c);
+            buffer.addVertex(matrix, right, bottom, 0.0f).setColor(c);
+            buffer.addVertex(matrix, right, top, 0.0f).setColor(c);
+            MeshData mesh = buffer.build();
+            Renderer3D.draw(RenderTypes.debugQuads(), mesh);
+        }
     }
 
     public static void renderCircle(PoseStack matrices, float x, float y, float radius, Color color) {
         Matrix4f matrix = matrices.last().pose();
         int c = color.getRGB();
-        BufferBuilder buffer = Tesselator.getInstance().begin(VertexFormat.Mode.TRIANGLE_FAN, DefaultVertexFormat.POSITION_COLOR);
-        for (int i = 0; i <= 360; ++i) {
-            buffer.addVertex(matrix,
-                    (float) (x + Math.sin((double) i * Math.PI / 180.0) * (double) radius),
-                    (float) (y + Math.cos((double) i * Math.PI / 180.0) * (double) radius), 0.0f).setColor(c);
+        try (ByteBufferBuilder byteBufferBuilder = ByteBufferBuilder.exactlySized(361 * DefaultVertexFormat.POSITION_COLOR.getVertexSize())) {
+            BufferBuilder buffer = new BufferBuilder(byteBufferBuilder, PrimitiveTopology.TRIANGLE_FAN, DefaultVertexFormat.POSITION_COLOR);
+            for (int i = 0; i <= 360; ++i) {
+                buffer.addVertex(matrix,
+                        (float) (x + Math.sin((double) i * Math.PI / 180.0) * (double) radius),
+                        (float) (y + Math.cos((double) i * Math.PI / 180.0) * (double) radius), 0.0f).setColor(c);
+            }
+            MeshData mesh = buffer.build();
+            Renderer3D.draw(RenderTypes.debugTriangleFan(), mesh);
         }
-        MeshData mesh = buffer.build();
-        if (mesh != null) RenderTypes.debugTriangleFan().draw(mesh);
     }
 
     public static void renderTexture(PoseStack matrices, float left, float top, float right, float bottom, Identifier identifier, Color color) {
         Matrix4f matrix = matrices.last().pose();
         int c = color.getRGB();
-        BufferBuilder buffer = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_TEX_COLOR);
-        buffer.addVertex(matrix, left, top, 0.0f).setUv(0, 0).setColor(c);
-        buffer.addVertex(matrix, left, bottom, 0.0f).setUv(0, 1).setColor(c);
-        buffer.addVertex(matrix, right, bottom, 0.0f).setUv(1, 1).setColor(c);
-        buffer.addVertex(matrix, right, top, 0.0f).setUv(1, 0).setColor(c);
-        MeshData mesh = buffer.build();
-        if (mesh != null) texturedType(identifier).draw(mesh);
+        try (ByteBufferBuilder byteBufferBuilder = ByteBufferBuilder.exactlySized(4 * DefaultVertexFormat.POSITION_TEX_COLOR.getVertexSize())) {
+            BufferBuilder buffer = new BufferBuilder(byteBufferBuilder, PrimitiveTopology.QUADS, DefaultVertexFormat.POSITION_TEX_COLOR);
+            buffer.addVertex(matrix, left, top, 0.0f).setUv(0, 0).setColor(c);
+            buffer.addVertex(matrix, left, bottom, 0.0f).setUv(0, 1).setColor(c);
+            buffer.addVertex(matrix, right, bottom, 0.0f).setUv(1, 1).setColor(c);
+            buffer.addVertex(matrix, right, top, 0.0f).setUv(1, 0).setColor(c);
+            MeshData mesh = buffer.build();
+            Renderer3D.draw(texturedType(identifier), mesh);
+        }
     }
 
     public static void renderArrow(GuiGraphicsExtractor context, float x, float y, float width, float height, Color color) {
@@ -193,28 +201,33 @@ public class Renderer2D implements IMinecraft {
         Matrix4f matrix = matrices.last().pose();
         int c = color.getRGB();
         // Filled arrowhead: fan out from the tip.
-        BufferBuilder buffer = Tesselator.getInstance().begin(VertexFormat.Mode.TRIANGLE_FAN, DefaultVertexFormat.POSITION_COLOR);
-        buffer.addVertex(matrix, x, y, 0.0f).setColor(c);
-        buffer.addVertex(matrix, x - width, y + height, 0.0f).setColor(c);
-        buffer.addVertex(matrix, x, y + height, 0.0f).setColor(c);
-        buffer.addVertex(matrix, x + width, y + height, 0.0f).setColor(c);
-        buffer.addVertex(matrix, x, y, 0.0f).setColor(c);
-        MeshData mesh = buffer.build();
-        if (mesh != null) RenderTypes.debugTriangleFan().draw(mesh);
+        try (ByteBufferBuilder byteBufferBuilder = ByteBufferBuilder.exactlySized(5 * DefaultVertexFormat.POSITION_COLOR.getVertexSize())) {
+            BufferBuilder buffer = new BufferBuilder(byteBufferBuilder, PrimitiveTopology.TRIANGLE_FAN, DefaultVertexFormat.POSITION_COLOR);
+            buffer.addVertex(matrix, x, y, 0.0f).setColor(c);
+            buffer.addVertex(matrix, x - width, y + height, 0.0f).setColor(c);
+            buffer.addVertex(matrix, x, y + height, 0.0f).setColor(c);
+            buffer.addVertex(matrix, x + width, y + height, 0.0f).setColor(c);
+            buffer.addVertex(matrix, x, y, 0.0f).setColor(c);
+            MeshData mesh = buffer.build();
+            Renderer3D.draw(RenderTypes.debugTriangleFan(), mesh);
+        }
     }
 
     public static void renderArrowOutline(PoseStack matrices, float x, float y, float width, float height, Color color) {
         Matrix4f matrix = matrices.last().pose();
         int c = color.getRGB();
-        // Outline of the arrowhead, drawn as thin quads along each edge of the strip.
+        // Outline of the arrowhead, drawn as thin quads along each edge of the strip -- 4 segments,
+        // 4 verts each (segment() below).
         float[] px = {x, x - width, x, x + width, x};
         float[] py = {y, y + height, y + height, y + height, y};
-        BufferBuilder buffer = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
-        for (int i = 0; i < px.length - 1; i++) {
-            segment(buffer, matrix, px[i], py[i], px[i + 1], py[i + 1], 0.5f, c);
+        try (ByteBufferBuilder byteBufferBuilder = ByteBufferBuilder.exactlySized((px.length - 1) * 4 * DefaultVertexFormat.POSITION_COLOR.getVertexSize())) {
+            BufferBuilder buffer = new BufferBuilder(byteBufferBuilder, PrimitiveTopology.QUADS, DefaultVertexFormat.POSITION_COLOR);
+            for (int i = 0; i < px.length - 1; i++) {
+                segment(buffer, matrix, px[i], py[i], px[i + 1], py[i + 1], 0.5f, c);
+            }
+            MeshData mesh = buffer.build();
+            Renderer3D.draw(RenderTypes.debugQuads(), mesh);
         }
-        MeshData mesh = buffer.build();
-        if (mesh != null) RenderTypes.debugQuads().draw(mesh);
     }
 
     /** Emits a thin quad approximating the line segment (x1,y1)->(x2,y2) with half-width {@code w}. */
@@ -240,9 +253,13 @@ public class Renderer2D implements IMinecraft {
     // ------------------------------------------------------------------
 
     public static Vec3 project(Vec3 vec3d) {
-        Vec3 camera = mc.getEntityRenderDispatcher().camera.position();
-        int[] viewport = new int[4];
-        GL11.glGetIntegerv(GL11.GL_VIEWPORT, viewport);
+        Vec3 camera = mc.gameRenderer.mainCamera().position();
+        // PORT (26.2): raw GL11.glGetIntegerv(GL_VIEWPORT) call -- under a Vulkan-backend window
+        // (Options.PreferredGraphicsApi.VULKAN) there's no bound GL context at all, so any raw
+        // LWJGL GL11 call crashes on a null function pointer. mc.getWindow() already carries the
+        // same framebuffer pixel dimensions GL_VIEWPORT would've reported (origin always (0,0)
+        // here), backend-agnostic.
+        int[] viewport = {0, 0, mc.getWindow().getWidth(), mc.getWindow().getHeight()};
 
         Vector3f target = new Vector3f();
         Vector4f transform = new Vector4f((float) (vec3d.x - camera.x), (float) (vec3d.y - camera.y), (float) (vec3d.z - camera.z), 1.0f).mul(LAST_WORLD_MATRIX);

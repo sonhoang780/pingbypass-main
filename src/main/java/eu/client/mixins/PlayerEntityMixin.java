@@ -9,6 +9,7 @@ import eu.client.modules.impl.movement.VelocityModule;
 import eu.client.modules.impl.player.ReachModule;
 import eu.client.utils.IMinecraft;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.entity.player.Player;

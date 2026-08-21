@@ -11,6 +11,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
@@ -120,7 +121,10 @@ public class StructureSignature {
     }
 
     private enum Sig {
-        TRIAL_CHAMBERS(Set.of(Blocks.VAULT, Blocks.TRIAL_SPAWNER, Blocks.HEAVY_CORE, Blocks.CHISELED_COPPER, Blocks.COPPER_GRATE, Blocks.TUFF_BRICKS, Blocks.CHISELED_TUFF, Blocks.POLISHED_TUFF), 2,
+        // PORT (26.2): CHISELED_COPPER/COPPER_GRATE are now WeatheringCopperCollection<Block>, not
+        // a plain Block, since copper blocks got grouped by weathering state (confirmed via real
+        // Blocks.java source) -- .weathering().unaffected() gets the base (unweathered) Block.
+        TRIAL_CHAMBERS(Set.of(Blocks.VAULT, Blocks.TRIAL_SPAWNER, Blocks.HEAVY_CORE, Blocks.CHISELED_COPPER.weathering().unaffected(), Blocks.COPPER_GRATE.weathering().unaffected(), Blocks.TUFF_BRICKS, Blocks.CHISELED_TUFF, Blocks.POLISHED_TUFF), 2,
                 BiomeTags.HAS_TRIAL_CHAMBERS, Level.OVERWORLD, -60, 20),
 
         ANCIENT_CITY(Set.of(Blocks.REINFORCED_DEEPSLATE, Blocks.SCULK_CATALYST, Blocks.SCULK_SHRIEKER, Blocks.SCULK_SENSOR, Blocks.SOUL_LANTERN, Blocks.SCULK), 8,
@@ -141,7 +145,9 @@ public class StructureSignature {
         WOODLAND_MANSION(Set.of(Blocks.DARK_OAK_PLANKS, Blocks.DARK_OAK_LOG, Blocks.COBBLESTONE), 120,
                 BiomeTags.HAS_WOODLAND_MANSION, Level.OVERWORLD, 50, 150),
 
-        DESERT_PYRAMID(Set.of(Blocks.ORANGE_TERRACOTTA, Blocks.BLUE_TERRACOTTA, Blocks.CUT_SANDSTONE, Blocks.CHISELED_SANDSTONE), 6,
+        // PORT (26.2): ORANGE_TERRACOTTA/BLUE_TERRACOTTA are now Blocks.DYED_TERRACOTTA
+        // (ColorCollection<Block>), same pattern as the earlier bed/shulker-box/copper fixes.
+        DESERT_PYRAMID(Set.of(Blocks.DYED_TERRACOTTA.pick(DyeColor.ORANGE), Blocks.DYED_TERRACOTTA.pick(DyeColor.BLUE), Blocks.CUT_SANDSTONE, Blocks.CHISELED_SANDSTONE), 6,
                 BiomeTags.HAS_DESERT_PYRAMID, Level.OVERWORLD, 40, 100),
 
         JUNGLE_TEMPLE(Set.of(Blocks.MOSSY_COBBLESTONE, Blocks.CHISELED_STONE_BRICKS, Blocks.TRIPWIRE_HOOK, Blocks.LEVER, Blocks.STICKY_PISTON), 8,

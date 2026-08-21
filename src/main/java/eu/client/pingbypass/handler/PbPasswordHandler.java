@@ -164,7 +164,12 @@ public class PbPasswordHandler implements ServerGamePacketListener, TickablePack
     @Override public void handleContainerClose(ServerboundContainerClosePacket p) {}
     @Override public void handleAttack(net.minecraft.network.protocol.game.ServerboundAttackPacket p) {}
     @Override public void handleInteract(ServerboundInteractPacket p) {}
-    @Override public void handleSpectateEntity(net.minecraft.network.protocol.game.ServerboundSpectateEntityPacket p) {}
+    // PORT (26.2): ServerboundSpectateEntityPacket genuinely removed, but the FEATURE moved, not
+    // gone -- real successor is ServerboundSpectatorActionPacket(OptionalInt spectateEntityId) via
+    // handleSpectatorAction(...), confirmed against real 26.2 source. Corrects this session's
+    // earlier wrong guess (deleting the override outright) once the interface method actually
+    // surfaced as a real compile error ("not abstract and does not override...").
+    @Override public void handleSpectatorAction(net.minecraft.network.protocol.game.ServerboundSpectatorActionPacket p) {}
     @Override public void handleMovePlayer(ServerboundMovePlayerPacket p) {}
     @Override public void handlePlayerAbilities(net.minecraft.network.protocol.game.ServerboundPlayerAbilitiesPacket p) {}
     @Override public void handlePlayerAction(ServerboundPlayerActionPacket p) {}

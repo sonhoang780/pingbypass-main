@@ -22,7 +22,7 @@ public class MouseMixin {
         int button = buttonInfo.button();
         int mods = buttonInfo.modifiers();
         EUClient.EVENT_HANDLER.post(new UnfilteredMouseInputEvent(button, action, mods));
-        if (window == minecraft.getWindow().handle() && action == 1 && minecraft.screen == null) {
+        if (window == minecraft.getWindow().handle() && action == 1 && minecraft.gui.screen() == null) {
             EUClient.EVENT_HANDLER.post(new MouseInputEvent(button));
         }
     }

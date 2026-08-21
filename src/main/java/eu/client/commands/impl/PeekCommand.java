@@ -69,7 +69,7 @@ public class PeekCommand extends Command {
             // Route client-side clicks to our menu; the MultiPlayerGameMode mixin blocks the click
             // packet entirely while a PeekScreen is open, so nothing ever reaches the server.
             mc.player.containerMenu = menu;
-            mc.setScreen(new PeekScreen(menu, mc.player.getInventory(), title));
+            mc.gui.setScreen(new PeekScreen(menu, mc.player.getInventory(), title));
         });
     }
 }

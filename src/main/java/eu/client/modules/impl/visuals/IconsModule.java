@@ -196,15 +196,15 @@ public class IconsModule extends Module {
         private void render(PoseStack matrices, float target, Runnable runnable, Color color) {
             float progress = animation.get(target);
 
-            float distance = (float) Math.sqrt(mc.getEntityRenderDispatcher().camera.position().distanceToSqr(pos.x, pos.y, pos.z));
+            float distance = (float) Math.sqrt(mc.gameRenderer.mainCamera().position().distanceToSqr(pos.x, pos.y, pos.z));
             float scaling = 0.0018f + (scale.getValue().floatValue() / 10000.0f) * distance;
             if (distance <= 4.0) scaling = 0.0245f;
 
-            Vec3 vec3d = new Vec3(pos.x - mc.getEntityRenderDispatcher().camera.position().x, pos.y - mc.getEntityRenderDispatcher().camera.position().y, pos.z - mc.getEntityRenderDispatcher().camera.position().z);
+            Vec3 vec3d = new Vec3(pos.x - mc.gameRenderer.mainCamera().position().x, pos.y - mc.gameRenderer.mainCamera().position().y, pos.z - mc.gameRenderer.mainCamera().position().z);
 
             matrices.pushPose();
             matrices.translate(vec3d.x, vec3d.y, vec3d.z);
-            matrices.mulPose(mc.getEntityRenderDispatcher().camera.rotation());
+            matrices.mulPose(mc.gameRenderer.mainCamera().rotation());
             matrices.scale(scaling, -scaling, scaling);
 
             matrices.scale(progress, progress, 1);

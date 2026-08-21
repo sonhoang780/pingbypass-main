@@ -16,7 +16,6 @@ import eu.client.utils.color.ColorUtils;
 import eu.client.utils.graphics.Renderer3D;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.player.RemotePlayer;
-import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.Pose;
@@ -217,7 +216,6 @@ public class LogoutSpotModule extends Module {
         if (!nametag.getValue() || spots.isEmpty()) return;
 
         PoseStack matrices = event.getMatrices();
-        MultiBufferSource.BufferSource vertexConsumers = mc.renderBuffers().bufferSource();
 
         for (Spot spot : spots.values()) {
             RemotePlayer ghost = spot.ghost;
@@ -228,18 +226,18 @@ public class LogoutSpotModule extends Module {
             double z = ghost.getZ();
 
             Vec3 vec3d = new Vec3(
-                    x - mc.getEntityRenderDispatcher().camera.position().x,
-                    y - mc.getEntityRenderDispatcher().camera.position().y,
-                    z - mc.getEntityRenderDispatcher().camera.position().z
+                    x - mc.gameRenderer.mainCamera().position().x,
+                    y - mc.gameRenderer.mainCamera().position().y,
+                    z - mc.gameRenderer.mainCamera().position().z
             );
 
-            float distance = (float) Math.sqrt(mc.getEntityRenderDispatcher().camera.position().distanceToSqr(x, y, z));
+            float distance = (float) Math.sqrt(mc.gameRenderer.mainCamera().position().distanceToSqr(x, y, z));
             float scaling = 0.0018f + (scale.getValue().intValue() / 10000.0f) * distance;
             if (distance <= 8.0f) scaling = 0.0245f;
 
             matrices.pushPose();
             matrices.translate(vec3d.x, vec3d.y, vec3d.z);
-            matrices.mulPose(mc.getEntityRenderDispatcher().camera.rotation());
+            matrices.mulPose(mc.gameRenderer.mainCamera().rotation());
             matrices.scale(scaling, -scaling, scaling);
 
             // Was: per-segment ChatFormatting colors (health green->red gradient, totem-count
@@ -264,14 +262,13 @@ public class LogoutSpotModule extends Module {
             Renderer3D.renderQuad(matrices, -width / 2.0f - 2, -fontHeight - 1, width / 2.0f + 2, 1, new Color(0, 0, 0, 120));
             Renderer3D.renderOutline(matrices, -width / 2.0f - 2, -fontHeight - 1, width / 2.0f + 2, 1, new Color(0, 0, 0, 160));
 
-            EUClient.FONT_MANAGER.drawTextWithShadow(matrices, fullText, -width / 2, -fontHeight, vertexConsumers, fillColor.getColor());
+            EUClient.FONT_MANAGER.drawTextWithShadow(matrices, fullText, -width / 2, -fontHeight, fillColor.getColor());
 
             matrices.popPose();
 
             Renderer3D.draw(Renderer3D.QUADS, Renderer3D.DEBUG_LINES, false);
             Renderer3D.QUADS.clear();
             Renderer3D.DEBUG_LINES.clear();
-            vertexConsumers.endBatch();
         }
     }
 

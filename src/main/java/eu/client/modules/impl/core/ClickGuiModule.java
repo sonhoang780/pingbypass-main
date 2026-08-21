@@ -46,17 +46,17 @@ public class ClickGuiModule extends Module {
             color.getValue().setSync(false);
         }
         EUClient.CLICK_GUI.cancelClose();
-        mc.setScreen(EUClient.CLICK_GUI);
+        mc.gui.setScreen(EUClient.CLICK_GUI);
     }
     
     @Override
     public void onDisable() {
         // Deferred close: EUClient.CLICK_GUI plays its slide-up animation and removes itself (via
         // Minecraft.setScreen(null)) once that finishes, instead of vanishing instantly here.
-        if (mc.screen == EUClient.CLICK_GUI) {
+        if (mc.gui.screen() == EUClient.CLICK_GUI) {
             EUClient.CLICK_GUI.requestClose();
         } else {
-            mc.setScreen(null);
+            mc.gui.setScreen(null);
         }
     }
 

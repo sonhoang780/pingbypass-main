@@ -10,7 +10,9 @@ import com.mojang.blaze3d.vertex.VertexConsumer;
 import eu.client.mixins.accessors.RenderPipelinesAccessor;
 import eu.client.utils.IMinecraft;
 import net.minecraft.client.Camera;
-import net.minecraft.client.renderer.MultiBufferSource;
+import com.mojang.blaze3d.vertex.ByteBufferBuilder;
+import com.mojang.blaze3d.vertex.BufferBuilder;
+import com.mojang.blaze3d.vertex.MeshData;
 import net.minecraft.client.renderer.rendertype.RenderSetup;
 import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.client.renderer.texture.OverlayTexture;
@@ -65,7 +67,6 @@ public class KillEffectMemeRenderer implements IMinecraft {
     public void render(PoseStack matrices) {
         if (instances.isEmpty()) { lastNanos = 0L; return; }
         if (mc.player == null || mc.level == null) return;
-        MultiBufferSource.BufferSource bufferSource = mc.renderBuffers().bufferSource();
 
         long now = System.nanoTime();
         float dt = lastNanos == 0L ? 0f : Math.min((now - lastNanos) / 1.0e9f, 0.1f);
@@ -81,42 +82,48 @@ public class KillEffectMemeRenderer implements IMinecraft {
         if (instances.isEmpty()) return;
 
         PoseStack.Pose pose = matrices.last();
-        Camera camera = mc.getEntityRenderDispatcher().camera;
+        Camera camera = mc.gameRenderer.mainCamera();
         Vector3f camUp = new Vector3f(camera.upVector());
         Vector3f camLeft = new Vector3f(camera.leftVector());
         var camPosD = camera.position();
         Vector3f camPos = new Vector3f((float) camPosD.x, (float) camPosD.y, (float) camPosD.z);
 
-        // Two SEQUENTIAL passes, each grabbing its own RenderType's buffer exactly once and
-        // writing every instance to it before moving on -- see KillEffectParticleSystem's own
-        // doc (ported alongside this) for why interleaving two buffers crashes.
+        // PORT (26.2): MultiBufferSource removed -- own a growable ByteBufferBuilder per RenderType
+        // (instance count varies per frame, not known upfront) and draw immediately, same
+        // immediate-mode pattern as Renderer3D.draw/FontManager.drawTextWithShadow (see their PORT
+        // comments). Two SEQUENTIAL passes, each its own buffer -- see KillEffectParticleSystem's
+        // own doc (ported alongside this) for why interleaving two buffers crashes.
         Vector3f rel = new Vector3f();
-        VertexConsumer circleVc = bufferSource.getBuffer(getCircleLayer());
-        for (MemeInstance inst : instances) {
-            if (inst.age % CYCLE_SEC >= BLINK_ON_SEC) continue; // off phase of the blink
-            rel.set(inst.pos).sub(camPos);
-            emitBillboard(circleVc, pose, rel, camUp, camLeft, inst.size, 255);
+        RenderType circleType = getCircleLayer();
+        try (ByteBufferBuilder circleBytes = new ByteBufferBuilder(1024)) {
+            BufferBuilder circleVc = new BufferBuilder(circleBytes, circleType.primitiveTopology(), circleType.format());
+            for (MemeInstance inst : instances) {
+                if (inst.age % CYCLE_SEC >= BLINK_ON_SEC) continue; // off phase of the blink
+                rel.set(inst.pos).sub(camPos);
+                emitBillboard(circleVc, pose, rel, camUp, camLeft, inst.size, 255);
+            }
+            MeshData mesh = circleVc.build();
+            Renderer3D.draw(circleType, mesh);
         }
 
         Vector3f arrowRel = new Vector3f();
-        VertexConsumer arrowVc = bufferSource.getBuffer(getArrowLayer());
-        for (MemeInstance inst : instances) {
-            if (inst.age % CYCLE_SEC >= BLINK_ON_SEC) continue;
-            rel.set(inst.pos).sub(camPos);
-            // Arrow sits up-and-right of the circle, same billboard basis, smaller and
-            // fixed-offset -- its own baked-in shape already points down-left into the circle,
-            // so no extra rotation is needed to "aim" it.
-            arrowRel.set(camLeft).mul(-inst.size * 1.1f)
-                    .add(camUp.x * inst.size * 1.1f, camUp.y * inst.size * 1.1f, camUp.z * inst.size * 1.1f)
-                    .add(rel);
-            emitBillboard(arrowVc, pose, arrowRel, camUp, camLeft, inst.size * 0.8f, 255);
+        RenderType arrowType = getArrowLayer();
+        try (ByteBufferBuilder arrowBytes = new ByteBufferBuilder(1024)) {
+            BufferBuilder arrowVc = new BufferBuilder(arrowBytes, arrowType.primitiveTopology(), arrowType.format());
+            for (MemeInstance inst : instances) {
+                if (inst.age % CYCLE_SEC >= BLINK_ON_SEC) continue;
+                rel.set(inst.pos).sub(camPos);
+                // Arrow sits up-and-right of the circle, same billboard basis, smaller and
+                // fixed-offset -- its own baked-in shape already points down-left into the circle,
+                // so no extra rotation is needed to "aim" it.
+                arrowRel.set(camLeft).mul(-inst.size * 1.1f)
+                        .add(camUp.x * inst.size * 1.1f, camUp.y * inst.size * 1.1f, camUp.z * inst.size * 1.1f)
+                        .add(rel);
+                emitBillboard(arrowVc, pose, arrowRel, camUp, camLeft, inst.size * 0.8f, 255);
+            }
+            MeshData mesh = arrowVc.build();
+            Renderer3D.draw(arrowType, mesh);
         }
-
-        // No manual endBatch() here -- GameRendererMixin already flushes
-        // renderBuffers().bufferSource() once, centrally, at the right point in the world render
-        // pass (same reason NameTagsModule/BreakHighlightModule don't flush their own buffers
-        // either); flushing early here would risk out-of-order compositing against other
-        // translucent content drawn the same frame.
     }
 
     /** Camera-facing textured quad, UV 0..1 across the whole image. */

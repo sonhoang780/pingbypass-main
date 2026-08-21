@@ -221,7 +221,7 @@ public class AutoCrystalModule extends Module {
     private boolean isDead() {
         if (mc.player == null || mc.level == null) return true;
         if (!mc.player.isAlive() || mc.player.isDeadOrDying() || mc.player.getHealth() <= 0.0f) return true;
-        if (mc.screen instanceof net.minecraft.client.gui.screens.DeathScreen) return true;
+        if (mc.gui.screen() instanceof net.minecraft.client.gui.screens.DeathScreen) return true;
         return false;
     }
 

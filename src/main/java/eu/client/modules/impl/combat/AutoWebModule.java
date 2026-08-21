@@ -132,7 +132,7 @@ public class AutoWebModule extends Module {
     public void onClientRotation(ClientRotationEvent event) {
         if (rotatePosition == null || event.isCancelled()) return;
 
-        float[] rotations = RotationUtils.getRotations(rotatePosition.getCenter());
+        float[] rotations = RotationUtils.getRotations(net.minecraft.world.phys.Vec3.atCenterOf(rotatePosition));
         event.setYaw(rotations[0]);
         event.setPitch(rotations[1]);
     }

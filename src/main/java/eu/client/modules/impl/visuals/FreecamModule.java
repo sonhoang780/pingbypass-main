@@ -14,6 +14,7 @@ import eu.client.settings.impl.NumberSetting;
 import eu.client.utils.minecraft.MovementUtils;
 import eu.client.utils.system.MathUtils;
 import net.minecraft.world.entity.player.Input;
+import net.minecraft.client.CameraType;
 import net.minecraft.util.Mth;
 import org.joml.Vector2d;
 
@@ -30,6 +31,12 @@ public class FreecamModule extends Module {
 
     private double freeX, freeY, freeZ;
     private double prevFreeX, prevFreeY, prevFreeZ;
+
+    // Freecam's own render hook (wherever it draws the world from freeX/Y/Z) only replaces the
+    // CAMERA position/rotation -- it never touches Options.cameraType, so 3rd-person stayed
+    // selectable while Freecam ran and rendered the real player model instead of the free view.
+    // Force 1st-person for the duration, restore whatever the user had on disable.
+    private CameraType prevCameraType;
 
     @SubscribeEvent
     public void onTick(TickEvent event) {
@@ -74,7 +81,7 @@ public class FreecamModule extends Module {
             freeY += verticalSpeed.getValue().doubleValue();
         }
         
-        if (mc.options.keyShift.isDown() && (shift.getValue() || mc.screen == null)) {
+        if (mc.options.keyShift.isDown() && (shift.getValue() || mc.gui.screen() == null)) {
             freeY -= verticalSpeed.getValue().doubleValue();
         }
 
@@ -96,6 +103,9 @@ public class FreecamModule extends Module {
         }
 
         mc.smartCull = false;
+
+        prevCameraType = mc.options.getCameraType();
+        mc.options.setCameraType(CameraType.FIRST_PERSON);
 
         freeYaw = prevFreeYaw = mc.player.getYRot();
         freePitch = prevFreePitch = mc.player.getXRot();
@@ -119,6 +129,10 @@ public class FreecamModule extends Module {
         if (mc.player == null || mc.level == null) return;
 
         mc.smartCull = true;
+
+        if (prevCameraType != null) {
+            mc.options.setCameraType(prevCameraType);
+        }
     }
 
     public float getFreeYaw() {

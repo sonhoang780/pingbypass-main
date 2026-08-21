@@ -57,7 +57,9 @@ public class TrajectoriesModule extends Module {
     @SubscribeEvent
     public void onRenderWorld(RenderWorldEvent event) {
         if (mc.player == null || mc.level == null) return;
-        if (mc.options.hideGui || !mc.options.getCameraType().isFirstPerson()) return;
+        // PORT (26.2): Options.hideGui removed -- moved to Gui's own hud field, see InGameHudMixin's
+        // PORT comment for the real source trail.
+        if (mc.gui.hud.isHidden() || !mc.options.getCameraType().isFirstPerson()) return;
 
         InteractionHand activeHand;
 
@@ -172,8 +174,8 @@ public class TrajectoriesModule extends Module {
                 }
             }
 
-            Renderer3D.DEBUG_LINES.add(new Renderer3D.VertexCollection(new Renderer3D.Vertex(matrix4f, (float) (lastPosition.x - mc.gameRenderer.getMainCamera().position().x), (float) (lastPosition.y - mc.gameRenderer.getMainCamera().position().y), (float) (lastPosition.z - mc.gameRenderer.getMainCamera().position().z), lineColor.getColor().getRGB()),
-                    new Renderer3D.Vertex(matrix4f, (float) (position.x - mc.gameRenderer.getMainCamera().position().x), (float) (position.y - mc.gameRenderer.getMainCamera().position().y), (float) (position.z - mc.gameRenderer.getMainCamera().position().z), lineColor.getColor().getRGB())));
+            Renderer3D.DEBUG_LINES.add(new Renderer3D.VertexCollection(new Renderer3D.Vertex(matrix4f, (float) (lastPosition.x - mc.gameRenderer.mainCamera().position().x), (float) (lastPosition.y - mc.gameRenderer.mainCamera().position().y), (float) (lastPosition.z - mc.gameRenderer.mainCamera().position().z), lineColor.getColor().getRGB()),
+                    new Renderer3D.Vertex(matrix4f, (float) (position.x - mc.gameRenderer.mainCamera().position().x), (float) (position.y - mc.gameRenderer.mainCamera().position().y), (float) (position.z - mc.gameRenderer.mainCamera().position().z), lineColor.getColor().getRGB())));
         }
 
         if(result != null && result.getType() == HitResult.Type.BLOCK) {

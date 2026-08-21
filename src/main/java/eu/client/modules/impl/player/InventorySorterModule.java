@@ -49,7 +49,7 @@ public class InventorySorterModule extends Module {
         if (rekit.getActiveKit().isEmpty()) return;
         if (mc.player.isCreative()) return;
 
-        if (mc.screen instanceof AbstractContainerScreen && !(mc.screen instanceof InventoryScreen)) return;
+        if (mc.gui.screen() instanceof AbstractContainerScreen && !(mc.gui.screen() instanceof InventoryScreen)) return;
 
         if (ticks < delay.getValue().intValue()) { ticks++; return; }
         ticks = 0;

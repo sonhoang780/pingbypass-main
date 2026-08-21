@@ -119,7 +119,7 @@ public class PbWaitingHandler implements ServerGamePacketListener, TickablePacke
                 } else if (connectionAttemptTicks % 40 == 0) {
                     sendChat("§7[PingBypass] Loading terrain...");
                 }
-            } else if (mc.screen instanceof net.minecraft.client.gui.screens.DisconnectedScreen disconnectedScreen) {
+            } else if (mc.gui.screen() instanceof net.minecraft.client.gui.screens.DisconnectedScreen disconnectedScreen) {
                 // Connection failed
                 connectingToServer = false;
                 String reason = ((eu.client.mixins.accessors.DisconnectedScreenAccessor) disconnectedScreen)
@@ -354,7 +354,12 @@ public class PbWaitingHandler implements ServerGamePacketListener, TickablePacke
     @Override public void handleContainerClose(ServerboundContainerClosePacket p) {}
     @Override public void handleAttack(net.minecraft.network.protocol.game.ServerboundAttackPacket p) {}
     @Override public void handleInteract(ServerboundInteractPacket p) {}
-    @Override public void handleSpectateEntity(net.minecraft.network.protocol.game.ServerboundSpectateEntityPacket p) {}
+    // PORT (26.2): ServerboundSpectateEntityPacket genuinely removed, but the FEATURE moved, not
+    // gone -- real successor is ServerboundSpectatorActionPacket(OptionalInt spectateEntityId) via
+    // handleSpectatorAction(...), confirmed against real 26.2 source. Corrects this session's
+    // earlier wrong guess (deleting the override outright) once the interface method actually
+    // surfaced as a real compile error ("not abstract and does not override...").
+    @Override public void handleSpectatorAction(net.minecraft.network.protocol.game.ServerboundSpectatorActionPacket p) {}
     @Override public void handleMovePlayer(ServerboundMovePlayerPacket p) {}
     @Override public void handlePlayerAbilities(net.minecraft.network.protocol.game.ServerboundPlayerAbilitiesPacket p) {}
     @Override public void handlePlayerAction(ServerboundPlayerActionPacket p) {}

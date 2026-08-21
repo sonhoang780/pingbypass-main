@@ -44,7 +44,10 @@ public class ItemInHandRendererMixin {
     // stops the CRASH (IllegalStateException aborting the flush), this flag+redirect is the actual
     // BetterChams trick that forces hand geometry onto the outline target regardless of which
     // internal path queued it. Read by OutlineBufferSourceMixin.
-    @Inject(method = "renderHandsWithItems", at = @At("HEAD"))
+    // PORT (26.2): renderHandsWithItems -> submitHandsWithItems -- real crash caught via runtime
+    // test (MixinApplyError, "No refMap loaded" / target not found), same signature otherwise
+    // (confirmed via real ItemInHandRenderer.java source).
+    @Inject(method = "submitHandsWithItems", at = @At("HEAD"))
     private void euclient$startHands(float partialTick, PoseStack pose, SubmitNodeCollector collector, LocalPlayer player, int light, CallbackInfo ci) {
         eu.client.utils.mixins.HandsRenderState.renderingHands = true;
     }
@@ -92,44 +95,19 @@ public class ItemInHandRendererMixin {
         return result;
     }
 
-    // Bobbing-desync root cause (verified via javap on GameRenderer/ItemInHandRenderer/
-    // OutlineBufferSource/LevelRenderer): the hand's outline vertices ARE generated during
-    // renderAllFeatures() (called just above, inside this same method) into the shared
-    // OutlineBufferSource, but nothing flushes them here -- vanilla's own
-    // outlineBufferSource().endOutlineBatch() call happens exactly once per frame, inside
-    // LevelRenderer.renderLevel's main pass, which already finished by the time this method
-    // (called from GameRenderer.renderItemInHand, strictly AFTER renderLevel) runs. Left alone,
-    // those vertices sit buffered until NEXT frame's renderLevel flushes them -- under NEXT
-    // frame's world projection (bob baked in) and view-rotation matrix instead of this frame's
-    // hud projection (no bob) the vertices were actually built under. That mismatch, compounding
-    // frame-to-frame while the camera keeps moving, is the entire "outline lags/desyncs from the
-    // hand while moving" symptom. Flush right here instead, at RETURN -- still inside
-    // renderItemInHand's own modelViewStack push and while the hud projection is still bound.
-    //
-    // entityOutlineTarget() (the public method) returns null here: LevelRenderer.renderLevel
-    // clears its FrameGraph resource handles (targets.clear()) before returning, and that's what
-    // the public getter reads. The private field itself is never null after the client's initial
-    // resource-reload (LevelRenderer.initOutline() runs once, unconditionally, from
-    // onResourceManagerReload) -- reach it via LevelRendererAccessor instead of calling
-    // initOutline() again ourselves (it unconditionally destroys+recreates the target; calling it
-    // here every frame was the prior, reverted attempt's actual crash cause).
-    @Inject(method = "renderHandsWithItems", at = @At("RETURN"))
+    // PORT (26.2): the bobbing-desync fix below is OBSOLETE, not ported -- it manually flushed the
+    // OLD OutlineBufferSource-queued hand-outline geometry at the right point in the frame
+    // (RenderBuffers.outlineBufferSource()/endOutlineBatch() -- confirmed via javap on the real
+    // jar, RenderBuffers has neither method anymore). 26.2's outline mechanism is a different
+    // architecture entirely: outlineColor is now a direct param on submitModel/submitItem/etc,
+    // folded into vanilla's own SubmitNodeCollection -> FeatureRenderer batching (see this
+    // session's port audit doc, category #4/OutlineBufferSourceMixin), flushed automatically by
+    // vanilla itself, not something this mod manually queues/flushes anymore. Whether the ORIGINAL
+    // bobbing-desync symptom this worked around still exists under the new architecture is
+    // UNCONFIRMED -- needs real runtime testing (gradlew.bat runClient, hands outlined via Chams/
+    // Shaders, move around) before assuming it's fine.
+    @Inject(method = "submitHandsWithItems", at = @At("RETURN"))
     private void euclient$flushHandOutline(float partialTick, PoseStack pose, SubmitNodeCollector collector, LocalPlayer player, int light, CallbackInfo ci) {
         eu.client.utils.mixins.HandsRenderState.renderingHands = false;
-
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.levelRenderer == null) return;
-        RenderTarget outline = ((LevelRendererAccessor) mc.levelRenderer).euclient$getEntityOutlineTarget();
-        if (outline == null) return;
-
-        // OutputTarget.OUTLINE_TARGET falls back to the MAIN render target when
-        // entityOutlineTarget() reads null (see above) -- without this override,
-        // endOutlineBatch() here would paint the raw (unprocessed) silhouette straight onto the
-        // screen instead of into the dedicated outline target. Scoped to this one flush call only.
-        RenderSystem.outputColorTextureOverride = outline.getColorTextureView();
-        RenderSystem.outputDepthTextureOverride = outline.getDepthTextureView();
-        mc.renderBuffers().outlineBufferSource().endOutlineBatch();
-        RenderSystem.outputColorTextureOverride = null;
-        RenderSystem.outputDepthTextureOverride = null;
     }
 }

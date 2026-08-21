@@ -66,7 +66,7 @@ public class NeekeriFill {
         if (chain == null) return;
 
         writeTime();
-        chain.process(Minecraft.getInstance().getMainRenderTarget(), GraphicsResourceAllocator.UNPOOLED);
+        chain.process(Minecraft.getInstance().gameRenderer.mainRenderTarget(), GraphicsResourceAllocator.UNPOOLED);
 
         RenderTarget pattern = ((PostEffectProcessorAccessor) chain).getPersistentTargets().get(PATTERN_TARGET_ID);
         if (pattern == null || pattern.getColorTextureView() == null) return;

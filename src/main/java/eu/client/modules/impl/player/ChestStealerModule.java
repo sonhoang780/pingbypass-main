@@ -49,7 +49,7 @@ public class ChestStealerModule extends Module {
         ticks = 0;
 
         int budget = actionsPerTick.getValue().intValue();
-        boolean externalGui = mc.screen instanceof AbstractContainerScreen && !(mc.screen instanceof InventoryScreen);
+        boolean externalGui = mc.gui.screen() instanceof AbstractContainerScreen && !(mc.gui.screen() instanceof InventoryScreen);
         if (externalGui && ignoreCustomName.getValue() && hasCustomContainerTitle() && !(mc.player.containerMenu instanceof net.minecraft.world.inventory.ShulkerBoxMenu)) return;
         if (steal.getValue() && externalGui && budget > 0) budget -= runSteal(stealMode.getValue(), stealWhitelist, budget);
         if (dump.getValue() && externalGui && budget > 0) budget -= runDump(dumpMode.getValue(), dumpWhitelist, budget);
@@ -61,7 +61,7 @@ public class ChestStealerModule extends Module {
     public void triggerDrop()  { if (canAct(false)) runDrop(actionsPerTick.getValue().intValue()); }
 
     private boolean hasCustomContainerTitle() {
-    if (!(mc.screen instanceof AbstractContainerScreen<?> screen)) return false;
+    if (!(mc.gui.screen() instanceof AbstractContainerScreen<?> screen)) return false;
     net.minecraft.network.chat.Component title = screen.getTitle();
     if (title == null) return false;
     return !(title.getContents() instanceof net.minecraft.network.chat.contents.TranslatableContents);
@@ -72,15 +72,15 @@ public class ChestStealerModule extends Module {
         if (mc.player.isCreative()) return false;
         if (!mc.player.containerMenu.getCarried().isEmpty()) return false;
         if (requireContainer) {
-            boolean isContainer = mc.screen instanceof AbstractContainerScreen && !(mc.screen instanceof InventoryScreen);
-            boolean isInventory = mc.screen instanceof InventoryScreen;
+            boolean isContainer = mc.gui.screen() instanceof AbstractContainerScreen && !(mc.gui.screen() instanceof InventoryScreen);
+            boolean isInventory = mc.gui.screen() instanceof InventoryScreen;
             if (!isContainer && !isInventory) return false;
         }
         return true;
     }
 
     private int runSteal(String modeVal, WhitelistSetting wl, int budget) {
-        if (mc.screen instanceof InventoryScreen) return 0;
+        if (mc.gui.screen() instanceof InventoryScreen) return 0;
         int containerId = mc.player.containerMenu.containerId;
         int containerSlotCount = mc.player.containerMenu.slots.size() - 36;
         int actions = 0;
@@ -93,7 +93,7 @@ public class ChestStealerModule extends Module {
     }
 
     private int runDump(String modeVal, WhitelistSetting wl, int budget) {
-        if (mc.screen instanceof InventoryScreen) return 0;
+        if (mc.gui.screen() instanceof InventoryScreen) return 0;
         int containerId = mc.player.containerMenu.containerId;
         int actions = 0;
         for (int invSlot = 0; invSlot < 36 && actions < budget; invSlot++) {

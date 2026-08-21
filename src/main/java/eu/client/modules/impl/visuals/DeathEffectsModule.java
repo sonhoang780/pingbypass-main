@@ -15,6 +15,7 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.LightningBolt;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.network.protocol.game.ClientboundEntityEventPacket;
@@ -183,7 +184,7 @@ public class DeathEffectsModule extends Module {
     private void spawnLightning(Vec3 pos) {
         if (mc.level == null) return;
 
-        LightningBolt lightning = new LightningBolt(EntityType.LIGHTNING_BOLT, mc.level);
+        LightningBolt lightning = new LightningBolt(EntityTypes.LIGHTNING_BOLT, mc.level);
         lightning.setPos(pos.x, pos.y, pos.z);
         mc.level.addEntity(lightning);
     }

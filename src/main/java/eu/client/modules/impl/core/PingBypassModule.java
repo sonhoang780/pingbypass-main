@@ -85,14 +85,14 @@ public class PingBypassModule extends Module {
         // during startup), skip the connection. User can re-toggle to connect.
         // ConnectScreen.connect() calls mc.disconnect() -> mc.reset() -> mc.render()
         // which requires fields like inactivityFpsLimiter to be initialized.
-        if (mc.getOverlay() != null) {
+        if (mc.gui.overlay() != null) {
             EUClient.LOGGER.info("[PingBypass] Skipping auto-connect during startup");
             return;
         }
 
         // Close the ClickGUI if it's open
-        if (mc.screen instanceof eu.client.gui.ClickGuiScreen) {
-            mc.setScreen(null);
+        if (mc.gui.screen() instanceof eu.client.gui.ClickGuiScreen) {
+            mc.gui.setScreen(null);
         }
 
         // Clear mirror state

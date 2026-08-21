@@ -194,7 +194,7 @@ public class WhitelistButton extends Button {
         // whitelist editor -- 3 columns with item icons, per the sketch. The inline right-click
         // dropdown above still works as a lightweight text-only fallback.
         if (isHovering(mouseX, mouseY) && button == 0 && (!open || mouseY < getY() + getParent().getHeight())) {
-            mc.setScreen(new eu.client.gui.WhitelistEditorScreen(setting, mc.screen));
+            mc.gui.setScreen(new eu.client.gui.WhitelistEditorScreen(setting, mc.gui.screen()));
             return;
         }
 

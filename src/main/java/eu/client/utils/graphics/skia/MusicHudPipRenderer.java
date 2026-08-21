@@ -1,19 +1,10 @@
 package eu.client.utils.graphics.skia;
 
-import net.minecraft.client.renderer.MultiBufferSource;
-
-public final class MusicHudPipRenderer extends AbstractSkiaPipRenderer<MusicHudPipState> {
-
-    public static volatile MusicHudPipRenderer ACTIVE;
-
-    public MusicHudPipRenderer(MultiBufferSource.BufferSource bufferSource) {
-        super(bufferSource);
-        ACTIVE = this;
-    }
-
-    @Override
-    public Class<MusicHudPipState> getRenderStateClass() { return MusicHudPipState.class; }
-
-    @Override
-    protected String getTextureLabel() { return "skia_pip_musichud"; }
+// PORT (26.2): disabled entirely -- extended AbstractSkiaPipRenderer, whose vanilla base
+// (PictureInPictureRenderer) took a MultiBufferSource.BufferSource ctor arg; MultiBufferSource
+// is removed in 26.2 (category #1, deferred -- see
+// docs/superpowers/specs/2026-08-20-port-26.2-vulkan-audit.md). No callers left: GameRendererMixin's
+// musichud$registerSkiaPip (the only constructor call site) and MusicHUDComponent's
+// paintThumbnail/paintIcon (the only ACTIVE readers) were disabled alongside this.
+public final class MusicHudPipRenderer {
 }

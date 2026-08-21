@@ -42,7 +42,7 @@ public class ClickGuiScreen extends Screen {
     private Color colorClipboard = null;
 
     // Whole-GUI open/close slide. EUClient.CLICK_GUI is a single persistent instance (reused via
-    // mc.setScreen(EUClient.CLICK_GUI) every open, never reconstructed), so the animation can't just
+    // mc.gui.setScreen(EUClient.CLICK_GUI) every open, never reconstructed), so the animation can't just
     // be "start fresh in the constructor" -- it's driven by this open/closing flag instead, and
     // Animation.get() smoothly re-targets on its own if the user re-opens mid-close.
     // 400f/220ms with EASE_OUT_CUBIC on BOTH directions put all the visible motion in the first
@@ -52,7 +52,13 @@ public class ClickGuiScreen extends Screen {
     // slow phase on-screen; longer duration makes it perceptible; per-direction easing (set in
     // requestClose/cancelClose below) makes closing actually start slow and speed up off-screen,
     // where OPENING keeps decelerating INTO place. Tune these three by eye, not further guessing.
-    private static final int SLIDE_DURATION_MS = 320;
+    // 2026-08-21 FIX (reported: "cột module kéo lên còn nửa chừng đã đột ngột tắt"). The wave-
+    // completion guard (waveTotalMs, see extractRenderState) was already mathematically exact, but
+    // exact meant zero margin -- a slow frame landing right at the boundary could tick waveElapsed
+    // past waveTotalMs mid-render before the last category's own eased curve visually settled to 0.
+    // Simplest fix: give the whole wave more headroom (longer slide, more per-column delay) instead
+    // of chasing frame-timing precision.
+    private static final int SLIDE_DURATION_MS = 420;
     private static final float SLIDE_DISTANCE = 160f;
     private final Animation slideAnim = new Animation(SLIDE_DURATION_MS, Easing.Method.EASE_OUT_CUBIC);
     private boolean closing = false;
@@ -64,10 +70,10 @@ public class ClickGuiScreen extends Screen {
     // just computed per-frame with an index*stagger delay instead of one shared progress value.
     // Only the category Frames wave; descriptionFrame/searchFrame/pingBypassFrame keep the plain
     // global slide (see extractRenderState) since they aren't a row of repeated items.
-    private static final int CATEGORY_STAGGER_MS = 35;
+    private static final int CATEGORY_STAGGER_MS = 45;
 
     // Deferred close: instead of removing the screen immediately, play the slide-up first and only
-    // actually call mc.setScreen(null) once it's finished (checked each frame in extractRenderState).
+    // actually call mc.gui.setScreen(null) once it's finished (checked each frame in extractRenderState).
     public void requestClose() {
         closing = true;
         slideAnim.setEasing(Easing.Method.EASE_IN_CUBIC);
@@ -106,12 +112,15 @@ public class ClickGuiScreen extends Screen {
         // of the normal slide duration -- waiting on the plain global `progress` alone would remove
         // the screen (and cut the tail of the wave off) before the last category finished sliding.
         long waveElapsed = System.currentTimeMillis() - slideAnim.getStartTime();
-        long waveTotalMs = SLIDE_DURATION_MS + (long) Math.max(0, frames.size() - 1) * CATEGORY_STAGGER_MS;
+        // +50ms cushion: a slow frame can tick waveElapsed past the exact boundary before the last
+        // category's own eased curve visually reads as fully settled -- margin, not precision, is
+        // what actually prevents the perceptible cutoff.
+        long waveTotalMs = SLIDE_DURATION_MS + (long) Math.max(0, frames.size() - 1) * CATEGORY_STAGGER_MS + 50L;
         if (closing && progress <= 0.001f && waveElapsed >= waveTotalMs) {
             // Slide-up finished -- actually remove the screen now. This triggers onClose() on us,
             // which resets the search box and toggles ClickGuiModule off (a no-op if that's already
             // what closed us, e.g. the keybind path -- Module.setToggled() guards same-state calls).
-            Minecraft.getInstance().setScreen(null);
+            Minecraft.getInstance().gui.setScreen(null);
             return;
         }
 
@@ -213,8 +222,8 @@ public class ClickGuiScreen extends Screen {
             return true;
         }
 
-        // While the slide-up close animation is playing, mc.screen is still this screen (not
-        // null yet), so KeyboardMixin's `minecraft.screen == null` gate silently drops the bind
+        // While the slide-up close animation is playing, mc.gui.screen() is still this screen (not
+        // null yet), so KeyboardMixin's `minecraft.gui.screen() == null` gate silently drops the bind
         // keypress meant to reopen -- the user has to press it a second time after the animation
         // finishes. Only handle the cancel-close case here (reopen mid-animation); don't also
         // treat the bind as an in-screen close toggle -- the opening press itself never reaches

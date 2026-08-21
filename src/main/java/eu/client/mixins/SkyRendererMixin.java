@@ -22,19 +22,24 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
+import java.util.Optional;
 import java.util.OptionalDouble;
-import java.util.OptionalInt;
 import java.util.function.Supplier;
+import org.joml.Vector4f;
+import org.joml.Vector4fc;
 
 // StarGlow: verified via .mcref that SkyRenderer.renderStars() reads
-// Minecraft.getInstance().getMainRenderTarget() directly (bypasses RenderSystem.
+// Minecraft.getInstance().gameRenderer.mainRenderTarget() directly (bypasses RenderSystem.
 // outputColorTextureOverride entirely) to build its render pass. Redirecting the createRenderPass
 // call itself, only for THIS one call site, points the star geometry's draw at an isolated target
 // instead -- true per-pixel isolation (only stars ever land there), no threshold approximation.
 @Mixin(SkyRenderer.class)
 public abstract class SkyRendererMixin {
-    @Redirect(method = "renderStars", at = @At(value = "INVOKE", target = "Lcom/mojang/blaze3d/systems/CommandEncoder;createRenderPass(Ljava/util/function/Supplier;Lcom/mojang/blaze3d/textures/GpuTextureView;Ljava/util/OptionalInt;Lcom/mojang/blaze3d/textures/GpuTextureView;Ljava/util/OptionalDouble;)Lcom/mojang/blaze3d/systems/RenderPass;"))
-    private RenderPass euclient$redirectStars(CommandEncoder encoder, Supplier<String> label, GpuTextureView color, OptionalInt clearColor, GpuTextureView depth, OptionalDouble clearDepth) {
+    // PORT (26.2): createRenderPass's clear-color param is Optional<Vector4fc> (float RGBA) now,
+    // not OptionalInt -- confirmed via real CommandEncoder/RenderPass source and multiple real
+    // vanilla callers (WeatherEffectRenderer/DebugCrosshairRenderer both pass Optional.empty()).
+    @Redirect(method = "renderStars", at = @At(value = "INVOKE", target = "Lcom/mojang/blaze3d/systems/CommandEncoder;createRenderPass(Ljava/util/function/Supplier;Lcom/mojang/blaze3d/textures/GpuTextureView;Ljava/util/Optional;Lcom/mojang/blaze3d/textures/GpuTextureView;Ljava/util/OptionalDouble;)Lcom/mojang/blaze3d/systems/RenderPass;"))
+    private RenderPass euclient$redirectStars(CommandEncoder encoder, Supplier<String> label, GpuTextureView color, Optional<Vector4fc> clearColor, GpuTextureView depth, OptionalDouble clearDepth) {
         AtmosphereModule atmosphere = EUClient.MODULE_MANAGER.getModule(AtmosphereModule.class);
         if (atmosphere.isToggled() && atmosphere.starGlow.getValue()) {
             var target = StarCapture.ensure();
@@ -46,7 +51,7 @@ public abstract class SkyRendererMixin {
             // Previously this redirected depth to the isolated target's own buffer, cleared to
             // 1.0 (far) -- an empty depth buffer nothing could ever fail against, so every star
             // drew straight through walls/terrain regardless of what was actually blocking it.
-            return encoder.createRenderPass(label, target.getColorTextureView(), OptionalInt.of(0), depth, clearDepth);
+            return encoder.createRenderPass(label, target.getColorTextureView(), Optional.of(new Vector4f(0.0F, 0.0F, 0.0F, 0.0F)), depth, clearDepth);
         }
         return encoder.createRenderPass(label, color, clearColor, depth, clearDepth);
     }
@@ -74,6 +79,8 @@ public abstract class SkyRendererMixin {
 
         EspShader.writeStarGlowSettings(chain, atmosphere.starGlowIntensity.getValue().floatValue());
         chain.process(starTarget, GraphicsResourceAllocator.UNPOOLED);
-        starTarget.blitAndBlendToTexture(mc.getMainRenderTarget().getColorTextureView());
+        // PORT (26.2): blitAndBlendToTexture gained a required depth-view param (confirmed via real
+        // RenderTarget.java source) -- pass the main target's own depth view alongside its color view.
+        starTarget.blitAndBlendToTexture(mc.gameRenderer.mainRenderTarget().getColorTextureView(), mc.gameRenderer.mainRenderTarget().getDepthTextureView());
     }
 }

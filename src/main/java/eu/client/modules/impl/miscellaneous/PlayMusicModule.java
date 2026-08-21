@@ -50,7 +50,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-@RegisterModule(name = "PlayMusic", description = "Direct YouTube music player with chat suggestions.", category = Module.Category.MISCELLANEOUS)
+// PORT (26.2): PlayMusic disabled alongside MusicHUD (its Skia-rendered display, see
+// HUDModule/MusicHUDComponent) -- module never registers so INSTANCE stays null.
+// @RegisterModule(name = "PlayMusic", description = "Direct YouTube music player with chat suggestions.", category = Module.Category.MISCELLANEOUS)
 public class PlayMusicModule extends Module {
     public static PlayMusicModule INSTANCE;
 
@@ -254,7 +256,7 @@ public class PlayMusicModule extends Module {
         wasMouseDown = mouseDown;
         wasTabDown = tabDown;
 
-        if (isToggled() && mc.screen == null && mc.mouseHandler.isMouseGrabbed()) {
+        if (isToggled() && mc.gui.screen() == null && mc.mouseHandler.isMouseGrabbed()) {
             boolean upDown = GLFW.glfwGetKey(win, GLFW.GLFW_KEY_UP) == GLFW.GLFW_PRESS;
             boolean downDown = GLFW.glfwGetKey(win, GLFW.GLFW_KEY_DOWN) == GLFW.GLFW_PRESS;
             boolean leftDown = GLFW.glfwGetKey(win, GLFW.GLFW_KEY_LEFT) == GLFW.GLFW_PRESS;
@@ -277,9 +279,9 @@ public class PlayMusicModule extends Module {
             wasRightArrowDown = rightDown;
         }
 
-        if (isToggled() && chatSearch.getValue() && mc.screen instanceof ChatScreen) {
+        if (isToggled() && chatSearch.getValue() && mc.gui.screen() instanceof ChatScreen) {
             EditBox chatField = null;
-            for (GuiEventListener e : mc.screen.children()) {
+            for (GuiEventListener e : mc.gui.screen().children()) {
                 if (e instanceof EditBox tf) {
                     chatField = tf;
                     break;
@@ -325,7 +327,7 @@ public class PlayMusicModule extends Module {
 
         if (openGuiBtn.getValue()) {
             openGuiBtn.setValue(false);
-            mc.execute(() -> mc.setScreen(new eu.client.gui.screens.MusicScreen()));
+            mc.execute(() -> mc.gui.setScreen(new eu.client.gui.screens.MusicScreen()));
         }
         if (player != null && player.getVolume() != volume.getValue().intValue()) {
             player.setVolume(volume.getValue().intValue());

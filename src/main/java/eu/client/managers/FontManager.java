@@ -9,7 +9,11 @@ import eu.client.utils.color.ColorUtils;
 import eu.client.utils.font.FontRenderer;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
-import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.gui.font.TextRenderable;
+import net.minecraft.client.renderer.rendertype.RenderType;
+import com.mojang.blaze3d.vertex.ByteBufferBuilder;
+import com.mojang.blaze3d.vertex.BufferBuilder;
+import com.mojang.blaze3d.vertex.MeshData;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.util.FormattedCharSequence;
@@ -19,6 +23,8 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.TextColor;
 
 import java.awt.*;
+import java.util.HashMap;
+import java.util.Map;
 
 @Getter @Setter
 public class FontManager implements IMinecraft {
@@ -67,7 +73,15 @@ public class FontManager implements IMinecraft {
         }
     }
 
-    public void drawTextWithShadow(PoseStack matrices, String text, int x, int y, MultiBufferSource vertexConsumers, Color color) {
+    // PORT (26.2): MultiBufferSource removed entirely, and Font.drawInBatch (the old vanilla batch
+    // API this called into) is GONE too, not just renamed -- replaced by Font.prepareText(...) ->
+    // PreparedText.visit(GlyphVisitor), a per-glyph callback (real 26.2 source, read in full: see
+    // net/minecraft/client/renderer/feature/TextFeatureRenderer.java's GlyphRenderer for vanilla's
+    // own version of this exact pattern). No MultiBufferSource-equivalent buffer-source param
+    // needed anymore -- own a small per-RenderType BufferBuilder here (growable ByteBufferBuilder,
+    // glyph count isn't known upfront) and draw immediately once the whole string's been visited,
+    // same immediate-mode pattern as Renderer3D.draw/EspShader.draw (see their PORT comments).
+    public void drawTextWithShadow(PoseStack matrices, String text, int x, int y, Color color) {
         // Depth-less "see through" draw: the SEE_THROUGH DisplayMode (vanilla) and the GUI_TEXTURED
         // pipeline (custom font) both render without a depth test, so the old RenderSystem
         // enable/disableDepthTest wrapper (removed in the 1.21.5+ pipeline overhaul) is not needed.
@@ -75,8 +89,30 @@ public class FontManager implements IMinecraft {
             if (shadowEnabled()) fontRenderer.drawString(matrices, text, x + getShadowOffset(), y + getShadowOffset(), color.getRGB(), true);
             fontRenderer.drawString(matrices, text, x, y, color.getRGB(), false);
         } else {
-            mc.font.drawInBatch(text, x, y, color.getRGB(), true, matrices.last().pose(), vertexConsumers,
-                    Font.DisplayMode.SEE_THROUGH, 0, LightCoordsUtil.FULL_BRIGHT);
+            Font.PreparedText prepared = mc.font.prepareText(text, x, y, color.getRGB(), true, 0);
+            Map<RenderType, ByteBufferBuilder> owners = new HashMap<>();
+            Map<RenderType, BufferBuilder> buffers = new HashMap<>();
+            try {
+                prepared.visit(new Font.GlyphVisitor() {
+                    @Override
+                    public void acceptRenderable(TextRenderable renderable) {
+                        RenderType renderType = renderable.renderType(Font.DisplayMode.SEE_THROUGH);
+                        BufferBuilder buffer = buffers.computeIfAbsent(renderType, rt -> {
+                            ByteBufferBuilder byteBufferBuilder = new ByteBufferBuilder(256);
+                            owners.put(rt, byteBufferBuilder);
+                            return new BufferBuilder(byteBufferBuilder, rt.primitiveTopology(), rt.format());
+                        });
+                        renderable.render(matrices.last().pose(), buffer, LightCoordsUtil.FULL_BRIGHT, false);
+                    }
+                });
+
+                for (Map.Entry<RenderType, BufferBuilder> entry : buffers.entrySet()) {
+                    MeshData mesh = entry.getValue().build();
+                    eu.client.utils.graphics.Renderer3D.draw(entry.getKey(), mesh);
+                }
+            } finally {
+                for (ByteBufferBuilder byteBufferBuilder : owners.values()) byteBufferBuilder.close();
+            }
         }
     }
 

@@ -29,7 +29,7 @@ public class ClientInputForwarder {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null || mc.getConnection() == null) return;
 
-        boolean nowOpen = mc.screen instanceof InventoryScreen inv && inv.getMenu() == mc.player.inventoryMenu;
+        boolean nowOpen = mc.gui.screen() instanceof InventoryScreen inv && inv.getMenu() == mc.player.inventoryMenu;
         if (nowOpen == inventoryOpen) return;
 
         inventoryOpen = nowOpen;

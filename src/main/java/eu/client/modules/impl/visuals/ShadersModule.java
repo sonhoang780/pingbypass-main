@@ -9,6 +9,7 @@ import eu.client.utils.graphics.EspShader;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.entity.player.Player;
 
@@ -71,14 +72,14 @@ public class ShadersModule extends Module {
     public ColorSetting shaderGlowColor = new ColorSetting("ShaderGlowColor", "GlowColor", "The color that the glow shader will be tinted with.", new ModeSetting.Visibility(shader, "Glowing"), new ColorSetting.Color(new Color(255, 0, 255, 255), false, false));
 
     public boolean isValidEntity(Entity entity) {
-        if (players.getValue() && entity.getType() == EntityType.PLAYER) return true;
+        if (players.getValue() && entity.getType() == EntityTypes.PLAYER) return true;
         if (hostiles.getValue() && entity.getType().getCategory() == MobCategory.MONSTER) return true;
         if (animals.getValue() && (entity.getType().getCategory() == MobCategory.CREATURE || entity.getType().getCategory() == MobCategory.WATER_CREATURE || entity.getType().getCategory() == MobCategory.WATER_AMBIENT || entity.getType().getCategory() == MobCategory.UNDERGROUND_WATER_CREATURE || entity.getType().getCategory() == MobCategory.AXOLOTLS))
             return true;
         if (ambient.getValue() && entity.getType().getCategory() == MobCategory.AMBIENT) return true;
         if (invisibles.getValue() && entity.isInvisible()) return true;
-        if (items.getValue() && (entity.getType() == EntityType.ITEM || entity.getType() == EntityType.EXPERIENCE_BOTTLE)) return true;
-        if (crystals.getValue() && entity.getType() == EntityType.END_CRYSTAL) return true;
+        if (items.getValue() && (entity.getType() == EntityTypes.ITEM || entity.getType() == EntityTypes.EXPERIENCE_BOTTLE)) return true;
+        if (crystals.getValue() && entity.getType() == EntityTypes.END_CRYSTAL) return true;
         return others.getValue();
     }
 

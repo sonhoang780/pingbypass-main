@@ -114,7 +114,12 @@ public class PbLoginHandler implements ServerLoginPacketListener {
 
         this.acceptedProfile = profile;
         this.state = LoginState.PROTOCOL_SWITCHING;
-        this.connection.send(new ClientboundLoginFinishedPacket(profile));
+        // PORT (26.2): ClientboundLoginFinishedPacket gained a UUID sessionId param -- confirmed via
+        // real 26.2 source (record has 2 components now, was 1); real vanilla server sources it from
+        // ServerConnectionListener.getSessionId() (one persistent id per dedicated server), which
+        // this proxy has no equivalent of -- a fresh random UUID per login is fine, the client only
+        // needs a session id to exist, not to match anything else.
+        this.connection.send(new ClientboundLoginFinishedPacket(profile, java.util.UUID.randomUUID()));
         LOGGER.info("Login success for {} ({}), waiting for LOGIN_ACKNOWLEDGED", profile.name(), profile.id());
     }
 

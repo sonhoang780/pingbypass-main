@@ -172,7 +172,7 @@ public class HoleUtils implements IMinecraft {
         if (target == mc.player && hitboxDesyncModule.isToggled() && hitboxDesyncModule.close.getValue()) {
             List<BlockPos> desyncPositions = new ArrayList<>();
 
-            Vec3 vec3d = mc.player.blockPosition().getCenter();
+            Vec3 vec3d = Vec3.atCenterOf(mc.player.blockPosition());
             boolean flagX = (vec3d.x - mc.player.getX()) > 0;
             boolean flagZ = (vec3d.z - mc.player.getZ()) > 0;
 

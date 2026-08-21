@@ -5,8 +5,8 @@ import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.MeshData;
 import com.mojang.blaze3d.vertex.PoseStack;
-import com.mojang.blaze3d.vertex.Tesselator;
-import com.mojang.blaze3d.vertex.VertexFormat;
+import com.mojang.blaze3d.PrimitiveTopology;
+import com.mojang.blaze3d.vertex.ByteBufferBuilder;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import it.unimi.dsi.fastutil.objects.ObjectList;
 import lombok.SneakyThrows;
@@ -14,6 +14,7 @@ import eu.client.EUClient;
 import eu.client.modules.impl.core.FontModule;
 import eu.client.utils.IMinecraft;
 import eu.client.utils.graphics.GuiQuadRenderState;
+import eu.client.utils.graphics.Renderer3D;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.navigation.ScreenRectangle;
 import net.minecraft.client.gui.render.TextureSetup;
@@ -188,23 +189,27 @@ public class FontRenderer implements Closeable, IMinecraft {
         for (Map.Entry<GlyphMap, ObjectList<DrawEntry>> entry : pages.entrySet()) {
             GlyphMap map = entry.getKey();
 
-            BufferBuilder buffer = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_TEX_COLOR);
-            for (DrawEntry d : entry.getValue()) {
-                Glyph glyph = d.toDraw();
+            // PORT (26.2): Tesselator removed, own a ByteBufferBuilder sized exactly for this
+            // page's glyph count -- see Renderer3D.draw's comment for the vanilla-confirmed pattern.
+            try (ByteBufferBuilder byteBufferBuilder = ByteBufferBuilder.exactlySized(entry.getValue().size() * 4 * DefaultVertexFormat.POSITION_TEX_COLOR.getVertexSize())) {
+                BufferBuilder buffer = new BufferBuilder(byteBufferBuilder, PrimitiveTopology.QUADS, DefaultVertexFormat.POSITION_TEX_COLOR);
+                for (DrawEntry d : entry.getValue()) {
+                    Glyph glyph = d.toDraw();
 
-                float u1 = (float) glyph.u() / map.getWidth();
-                float v1 = (float) glyph.v() / map.getHeight();
-                float u2 = (float) (glyph.u() + glyph.width()) / map.getWidth();
-                float v2 = (float) (glyph.v() + glyph.height()) / map.getHeight();
+                    float u1 = (float) glyph.u() / map.getWidth();
+                    float v1 = (float) glyph.v() / map.getHeight();
+                    float u2 = (float) (glyph.u() + glyph.width()) / map.getWidth();
+                    float v2 = (float) (glyph.v() + glyph.height()) / map.getHeight();
 
-                buffer.addVertex(matrix, d.atX(), d.atY() + glyph.height(), 0).setUv(u1, v2).setColor(d.argb());
-                buffer.addVertex(matrix, d.atX() + glyph.width(), d.atY() + glyph.height(), 0).setUv(u2, v2).setColor(d.argb());
-                buffer.addVertex(matrix, d.atX() + glyph.width(), d.atY(), 0).setUv(u2, v1).setColor(d.argb());
-                buffer.addVertex(matrix, d.atX(), d.atY(), 0).setUv(u1, v1).setColor(d.argb());
+                    buffer.addVertex(matrix, d.atX(), d.atY() + glyph.height(), 0).setUv(u1, v2).setColor(d.argb());
+                    buffer.addVertex(matrix, d.atX() + glyph.width(), d.atY() + glyph.height(), 0).setUv(u2, v2).setColor(d.argb());
+                    buffer.addVertex(matrix, d.atX() + glyph.width(), d.atY(), 0).setUv(u2, v1).setColor(d.argb());
+                    buffer.addVertex(matrix, d.atX(), d.atY(), 0).setUv(u1, v1).setColor(d.argb());
+                }
+
+                MeshData mesh = buffer.build();
+                Renderer3D.draw(worldTexturedType(map.getTextureId()), mesh);
             }
-
-            MeshData mesh = buffer.build();
-            if (mesh != null) worldTexturedType(map.getTextureId()).draw(mesh);
         }
 
         matrices.popPose();

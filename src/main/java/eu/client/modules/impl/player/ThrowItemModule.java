@@ -43,7 +43,7 @@ public class ThrowItemModule extends Module {
         // If Rekit is actively moving items in/out of shulkers or containers, defer
         if (rekit.isAutoActive() || System.currentTimeMillis() - RekitModule.lastContainerActionMs < 200) return;
 
-        boolean foreignGui = mc.screen instanceof AbstractContainerScreen && !(mc.screen instanceof InventoryScreen);
+        boolean foreignGui = mc.gui.screen() instanceof AbstractContainerScreen && !(mc.gui.screen() instanceof InventoryScreen);
         if (onlyInventory.getValue() && foreignGui) return;
 
         if (ticks < delay.getValue().intValue()) {

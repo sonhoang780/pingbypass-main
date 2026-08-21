@@ -99,7 +99,7 @@ public class ChestScanModule extends Module {
 
         boolean chestMenuOpenNow = mc.player.containerMenu instanceof ChestMenu;
 
-        if (!chestMenuOpenNow && mc.screen == null) {
+        if (!chestMenuOpenNow && mc.gui.screen() == null) {
             lastLookedAtChestPos = resolveLookedAtChestPos(mc);
         }
 

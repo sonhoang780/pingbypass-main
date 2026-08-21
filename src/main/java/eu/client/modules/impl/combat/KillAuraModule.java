@@ -119,8 +119,12 @@ public class KillAuraModule extends Module {
         ItemStack stack = mc.player.getMainHandItem();
         Entity optimal = findOptimalTarget();
 
+        // Require+non-weapon used to still set target = optimal here (only meant for the
+        // optimal == null case) -- onRenderWorld only checks target != null, so the aura box kept
+        // rendering around entities it could never actually attack. Null it out for both bail
+        // conditions so render tracks "will actually attack", not "found a candidate".
         if (optimal == null || (swap.getValue().equalsIgnoreCase("Require") && !isItemAWeapon(stack))) {
-            target = optimal;
+            target = null;
             return;
         }
 

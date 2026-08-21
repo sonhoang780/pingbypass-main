@@ -58,7 +58,7 @@ public class InventoryCleanerModule extends Module {
         long now = System.currentTimeMillis();
         if (now - RekitModule.lastContainerActionMs < 200 || now - InventorySorterModule.lastContainerActionMs < 200) return;
 
-        boolean externalGui = mc.screen instanceof AbstractContainerScreen && !(mc.screen instanceof InventoryScreen);
+        boolean externalGui = mc.gui.screen() instanceof AbstractContainerScreen && !(mc.gui.screen() instanceof InventoryScreen);
 
         if (ticks < delay.getValue().intValue()) { ticks++; return; }
         ticks = 0;
@@ -101,7 +101,7 @@ public class InventoryCleanerModule extends Module {
     }
 
     private boolean hasCustomContainerTitle() {
-        if (!(mc.screen instanceof AbstractContainerScreen<?> screen)) return false;
+        if (!(mc.gui.screen() instanceof AbstractContainerScreen<?> screen)) return false;
         Component title = screen.getTitle();
         if (title == null) return false;
         return !(title.getContents() instanceof TranslatableContents);

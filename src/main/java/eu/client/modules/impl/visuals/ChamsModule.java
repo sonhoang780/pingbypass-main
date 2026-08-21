@@ -12,6 +12,7 @@ import eu.client.utils.color.ColorUtils;
 import eu.client.utils.mixins.IChamsCapture;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.entity.player.Player;
@@ -68,7 +69,7 @@ public class ChamsModule extends Module {
     public ColorSetting crystalOutlineColor = new ColorSetting("CrystalOutlineColor", "OutlineColor", "The color that will be used for the outline rendering.", new ModeSetting.Visibility(crystalMode, "Outline", "Both"), ColorUtils.getDefaultOutlineColor());
 
     public boolean isValidEntity(Entity entity) {
-        if (players.getValue() && entity.getType() == EntityType.PLAYER) return true;
+        if (players.getValue() && entity.getType() == EntityTypes.PLAYER) return true;
         if (hostiles.getValue() && entity.getType().getCategory() == MobCategory.MONSTER) return true;
         return passives.getValue() && (entity.getType().getCategory() == MobCategory.CREATURE || entity.getType().getCategory() == MobCategory.WATER_CREATURE || entity.getType().getCategory() == MobCategory.WATER_AMBIENT || entity.getType().getCategory() == MobCategory.UNDERGROUND_WATER_CREATURE || entity.getType().getCategory() == MobCategory.AXOLOTLS);
     }

@@ -1,8 +1,11 @@
 package eu.client.utils.graphics;
 
+import com.mojang.blaze3d.IndexType;
+import com.mojang.blaze3d.PrimitiveTopology;
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.buffers.Std140Builder;
 import com.mojang.blaze3d.buffers.Std140SizeCalculator;
+import com.mojang.blaze3d.pipeline.BindGroupLayout;
 import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.pipeline.DepthStencilState;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
@@ -12,11 +15,10 @@ import com.mojang.blaze3d.shaders.UniformType;
 import com.mojang.blaze3d.systems.RenderPass;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.textures.GpuTextureView;
+import com.mojang.blaze3d.vertex.ByteBufferBuilder;
 import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.MeshData;
-import com.mojang.blaze3d.vertex.Tesselator;
-import com.mojang.blaze3d.vertex.VertexFormat;
 import eu.client.mixins.accessors.PostEffectProcessorAccessor;
 import eu.client.mixins.accessors.PostPassAccessor;
 import eu.client.mixins.accessors.RenderPipelinesAccessor;
@@ -33,8 +35,8 @@ import java.awt.*;
 import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalDouble;
-import java.util.OptionalInt;
 
 /**
  * Animated ESP shader modes ported from Sydney-Legacy's GraphicsShaderUtil / Shader pair.
@@ -58,12 +60,23 @@ public class EspShader implements IMinecraft {
 
     private static final Identifier FRAGMENT = Identifier.fromNamespaceAndPath("euclient", "core/esp");
 
+    // PORT (26.2): RenderPipeline.Builder lost withUniform/withSampler entirely -- confirmed via
+    // javap on the real 26.2 jar (com.mojang.blaze3d.pipeline.RenderPipeline$Builder's full method
+    // list has no uniform/sampler/texture method anymore). Real replacement (confirmed via vanilla's
+    // own net/minecraft/client/renderer/BindGroupLayouts.java, read in full): uniforms/samplers are
+    // now declared on a separate BindGroupLayout object (BindGroupLayout.builder().withUniform(...)
+    // .build()), then attached to the pipeline via withBindGroupLayout(...) -- same withUniform/
+    // withSampler API, just moved one level down. Every real vanilla pipeline in RenderPipelines.java
+    // only ever attaches PREDEFINED BindGroupLayouts constants; nothing stops a mod from building its
+    // own the same way, which is what this does for the "EspSettings" UBO.
+    private static final BindGroupLayout ESP_SETTINGS_LAYOUT = BindGroupLayout.builder().withUniform("EspSettings", UniformType.UNIFORM_BUFFER).build();
+
     // Same no-depth-test / no-depth-write treatment as Renderer3D's NO_DEPTH_* types so the shaded
     // box behaves identically to the flat one it replaces (visible through terrain).
     private static final RenderPipeline QUADS_PIPELINE = RenderPipeline.builder(new RenderPipeline.Snippet[]{RenderPipelinesAccessor.getDebugFilledSnippet()})
             .withLocation("euclient/esp_shader_quads")
             .withFragmentShader(FRAGMENT)
-            .withUniform("EspSettings", UniformType.UNIFORM_BUFFER)
+            .withBindGroupLayout(ESP_SETTINGS_LAYOUT)
             .withCull(false)
             .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
             .build();
@@ -71,7 +84,7 @@ public class EspShader implements IMinecraft {
     private static final RenderPipeline LINES_PIPELINE = RenderPipeline.builder(new RenderPipeline.Snippet[]{RenderPipelinesAccessor.getLinesSnippet()})
             .withLocation("euclient/esp_shader_lines")
             .withFragmentShader(FRAGMENT)
-            .withUniform("EspSettings", UniformType.UNIFORM_BUFFER)
+            .withBindGroupLayout(ESP_SETTINGS_LAYOUT)
             .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
             .build();
 
@@ -239,16 +252,27 @@ public class EspShader implements IMinecraft {
             RenderSystem.getDevice().createCommandEncoder().writeToBuffer(uboBuffer.slice(), data);
         }
 
+        // PORT (26.2): Tesselator removed, own a ByteBufferBuilder sized exactly for this frame's
+        // vertex count -- same pattern as Renderer3D.draw, see its comment for the reasoning.
         if (!quads.isEmpty()) {
-            BufferBuilder buffer = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
-            for (Renderer3D.VertexCollection collection : quads) collection.quad(buffer);
-            submit(QUADS_PIPELINE, buffer.build());
+            int vertexCount = Renderer3D.vertexCount(quads);
+            try (ByteBufferBuilder byteBufferBuilder = ByteBufferBuilder.exactlySized(vertexCount * DefaultVertexFormat.POSITION_COLOR.getVertexSize())) {
+                BufferBuilder buffer = new BufferBuilder(byteBufferBuilder, PrimitiveTopology.QUADS, DefaultVertexFormat.POSITION_COLOR);
+                for (Renderer3D.VertexCollection collection : quads) collection.quad(buffer);
+                submit(QUADS_PIPELINE, buffer.build());
+            }
         }
 
         if (!debugLines.isEmpty()) {
-            BufferBuilder buffer = Tesselator.getInstance().begin(VertexFormat.Mode.LINES, DefaultVertexFormat.POSITION_COLOR_NORMAL_LINE_WIDTH);
-            Renderer3D.buildLines(buffer, debugLines);
-            submit(LINES_PIPELINE, buffer.build());
+            // PORT (26.2): see Renderer3D.draw's own PORT comment -- LINES topology duplicates
+            // every vertex on the CPU side (BufferBuilder.endLastVertex), so 2x the raw endpoint
+            // count is the real physical size needed.
+            int vertexCount = Renderer3D.vertexCount(debugLines) * 2;
+            try (ByteBufferBuilder byteBufferBuilder = ByteBufferBuilder.exactlySized(vertexCount * DefaultVertexFormat.POSITION_COLOR_NORMAL_LINE_WIDTH.getVertexSize())) {
+                BufferBuilder buffer = new BufferBuilder(byteBufferBuilder, PrimitiveTopology.LINES, DefaultVertexFormat.POSITION_COLOR_NORMAL_LINE_WIDTH);
+                Renderer3D.buildLines(buffer, debugLines);
+                submit(LINES_PIPELINE, buffer.build());
+            }
         }
 
         quads.clear();
@@ -261,19 +285,26 @@ public class EspShader implements IMinecraft {
         if (mesh == null) return;
 
         var dynamicTransforms = RenderSystem.getDynamicUniforms()
-                .writeTransform(RenderSystem.getModelViewMatrix(), new Vector4f(1.0F, 1.0F, 1.0F, 1.0F), new Vector3f(), new org.joml.Matrix4f());
+                .writeTransform(RenderSystem.getModelViewMatrixCopy(), new Vector4f(1.0F, 1.0F, 1.0F, 1.0F), new Vector3f(), new org.joml.Matrix4f());
 
         try (mesh) {
-            GpuBuffer vertices = pipeline.getVertexFormat().uploadImmediateVertexBuffer(mesh.vertexBuffer());
+            // PORT (26.2): VertexFormat.uploadImmediateVertexBuffer/uploadImmediateIndexBuffer are
+            // GONE entirely (grepped the whole 26.2 sources tree, no trace) -- real 26.2 upload
+            // primitive is GpuDevice.createBuffer(label, usage, ByteBuffer), confirmed against real
+            // source (KillEffectMemeRenderer's own quad-VB upload in this same codebase already
+            // uses this exact call). setVertexBuffer now wants a GpuBufferSlice, not a raw GpuBuffer
+            // (RenderPass.java real source) -- WeatherEffectRenderer's real 26.2 code confirms the
+            // fix is just `.slice()` at the call site, the GpuBuffer variable itself stays as-is.
+            GpuBuffer vertices = RenderSystem.getDevice().createBuffer(() -> "EUClient ESP shader vertices", GpuBuffer.USAGE_VERTEX, mesh.vertexBuffer());
             GpuBuffer indices;
-            VertexFormat.IndexType indexType;
+            IndexType indexType;
 
             if (mesh.indexBuffer() == null) {
-                RenderSystem.AutoStorageIndexBuffer autoIndices = RenderSystem.getSequentialBuffer(mesh.drawState().mode());
+                RenderSystem.AutoStorageIndexBuffer autoIndices = RenderSystem.getSequentialBuffer(mesh.drawState().primitiveTopology());
                 indices = autoIndices.getBuffer(mesh.drawState().indexCount());
                 indexType = autoIndices.type();
             } else {
-                indices = pipeline.getVertexFormat().uploadImmediateIndexBuffer(mesh.indexBuffer());
+                indices = RenderSystem.getDevice().createBuffer(() -> "EUClient ESP shader indices", GpuBuffer.USAGE_INDEX, mesh.indexBuffer());
                 indexType = mesh.drawState().indexType();
             }
 
@@ -283,16 +314,21 @@ public class EspShader implements IMinecraft {
                     ? (RenderSystem.outputDepthTextureOverride != null ? RenderSystem.outputDepthTextureOverride : renderTarget.getDepthTextureView())
                     : null;
 
+            // PORT (26.2): createRenderPass's clear-color param is now Optional<Vector4fc> (float
+            // RGBA), not OptionalInt -- confirmed via WeatherEffectRenderer/DebugCrosshairRenderer's
+            // real 26.2 source, both pass Optional.empty() here. drawIndexed is now 5-arg
+            // (indexCount, instanceCount, firstIndex, vertexOffset, firstInstance), confirmed via
+            // DebugCrosshairRenderer's real drawIndexed(18, 1, 0, 0, 0) call.
             try (RenderPass renderPass = RenderSystem.getDevice()
                     .createCommandEncoder()
-                    .createRenderPass(() -> "EUClient ESP shader draw", colorTexture, OptionalInt.empty(), depthTexture, OptionalDouble.empty())) {
+                    .createRenderPass(() -> "EUClient ESP shader draw", colorTexture, Optional.empty(), depthTexture, OptionalDouble.empty())) {
                 renderPass.setPipeline(pipeline);
                 RenderSystem.bindDefaultUniforms(renderPass);
                 renderPass.setUniform("DynamicTransforms", dynamicTransforms);
                 renderPass.setUniform("EspSettings", uboBuffer);
-                renderPass.setVertexBuffer(0, vertices);
+                renderPass.setVertexBuffer(0, vertices.slice());
                 renderPass.setIndexBuffer(indices, indexType);
-                renderPass.drawIndexed(0, 0, mesh.drawState().indexCount(), 1);
+                renderPass.drawIndexed(mesh.drawState().indexCount(), 1, 0, 0, 0);
             }
         }
     }

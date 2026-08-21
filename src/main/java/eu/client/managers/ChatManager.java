@@ -115,21 +115,21 @@ public class ChatManager implements IMinecraft {
             return;
         }
 
-        GuiMessage line = new GuiMessage(mc.gui.getGuiTicks(), message, null, GuiMessageSource.SYSTEM_CLIENT, GuiMessageTag.system());
+        GuiMessage line = new GuiMessage(mc.gui.hud.getGuiTicks(), message, null, GuiMessageSource.SYSTEM_CLIENT, GuiMessageTag.system());
 
         ((IChatHudLine) (Object) line).euclient$setClientMessage(true);
         ((IChatHudLine) (Object) line).euclient$setClientIdentifier(identifier);
 
-        ((ChatHudAccessor) mc.gui.getChat()).invokeLogChatMessage(line);
-        ((ChatHudAccessor) mc.gui.getChat()).invokeAddMessage(line);
+        ((ChatHudAccessor) mc.gui.hud.getChat()).invokeLogChatMessage(line);
+        ((ChatHudAccessor) mc.gui.hud.getChat()).invokeAddMessage(line);
 
-        List<FormattedCharSequence> list = ComponentRenderUtils.wrapComponents(line.content(), Mth.floor(((ChatHudAccessor) mc.gui.getChat()).invokeGetWidth() / ((ChatHudAccessor) mc.gui.getChat()).invokeGetScale()), mc.font);
+        List<FormattedCharSequence> list = ComponentRenderUtils.wrapComponents(line.content(), Mth.floor(((ChatHudAccessor) mc.gui.hud.getChat()).invokeGetWidth() / ((ChatHudAccessor) mc.gui.hud.getChat()).invokeGetScale()), mc.font);
         for (int j = 0; j < list.size(); ++j) {
             FormattedCharSequence orderedText = list.get(j);
 
-            if (mc.gui.getChat().isChatFocused() && ((ChatHudAccessor) mc.gui.getChat()).getScrolledLines() > 0) {
-                ((ChatHudAccessor) mc.gui.getChat()).setHasUnreadNewMessages(true);
-                mc.gui.getChat().scrollChat(1);
+            if (mc.gui.hud.getChat().isChatFocused() && ((ChatHudAccessor) mc.gui.hud.getChat()).getScrolledLines() > 0) {
+                ((ChatHudAccessor) mc.gui.hud.getChat()).setHasUnreadNewMessages(true);
+                mc.gui.hud.getChat().scrollChat(1);
             }
 
             boolean bl2 = j == list.size() - 1;
@@ -139,19 +139,19 @@ public class ChatManager implements IMinecraft {
             ((IChatHudLineVisible) (Object) visible).euclient$setClientMessage(true);
             ((IChatHudLineVisible) (Object) visible).euclient$setClientIdentifier(identifier);
 
-            ((ChatHudAccessor) mc.gui.getChat()).getVisibleMessages().addFirst(visible);
+            ((ChatHudAccessor) mc.gui.hud.getChat()).getVisibleMessages().addFirst(visible);
             if (EUClient.MODULE_MANAGER.getModule(BetterChatModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(BetterChatModule.class).animation.getValue()) EUClient.MODULE_MANAGER.getModule(BetterChatModule.class).getAnimationMap().put(visible, System.currentTimeMillis());
         }
 
-        while (((ChatHudAccessor) mc.gui.getChat()).getVisibleMessages().size() > 100) {
-            ((ChatHudAccessor) mc.gui.getChat()).getVisibleMessages().removeLast();
+        while (((ChatHudAccessor) mc.gui.hud.getChat()).getVisibleMessages().size() > 100) {
+            ((ChatHudAccessor) mc.gui.hud.getChat()).getVisibleMessages().removeLast();
         }
     }
 
     public static void deleteMessage(String identifier) {
         try {
             ArrayList<GuiMessage> removedLines = new ArrayList<>();
-            for (GuiMessage message : ((ChatHudAccessor) mc.gui.getChat()).getMessages()) {
+            for (GuiMessage message : ((ChatHudAccessor) mc.gui.hud.getChat()).getMessages()) {
                 if (!((IChatHudLine) (Object) message).euclient$isClientMessage() || ((IChatHudLine) (Object) message).euclient$getClientIdentifier().isEmpty()) continue;
                 if (((IChatHudLine) (Object) message).euclient$getClientIdentifier().equals(identifier)) {
                     removedLines.add(message);
@@ -159,15 +159,15 @@ public class ChatManager implements IMinecraft {
             }
 
             ArrayList<GuiMessage.Line> removedVisibleLines = new ArrayList<>();
-            for (GuiMessage.Line message : ((ChatHudAccessor) mc.gui.getChat()).getVisibleMessages()) {
+            for (GuiMessage.Line message : ((ChatHudAccessor) mc.gui.hud.getChat()).getVisibleMessages()) {
                 if (!((IChatHudLineVisible) (Object) message).euclient$isClientMessage() || ((IChatHudLineVisible) (Object) message).euclient$getClientIdentifier().isEmpty()) continue;
                 if (((IChatHudLineVisible) (Object) message).euclient$getClientIdentifier().equals(identifier)) {
                     removedVisibleLines.add(message);
                 }
             }
 
-            ((ChatHudAccessor) mc.gui.getChat()).getMessages().removeAll(removedLines);
-            ((ChatHudAccessor) mc.gui.getChat()).getVisibleMessages().removeAll(removedVisibleLines);
+            ((ChatHudAccessor) mc.gui.hud.getChat()).getMessages().removeAll(removedLines);
+            ((ChatHudAccessor) mc.gui.hud.getChat()).getVisibleMessages().removeAll(removedVisibleLines);
         } catch (Exception exception) {
             exception.printStackTrace();
         }

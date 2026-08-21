@@ -19,6 +19,7 @@ import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
@@ -45,10 +46,6 @@ public class ESPModule extends Module {
     public BooleanSetting items = new BooleanSetting("Items", "Renders the box ESP on item entities.", true);
     public BooleanSetting others = new BooleanSetting("Others", "Renders the box ESP on miscellaneous entities.", false);
 
-    public ModeSetting mode = new ModeSetting("Mode", "The rendering that will be applied to the target entities.", "Both", new String[]{"None", "Fill", "Outline", "Both"});
-    public ColorSetting fillColor = new ColorSetting("FillColor", "The color that will be used for the fill rendering.", new ModeSetting.Visibility(mode, "Fill", "Both"), ColorUtils.getDefaultFillColor());
-    public ColorSetting outlineColor = new ColorSetting("OutlineColor", "The color that will be used for the outline rendering.", new ModeSetting.Visibility(mode, "Outline", "Both"), ColorUtils.getDefaultOutlineColor());
-
     // Block target ESP -- naming matches InventoryCleanerModule's own Mode/Whitelist exactly, not
     // renamed (BlockMode/Blocklist etc were explicitly rejected).
     // Forgot this on the first pass -- Mode/Whitelist rendered unconditionally with no toggle to
@@ -59,10 +56,18 @@ public class ESPModule extends Module {
     // BlackList/All dropped -- All alone was already flagged "expensive, not recommended" and
     // BlackList never made sense for a highlight-what-you-want feature. Mode setting removed
     // entirely, blockWhitelist is now always whitelist-only.
+    // 2026-08-21 FIX (reported: "Block ESP nằm ở chỗ tách biệt với Players/Hostiles/...") --
+    // settings render in declaration order, and this used to sit AFTER Mode/FillColor/
+    // OutlineColor, visually separated from the rest of the entity-target toggles above. Moved up
+    // next to Others so it reads as one contiguous "what to target" block in the GUI list.
     public BooleanSetting blocks = new BooleanSetting("Block", "Renders a box ESP on whitelisted blocks (portals, ores, ...).", false);
     public WhitelistSetting blockWhitelist = new WhitelistSetting("Whitelist", "Blocks to highlight.", new BooleanSetting.Visibility(blocks, true), WhitelistSetting.Type.BLOCKS);
-    // Shares mode/fillColor/outlineColor above with entity ESP -- nobody asked for the block
-    // target to have its own separate palette, so it doesn't get one.
+
+    public ModeSetting mode = new ModeSetting("Mode", "The rendering that will be applied to the target entities.", "Both", new String[]{"None", "Fill", "Outline", "Both"});
+    public ColorSetting fillColor = new ColorSetting("FillColor", "The color that will be used for the fill rendering.", new ModeSetting.Visibility(mode, "Fill", "Both"), ColorUtils.getDefaultFillColor());
+    public ColorSetting outlineColor = new ColorSetting("OutlineColor", "The color that will be used for the outline rendering.", new ModeSetting.Visibility(mode, "Outline", "Both"), ColorUtils.getDefaultOutlineColor());
+    // blocks/blockWhitelist share mode/fillColor/outlineColor above with entity ESP -- nobody
+    // asked for the block target to have its own separate palette, so it doesn't get one.
 
     private List<Entity> targetEntities = new ArrayList<>();
 
@@ -291,13 +296,13 @@ public class ESPModule extends Module {
     }
 
     private boolean isValidEntity(Entity entity) {
-        if (players.getValue() && entity.getType() == EntityType.PLAYER) return true;
+        if (players.getValue() && entity.getType() == EntityTypes.PLAYER) return true;
         if (hostiles.getValue() && entity.getType().getCategory() == MobCategory.MONSTER) return true;
         if (animals.getValue() && (entity.getType().getCategory() == MobCategory.CREATURE || entity.getType().getCategory() == MobCategory.WATER_CREATURE || entity.getType().getCategory() == MobCategory.WATER_AMBIENT || entity.getType().getCategory() == MobCategory.UNDERGROUND_WATER_CREATURE || entity.getType().getCategory() == MobCategory.AXOLOTLS))
             return true;
         if (ambient.getValue() && entity.getType().getCategory() == MobCategory.AMBIENT) return true;
         if (invisibles.getValue() && entity.isInvisible()) return true;
-        if (items.getValue() && (entity.getType() == EntityType.ITEM || entity.getType() == EntityType.EXPERIENCE_BOTTLE)) return true;
+        if (items.getValue() && (entity.getType() == EntityTypes.ITEM || entity.getType() == EntityTypes.EXPERIENCE_BOTTLE)) return true;
         return others.getValue();
     }
 }

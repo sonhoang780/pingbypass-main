@@ -36,11 +36,16 @@ public class FakeLagModule extends Module {
     // finishes and you're about to move on), matching modules like HoleSnap that want a real
     // choke window specifically at that transition rather than blanket movement chokes.
     public BooleanSetting onlyOnHoleLeave = new BooleanSetting("OnlyOnHoleLeave", "Only choke packets when leaving a hole.", false);
-    // One-shot burst instead of continuous chokes -- disables itself `value`ms after the current
-    // choke window finishes and releases its buffered packets. 0 = off (stays on). Was a separate
-    // Boolean + delay NumberSetting pair; folded into one NumberSetting so there's no redundant
-    // "enable" toggle sitting next to its own delay value.
-    public NumberSetting autoDisable = new NumberSetting("AutoDisable", "AutoDisable", "Delay (ms) after the choke window finishes before FakeLag disables itself. 0 = off.", new Setting.Visibility(), 0, 0, 1000, 100);
+    // One-shot: disables FakeLag exactly `value`ms after it was enabled, regardless of how much
+    // choking happened in between. 0 = off (stays on). Was a separate Boolean + delay NumberSetting
+    // pair; folded into one NumberSetting so there's no redundant "enable" toggle sitting next to
+    // its own delay value.
+    // 2026-08-21 FIX (reported: "AutoDisable 1000ms không đúng 1000ms mới tắt, cứ đi theo player").
+    // Used to re-arm (reset the countdown) every single time a choke window finished releasing its
+    // packets (onTick below) -- with continuous movement that's every ~choke*100ms, so the 1000ms
+    // deadline kept getting pushed back and effectively never fired while moving, silently
+    // defeating the whole point of a fixed AutoDisable window. Arm once, in onEnable, only.
+    public NumberSetting autoDisable = new NumberSetting("AutoDisable", "AutoDisable", "Delay (ms) after FakeLag is enabled before it disables itself. 0 = off.", new Setting.Visibility(), 0, 0, 1000, 100);
     public ModeSetting mode = new ModeSetting("RenderMode", "The rendering that will be applied to the target entity.", "Both", new String[]{"None", "Fill", "Outline", "Both"});
     public ColorSetting fillColor = new ColorSetting("FillColor", "The color that will be used for the fill rendering.", new ModeSetting.Visibility(mode, "Fill", "Both"), ColorUtils.getDefaultFillColor());
     public ColorSetting outlineColor = new ColorSetting("OutlineColor", "The color that will be used for the outline rendering.", new ModeSetting.Visibility(mode, "Outline", "Both"), ColorUtils.getDefaultOutlineColor());
@@ -122,12 +127,10 @@ public class FakeLagModule extends Module {
             if (isChoking && chokeTimer.hasTimeElapsed((int) (choke.getValue().floatValue() * 100))) {
                 sendPackets();
                 isChoking = false;
-                if (autoDisable.getValue().intValue() > 0) startAutoDisable();
             }
         } else if (!packets.isEmpty() && timer.hasTimeElapsed((int) (choke.getValue().floatValue()*100))) {
             sendPackets();
             timer.reset();
-            if (autoDisable.getValue().intValue() > 0) startAutoDisable();
         }
 
         if (pendingAutoDisable && autoDisableTimer.hasTimeElapsed(autoDisable.getValue().intValue())) {
@@ -151,11 +154,8 @@ public class FakeLagModule extends Module {
         // resetting at real choke-window boundaries (onPacketReceive above), not on toggle-on --
         // removing this stray reset lets it carry over from whenever it was last genuinely reset.
         isChoking = false;
-        // Was only armed once an actual choke window finished and released its packets -- if
-        // nothing ever gets choked (standing still, nothing to buffer), that never happens and
-        // AutoDisable silently never fires. Start the countdown the moment the module turns on
-        // instead; a real choke release still re-arms it (chokeTimer/timer paths below), which
-        // only matters if that happens to land AFTER this flat delay would've already fired.
+        // One-shot: armed here only, never re-armed by a choke release (see autoDisable's own
+        // comment above) -- a fixed `value`ms-after-enable deadline regardless of choke activity.
         if (autoDisable.getValue().intValue() > 0) startAutoDisable();
         else pendingAutoDisable = false;
         currentPos = null;

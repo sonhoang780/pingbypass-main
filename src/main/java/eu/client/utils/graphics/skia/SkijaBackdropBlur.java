@@ -102,7 +102,7 @@ public final class SkijaBackdropBlur {
         active = false;
 
         Minecraft mc = Minecraft.getInstance();
-        RenderTarget mainFb = mc.getMainRenderTarget();
+        RenderTarget mainFb = mc.gameRenderer.mainRenderTarget();
         int w = mainFb.width, h = mainFb.height;
 
         GpuTexture colorTex = mainFb.getColorTexture();

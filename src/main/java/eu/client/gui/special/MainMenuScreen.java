@@ -45,21 +45,21 @@ public class MainMenuScreen extends Screen {
         int y = height / 2 - 18;
 
         entries.add(new Entry("Singleplayer", x, y, buttonWidth, buttonHeight,
-                () -> this.minecraft.setScreen(new SelectWorldScreen(this))));
+                () -> this.minecraft.gui.setScreen(new SelectWorldScreen(this))));
         y += buttonHeight + spacing;
 
         entries.add(new Entry("Multiplayer", x, y, buttonWidth, buttonHeight,
-                () -> this.minecraft.setScreen(new JoinMultiplayerScreen(this))));
+                () -> this.minecraft.gui.setScreen(new JoinMultiplayerScreen(this))));
         y += buttonHeight + spacing;
 
         entries.add(new Entry("PingBypass", x, y, buttonWidth, buttonHeight,
-                () -> this.minecraft.setScreen(new PingBypassScreen(this))));
+                () -> this.minecraft.gui.setScreen(new PingBypassScreen(this))));
         y += buttonHeight + spacing;
 
         // Two half-width buttons sharing one row.
         int half = (buttonWidth - spacing) / 2;
         entries.add(new Entry("Options", x, y, half, buttonHeight,
-                () -> this.minecraft.setScreen(new OptionsScreen(this, this.minecraft.options, false))));
+                () -> this.minecraft.gui.setScreen(new OptionsScreen(this, this.minecraft.options, false))));
         entries.add(new Entry("Quit", x + half + spacing, y, buttonWidth - half - spacing, buttonHeight,
                 () -> this.minecraft.stop()));
     }

@@ -52,9 +52,12 @@ public class LobbyWorldSender {
                     overworldType, Level.OVERWORLD, 0L, GameType.SPECTATOR,
                     null, false, true, Optional.empty(), 0, 63);
 
+            // PORT (26.2): ClientboundLoginPacket gained a trailing enforcesSecureChat boolean --
+            // confirmed via real 26.2 source (record has 12 components now, was 11). Proxy doesn't
+            // enforce secure chat, false matches the existing onlineMode=false posture.
             send(toClient, new ClientboundLoginPacket(
                     1337, false, dimensionIds, 1, 16, 16,
-                    false, true, false, spawnInfo, false));
+                    false, true, false, spawnInfo, false, false));
 
             send(toClient, new ClientboundPlayerAbilitiesPacket(createLobbyAbilities()));
             send(toClient, new ClientboundSetHeldSlotPacket(0));

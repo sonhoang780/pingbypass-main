@@ -74,7 +74,7 @@ public class BreakHighlightModule extends Module {
         if(!mc.level.getBlockState(mine.pos).getBlock().equals(mine.block)) return true;
         
         // squaredDistanceTo -> distanceToSqr | toCenterPos -> getCenter
-        return Math.sqrt(mc.level.getEntity(id).distanceToSqr(mine.pos.getCenter())) > 6;
+        return Math.sqrt(mc.level.getEntity(id).distanceToSqr(net.minecraft.world.phys.Vec3.atCenterOf(mine.pos))) > 6;
     }
 
     @AllArgsConstructor

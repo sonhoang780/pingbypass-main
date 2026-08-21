@@ -86,10 +86,13 @@ public class WorldStateReplay {
         Set<ResourceKey<Level>> dimensionIds = handler.levels();
         CommonPlayerSpawnInfo spawnInfo = createSpawnInfo(world, gameMode, prevGameMode, player, registryAccess);
 
+        // PORT (26.2): ClientboundLoginPacket gained a trailing enforcesSecureChat boolean --
+        // confirmed via real 26.2 source (record has 12 components now, was 11). Same posture as
+        // LobbyWorldSender's own construction, false.
         send(toClient, new ClientboundLoginPacket(
                 player.getId(), world.getLevelData().isHardcore(), dimensionIds,
                 1, 16, 16,
-                false, true, false, spawnInfo, false));
+                false, true, false, spawnInfo, false, false));
 
         // 2. Respawn to clear lobby world state (clears view entity, prevents falling)
         send(toClient, new ClientboundRespawnPacket(spawnInfo, (byte) 0));

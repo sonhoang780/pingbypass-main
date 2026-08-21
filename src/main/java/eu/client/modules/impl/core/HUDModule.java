@@ -168,7 +168,10 @@ public class HUDModule extends Module {
         HudElementRegistry.register("Potions", potions, potionsPosition, potionsCategory);
         HudElementRegistry.register("MusicHUD", musicHud, musicHudPosition, musicHudCategory);
         musicHudPosition.set(20f, 60f);
-        new eu.client.modules.impl.visuals.MusicHUDComponent();
+        // PORT (26.2): MusicHUDComponent disabled -- its Skia render path depended on
+        // MultiBufferSource/TextureFormat, both removed in 26.2. See
+        // docs/superpowers/specs/2026-08-20-port-26.2-vulkan-audit.md.
+        // new eu.client.modules.impl.visuals.MusicHUDComponent();
     }
 
     private final Animation potionsAnimation = new Animation(300, Easing.Method.EASE_OUT_CUBIC);
@@ -292,7 +295,7 @@ public class HUDModule extends Module {
                 String text = getPotionText(effect);
                 Identifier sprite = null;
 
-                if (potionIcons.getValue()) sprite = Gui.getMobEffectSprite(effect.getEffect());
+                if (potionIcons.getValue()) sprite = net.minecraft.client.gui.Hud.getMobEffectSprite(effect.getEffect());
 
                 entries.add(new PotionEntry(text, sprite, potionColor.getValue().equalsIgnoreCase("Vanilla") ? new Color(effect.getEffect().value().getColor()) : potionColor.getValue().equalsIgnoreCase("Enhanced") ? (EntityUtils.POTION_COLORS.containsKey(effect.getEffect().value()) ? EntityUtils.POTION_COLORS.get(effect.getEffect().value()) : new Color(effect.getEffect().value().getColor())) : null));
             }
@@ -305,7 +308,7 @@ public class HUDModule extends Module {
     public void renderWatermark(RenderOverlayEvent event) {
         if (mc.player == null) return;
 
-        chatOffset = chatAnimation.get(mc.screen instanceof ChatScreen ? 14 : 0);
+        chatOffset = chatAnimation.get(mc.gui.screen() instanceof ChatScreen ? 14 : 0);
 
         Renderer2D.renderQuad(event.getContext(), 2, mc.getWindow().getGuiScaledHeight() - chatOffset, mc.getWindow().getGuiScaledWidth() - 2, mc.getWindow().getGuiScaledHeight() + 12 - chatOffset, new Color(0, 0, 0, (int) (mc.options.textBackgroundOpacity().get() * 255)));
 
@@ -567,7 +570,10 @@ public class HUDModule extends Module {
 
         if (health.getValue()) {
             String text = new DecimalFormat("0").format(mc.player.getHealth() + mc.player.getAbsorptionAmount());
-            Color healthColor = new Color(ColorUtils.getHealthColor(mc.player.getHealth() + mc.player.getAbsorptionAmount()).getColor());
+            // PORT (26.2): ChatFormatting.getColor() removed -- ChatFormatting is now just the plain §-code
+        // enum (confirmed via real source, no color/RGB accessor left at all). Real replacement is
+        // net.minecraft.network.chat.TextColor.fromLegacyFormat(ChatFormatting).getValue().
+        Color healthColor = new Color(net.minecraft.network.chat.TextColor.fromLegacyFormat(ColorUtils.getHealthColor(mc.player.getHealth() + mc.player.getAbsorptionAmount())).getValue());
             EUClient.FONT_MANAGER.drawTextWithOutline(event.getContext(), text, mc.getWindow().getGuiScaledWidth() / 2 - EUClient.FONT_MANAGER.getWidth(text) / 2, mc.getWindow().getGuiScaledHeight() / 2 + 16, healthColor, Color.BLACK);
         }
 

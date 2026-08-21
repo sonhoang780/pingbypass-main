@@ -43,8 +43,6 @@ public abstract class MinecraftClientMixin implements IMinecraft {
     @Shadow @Final public Options options;
 
 
-    @Shadow public abstract void setScreen(@Nullable Screen screen);
-
     @Shadow @Nullable public HitResult hitResult;
 
     @Shadow @Nullable public Entity crosshairPickEntity;
@@ -134,28 +132,10 @@ public abstract class MinecraftClientMixin implements IMinecraft {
         }
     }
 
-    @Inject(method = "setScreen", at = @At("HEAD"), cancellable = true)
-    private void setScreen(Screen screen, CallbackInfo info) {
-        if (screen instanceof net.minecraft.client.gui.screens.social.SocialInteractionsScreen) {
-            info.cancel();
-            return;
-        }
-
-        if (screen instanceof DeathScreen && player != null && EUClient.MODULE_MANAGER.getModule(AutoRespawnModule.class).isToggled()) {
-            player.respawn();
-            info.cancel();
-            return;
-        }
-
-        if (screen instanceof TitleScreen) {
-            EUClient.checkForUpdates();
-
-            if (EUClient.MODULE_MANAGER.getModule(MenuModule.class).isToggled() && EUClient.MODULE_MANAGER.getModule(MenuModule.class).mainMenu.getValue()) {
-                this.setScreen(new MainMenuScreen());
-                info.cancel();
-            }
-        }
-    }
+    // PORT (26.2): moved to InGameHudMixin (@Mixin(Gui.class)) -- Minecraft.setScreen(Screen) is
+    // gone entirely, real screen-change entry point is now Gui.setScreen(Screen) (confirmed via
+    // real source), a different target class than this mixin's own (Minecraft.class), so the
+    // @Inject had to move to a mixin actually targeting Gui.
 
     @Inject(method = {"pickBlock", "pickBlockOrEntity"}, at = @At("HEAD"), cancellable = true, require = 0)
     private void euclient$onPickBlock(CallbackInfo info) {

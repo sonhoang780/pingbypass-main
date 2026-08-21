@@ -73,7 +73,7 @@ public class ServerAutoTotem extends PbModule implements IMinecraft {
         if (mc.player == null || mc.level == null) return;
         totemCount = mc.player.getInventory().countItem(Items.TOTEM_OF_UNDYING);
 
-        if (!(mc.screen instanceof InventoryScreen) && mc.screen instanceof AbstractContainerScreen<?>)
+        if (!(mc.gui.screen() instanceof InventoryScreen) && mc.gui.screen() instanceof AbstractContainerScreen<?>)
             return;
 
         Item item = getItem();

@@ -281,7 +281,7 @@ public class RekitModule extends Module {
 
         // Bind check runs even while the module itself might be off elsewhere in the tick
         // handler chain -- but the module has to be toggled for the bind to mean anything.
-        if (mc.screen == null) {
+        if (mc.gui.screen() == null) {
             boolean down = KeyboardUtils.isBindDown(autoPlaceBind.getValue());
             if (down && !autoPlaceBindWasDown && autoState == AutoState.IDLE
                     && !mc.player.isCreative() && !mc.player.isSpectator()
@@ -304,8 +304,8 @@ public class RekitModule extends Module {
             return;
         }
 
-        if (!(mc.screen instanceof AbstractContainerScreen)) return;
-        if (mc.screen instanceof InventoryScreen) return;
+        if (!(mc.gui.screen() instanceof AbstractContainerScreen)) return;
+        if (mc.gui.screen() instanceof InventoryScreen) return;
         manualPullTick();
     }
 
@@ -324,7 +324,7 @@ public class RekitModule extends Module {
     }
 
     private boolean hasCustomContainerTitle() {
-        if (!(mc.screen instanceof AbstractContainerScreen<?> screen)) return false;
+        if (!(mc.gui.screen() instanceof AbstractContainerScreen<?> screen)) return false;
         Component title = screen.getTitle();
         if (title == null) return false;
         return !(title.getContents() instanceof TranslatableContents);
@@ -348,7 +348,7 @@ public class RekitModule extends Module {
     // ═══════════════════════════════════════════════════════════
 
     private void handleAutoTick() {
-        boolean screenOpen = mc.screen instanceof AbstractContainerScreen && !(mc.screen instanceof InventoryScreen);
+        boolean screenOpen = mc.gui.screen() instanceof AbstractContainerScreen && !(mc.gui.screen() instanceof InventoryScreen);
 
         if (autoState == AutoState.IDLE) {
             autoPlaceActive = false;

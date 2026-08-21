@@ -153,12 +153,12 @@ public class PingBypassScreen extends Screen {
 
     private void resume() {
         // Return to parent — session is already active, just close this screen
-        this.minecraft.setScreen(parent);
+        this.minecraft.gui.setScreen(parent);
     }
 
     @Override
     public void onClose() {
-        this.minecraft.setScreen(parent);
+        this.minecraft.gui.setScreen(parent);
     }
 
     private PingBypassConfig getConfig() {

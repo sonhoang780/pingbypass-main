@@ -7,7 +7,6 @@ import eu.client.utils.color.ColorUtils;
 import net.minecraft.network.chat.Style;
 import net.minecraft.network.chat.TextColor;
 import net.minecraft.ChatFormatting;
-import net.minecraft.util.StringRepresentable;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -26,7 +25,12 @@ public class FormattingUtils {
         return StyleAccessor.create(textColor, null, false, false, false, false, false, style.getClickEvent(), style.getHoverEvent(), style.getInsertion(), style.getFont());
     }
 
-    public static StringRepresentable getFormatting(String str) {
+    // PORT (26.2): ChatFormatting no longer implements StringRepresentable (confirmed via real
+    // 26.2 source, `enum ChatFormatting` has no `implements` clause at all now) -- every caller
+    // only ever concatenates the result into a String (relies on toString() giving the section-sign
+    // code, unaffected by this), so the common return type just needs to compile, not carry any
+    // real API contract. Object is the simplest common supertype of ChatFormatting/CustomFormatting.
+    public static Object getFormatting(String str) {
         return switch (str.toLowerCase()) {
             case "black" -> ChatFormatting.BLACK;
             case "blue" -> ChatFormatting.BLUE;

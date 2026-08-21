@@ -10,6 +10,7 @@ import eu.client.settings.impl.ModeSetting;
 import eu.client.utils.color.ColorUtils;
 import eu.client.utils.graphics.Renderer3D;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
@@ -85,7 +86,7 @@ public class ChorusControlModule extends Module {
         if (packet == null) return;
 
         Vec3 vec3d = new Vec3(packet.change().position().x(), packet.change().position().y(), packet.change().position().z());
-        AABB box = EntityType.PLAYER.getDimensions().makeBoundingBox(vec3d);
+        AABB box = EntityTypes.PLAYER.getDimensions().makeBoundingBox(vec3d);
 
         if (mode.getValue().equalsIgnoreCase("Fill") || mode.getValue().equalsIgnoreCase("Both")) Renderer3D.renderBox(event.getMatrices(), box, fillColor.getColor());
         if (mode.getValue().equalsIgnoreCase("Outline") || mode.getValue().equalsIgnoreCase("Both")) Renderer3D.renderBoxOutline(event.getMatrices(), box, outlineColor.getColor());
